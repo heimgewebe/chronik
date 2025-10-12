@@ -1,26 +1,67 @@
-from fastapi import FastAPI, Request, Header
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+from typing import Final
+
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-import json, pathlib, os
+
 app = FastAPI(title="leitstand-ingest")
-DATA = pathlib.Path("data"); DATA.mkdir(parents=True, exist_ok=True)
-SECRET = os.environ.get("LEITSTAND_TOKEN","")
+
+DATA = Path("data")
+DATA.mkdir(parents=True, exist_ok=True)
+
+SECRET = os.environ.get("LEITSTAND_TOKEN", "")
+
+_DOMAIN_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$")
+
+
+def _sanitize_domain(domain: str) -> str:
+    if not _DOMAIN_RE.fullmatch(domain or ""):
+        raise HTTPException(status_code=400, detail="invalid domain")
+    return domain
+
+
+def _filename_from_domain(domain: str) -> str:
+    """Return a deterministic, filesystem-safe filename for ``domain``."""
+
+    digest = hashlib.sha256(domain.encode("utf-8")).hexdigest()
+    return f"{digest[:32]}.jsonl"
+
+
+def _safe_target_path(domain: str) -> Path:
+    name = _filename_from_domain(domain)
+    candidate = (DATA / name).resolve()
+    if DATA not in candidate.parents:
+        raise HTTPException(status_code=400, detail="invalid path")
+    return candidate
+
+
+def _require_auth(x_auth: str) -> None:
+    if SECRET and x_auth != SECRET:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
 @app.post("/ingest/{domain}")
 async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
-    if SECRET and x_auth != SECRET:
-        return PlainTextResponse("unauthorized", status_code=401)
+    _require_auth(x_auth)
+    dom = _sanitize_domain(domain)
+    target_path = _safe_target_path(dom)
+
     try:
-        obj = json.loads((await req.body()).decode("utf-8"))
-    except Exception:
-        return PlainTextResponse("invalid json", status_code=400)
-    # Only allow alphanumerics, dash, underscore in domain
-    import re
-    safe_domain = re.sub(r"[^a-zA-Z0-9_-]", "_", domain)
-    target_path = (DATA / f"{safe_domain}.jsonl")
-    # Normalize and resolve both DATA and target_path
-    data_dir = DATA.resolve()
-    fullpath = target_path.resolve()
-    # Ensure the resolved path is strictly within DATA directory
-    if os.path.commonpath([str(data_dir), str(fullpath)]) != str(data_dir):
-        return PlainTextResponse("invalid domain", status_code=400)
-    fullpath.open("a", encoding="utf-8").write(json.dumps(obj, ensure_ascii=False)+"\n")
-    return PlainTextResponse("ok")
+        raw = await req.body()
+        obj = json.loads(raw.decode("utf-8"))
+    except Exception as exc:  # pragma: no cover - defensive: decode/json errors
+        raise HTTPException(status_code=400, detail="invalid json") from exc
+
+    if isinstance(obj, dict) and "domain" not in obj:
+        obj["domain"] = dom
+
+    with target_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
+    return PlainTextResponse("ok", status_code=200)
