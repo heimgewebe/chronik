@@ -6,6 +6,9 @@ DATA = pathlib.Path("data"); DATA.mkdir(parents=True, exist_ok=True)
 SECRET = os.environ.get("LEITSTAND_TOKEN","")
 @app.post("/ingest/{domain}")
 async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
+    import re
+    if not re.fullmatch(r"[\w-]+", domain):
+        return PlainTextResponse("invalid domain name", status_code=400)
     if SECRET and x_auth != SECRET: return PlainTextResponse("unauthorized", status_code=401)
     try:
         obj = json.loads((await req.body()).decode("utf-8"))
