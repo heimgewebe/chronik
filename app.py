@@ -15,9 +15,12 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
     # Only allow alphanumerics, dash, underscore in domain
     import re
     safe_domain = re.sub(r"[^a-zA-Z0-9_-]", "_", domain)
-    target_path = (DATA / f"{safe_domain}.jsonl").resolve()
-    # Ensure the resolved path is actually within DATA directory
-    if os.path.commonpath([str(DATA.resolve()), str(target_path)]) != str(DATA.resolve()):
+    target_path = (DATA / f"{safe_domain}.jsonl")
+    # Normalize and resolve both DATA and target_path
+    data_dir = DATA.resolve()
+    fullpath = target_path.resolve()
+    # Ensure the resolved path is strictly within DATA directory
+    if os.path.commonpath([str(data_dir), str(fullpath)]) != str(data_dir):
         return PlainTextResponse("invalid domain", status_code=400)
-    target_path.open("a", encoding="utf-8").write(json.dumps(obj, ensure_ascii=False)+"\n")
+    fullpath.open("a", encoding="utf-8").write(json.dumps(obj, ensure_ascii=False)+"\n")
     return PlainTextResponse("ok")
