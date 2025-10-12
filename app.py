@@ -1,23 +1,26 @@
 from fastapi import FastAPI, Request, Header
 from fastapi.responses import PlainTextResponse
 import json, pathlib, os
-import os.path
 app = FastAPI(title="leitstand-ingest")
 DATA = pathlib.Path("data"); DATA.mkdir(parents=True, exist_ok=True)
 SECRET = os.environ.get("LEITSTAND_TOKEN","")
 @app.post("/ingest/{domain}")
 async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
-    import re
-    if not re.fullmatch(r"[\w-]+", domain):
-        return PlainTextResponse("invalid domain name", status_code=400)
-    if SECRET and x_auth != SECRET: return PlainTextResponse("unauthorized", status_code=401)
+    if SECRET and x_auth != SECRET:
+        return PlainTextResponse("unauthorized", status_code=401)
     try:
         obj = json.loads((await req.body()).decode("utf-8"))
     except Exception:
         return PlainTextResponse("invalid json", status_code=400)
-    target_path = (DATA / f"{domain}.jsonl").resolve()
-    data_dir = str(DATA.resolve())
-    if os.path.commonpath([str(target_path), data_dir]) != data_dir:
-        return PlainTextResponse("invalid domain name", status_code=400)
-    target_path.open("a", encoding="utf-8").write(json.dumps(obj, ensure_ascii=False)+"\n")
+    # Only allow alphanumerics, dash, underscore in domain
+    import re
+    safe_domain = re.sub(r"[^a-zA-Z0-9_-]", "_", domain)
+    target_path = (DATA / f"{safe_domain}.jsonl")
+    # Normalize and resolve both DATA and target_path
+    data_dir = DATA.resolve()
+    fullpath = target_path.resolve()
+    # Ensure the resolved path is strictly within DATA directory
+    if os.path.commonpath([str(data_dir), str(fullpath)]) != str(data_dir):
+        return PlainTextResponse("invalid domain", status_code=400)
+    fullpath.open("a", encoding="utf-8").write(json.dumps(obj, ensure_ascii=False)+"\n")
     return PlainTextResponse("ok")
