@@ -16,7 +16,8 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
     import re
     safe_domain = re.sub(r"[^a-zA-Z0-9_-]", "_", domain)
     target_path = (DATA / f"{safe_domain}.jsonl").resolve()
-    if DATA.resolve() not in target_path.parents:
+    # Ensure the resolved path is actually within DATA directory
+    if os.path.commonpath([str(DATA.resolve()), str(target_path)]) != str(DATA.resolve()):
         return PlainTextResponse("invalid domain", status_code=400)
     target_path.open("a", encoding="utf-8").write(json.dumps(obj, ensure_ascii=False)+"\n")
     return PlainTextResponse("ok")
