@@ -12,18 +12,30 @@ from fastapi.responses import PlainTextResponse
 
 app = FastAPI(title="leitstand-ingest")
 
-DATA = Path("data")
+DATA = Path(os.environ.get("LEITSTAND_DATA_DIR", "data")).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
 
 SECRET = os.environ.get("LEITSTAND_TOKEN", "")
 
-_DOMAIN_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,62}[a-z0-9])?$")
+_DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
+    r"^(?=.{1,253}$)"
+    r"(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)"
+    r"(?:\.(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?))*$"
+)
 
 
 def _sanitize_domain(domain: str) -> str:
-    if not _DOMAIN_RE.fullmatch(domain or ""):
+    d = (domain or "").strip().lower()
+    if not _DOMAIN_RE.fullmatch(d):
         raise HTTPException(status_code=400, detail="invalid domain")
-    return domain
+    return d
+
+
+def _is_under(path: Path, base: Path) -> bool:
+    try:
+        return path.is_relative_to(base)
+    except AttributeError:
+        return os.path.commonpath([str(path), str(base)]) == str(base)
 
 
 def _filename_from_domain(domain: str) -> str:
@@ -36,7 +48,7 @@ def _filename_from_domain(domain: str) -> str:
 def _safe_target_path(domain: str) -> Path:
     name = _filename_from_domain(domain)
     candidate = (DATA / name).resolve()
-    if DATA not in candidate.parents:
+    if not _is_under(candidate, DATA):
         raise HTTPException(status_code=400, detail="invalid path")
     return candidate
 
