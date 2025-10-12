@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, Header
 from fastapi.responses import PlainTextResponse
 import json, pathlib, os
+import os.path
 app = FastAPI(title="leitstand-ingest")
 DATA = pathlib.Path("data"); DATA.mkdir(parents=True, exist_ok=True)
 SECRET = os.environ.get("LEITSTAND_TOKEN","")
@@ -15,7 +16,8 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
     except Exception:
         return PlainTextResponse("invalid json", status_code=400)
     target_path = (DATA / f"{domain}.jsonl").resolve()
-    if not str(target_path).startswith(str(DATA.resolve()) + os.sep):
+    data_dir = str(DATA.resolve())
+    if os.path.commonpath([str(target_path), data_dir]) != data_dir:
         return PlainTextResponse("invalid domain name", status_code=400)
     target_path.open("a", encoding="utf-8").write(json.dumps(obj, ensure_ascii=False)+"\n")
     return PlainTextResponse("ok")
