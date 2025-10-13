@@ -32,7 +32,7 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 ## API
 ### `POST /ingest/{domain}`
 * **Pfadparameter** `domain`: Muss dem Muster  
-  `^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)(?:\.(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?))*$`  
+  `^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$`
   entsprechen. Ungültige Werte führen zu `400 invalid domain`.
 * **Header** `X-Auth`: erforderlich, wenn `LEITSTAND_TOKEN` gesetzt ist, sonst optional. Fehlerhafte Werte führen zu `401 unauthorized`.
 * **Request-Body**: UTF-8-kodiertes JSON-Objekt oder -Array. Einzelne Objekte ohne `domain`-Feld erhalten automatisch das Feld `domain` mit dem bereinigten Domainnamen.
