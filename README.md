@@ -4,6 +4,19 @@
 als JSON entgegennimmt und domain-spezifisch in JSON Lines Dateien ablegt. Die Anwendung ist in
 FastAPI implementiert und lässt sich lokal oder in Codespaces betreiben.
 
+## Quickstart
+```bash
+git clone <repository-url>
+cd leitstand
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8788
+```
+
+Sobald der Server läuft, sind die interaktiven API-Dokumente unter
+`http://localhost:8788/docs` verfügbar.
+
 ## Voraussetzungen
 * Python 3.10+
 * Abhängigkeiten aus `requirements.txt`
