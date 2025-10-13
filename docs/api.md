@@ -15,7 +15,7 @@ Dieses Dokument beschreibt die HTTP-Schnittstelle des Leitstand-Ingest-Dienstes 
 | Eigenschaft    | Beschreibung |
 |----------------|--------------|
 | Methode        | `POST` |
-| Pfadparameter  | `domain` – wird in Kleinbuchstaben gewandelt und muss dem regulären Ausdruck `^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)(?:\.(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?))*$` entsprechen. |
+| Pfadparameter  | `domain` – wird in Kleinbuchstaben gewandelt und muss dem regulären Ausdruck `^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$` entsprechen. |
 | Header         | `Content-Type: application/json`; `X-Auth: <token>` sofern `LEITSTAND_TOKEN` gesetzt ist. |
 | Request-Body   | Gültiges JSON-Dokument. Einzelne Objekte erhalten automatisch ein Feld `domain`, sofern es fehlt. |
 | Antwort        | `200 OK` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid domain` / `400 invalid json`, fehlende Authentifizierung `401 unauthorized`. |
