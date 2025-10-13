@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 from pathlib import Path
 from typing import Final
 
@@ -19,8 +20,8 @@ SECRET = os.environ.get("LEITSTAND_TOKEN", "")
 
 _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?=.{1,253}$)"
-    r"(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)"
-    r"(?:\.(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?))*$"
+    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
+    r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
 )
 
 
@@ -54,7 +55,7 @@ def _safe_target_path(domain: str) -> Path:
 
 
 def _require_auth(x_auth: str) -> None:
-    if SECRET and x_auth != SECRET:
+    if SECRET and not secrets.compare_digest(x_auth, SECRET):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
