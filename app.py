@@ -9,13 +9,16 @@ from typing import Final
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
+from filelock import FileLock
 
 app = FastAPI(title="leitstand-ingest")
 
 DATA = Path(os.environ.get("LEITSTAND_DATA_DIR", "data")).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
 
-SECRET = os.environ.get("LEITSTAND_TOKEN", "")
+SECRET = os.environ.get("LEITSTAND_TOKEN")
+if not SECRET:
+    raise RuntimeError("LEITSTAND_TOKEN must be set")
 
 _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?=.{1,253}$)"
@@ -61,19 +64,32 @@ def _require_auth(x_auth: str) -> None:
 @app.post("/ingest/{domain}")
 async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
     _require_auth(x_auth)
+
+    cl_raw = req.headers.get("content-length")
+    if not cl_raw:
+        raise HTTPException(status_code=411, detail="length required")
+    try:
+        cl = int(cl_raw)
+    except (ValueError, TypeError):  # pragma: no cover - defensive
+        raise HTTPException(status_code=400, detail="invalid content-length")
+    if cl > 1024 * 1024:
+        raise HTTPException(status_code=413, detail="payload too large")
+
     dom = _sanitize_domain(domain)
     target_path = _safe_target_path(dom)
 
     try:
         raw = await req.body()
         obj = json.loads(raw.decode("utf-8"))
-    except Exception as exc:  # pragma: no cover - defensive: decode/json errors
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:  # pragma: no cover - defensive
         raise HTTPException(status_code=400, detail="invalid json") from exc
 
     if isinstance(obj, dict) and "domain" not in obj:
         obj["domain"] = dom
 
-    with target_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+    lock_path = target_path.with_suffix(target_path.suffix + ".lock")
+    with FileLock(lock_path):
+        with target_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
     return PlainTextResponse("ok", status_code=200)
