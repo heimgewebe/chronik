@@ -70,10 +70,19 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
     except Exception as exc:  # pragma: no cover - defensive: decode/json errors
         raise HTTPException(status_code=400, detail="invalid json") from exc
 
-    if isinstance(obj, dict) and "domain" not in obj:
-        obj["domain"] = dom
+    items = obj if isinstance(obj, list) else [obj]
+
+    lines: list[str] = []
+    for entry in items:
+        if not isinstance(entry, dict):
+            raise HTTPException(status_code=400, detail="invalid payload")
+        if "domain" not in entry:
+            entry = {**entry, "domain": dom}
+        lines.append(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
 
     with target_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        for line in lines:
+            fh.write(line)
+            fh.write("\n")
 
     return PlainTextResponse("ok", status_code=200)
