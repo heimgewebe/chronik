@@ -18,7 +18,6 @@ pip install -r requirements.txt
 export LEITSTAND_TOKEN=$(openssl rand -hex 12)
 # optional: Zielverzeichnis der JSONL-Dateien anpassen
 export LEITSTAND_DATA_DIR=./data
-
 uvicorn app:app --host 0.0.0.0 --port 8788
 ```
 
