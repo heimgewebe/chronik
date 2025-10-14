@@ -18,8 +18,23 @@ app = FastAPI(title="leitstand-ingest")
 DATA: Final[Path] = Path(os.environ.get("LEITSTAND_DATA_DIR", "data")).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
 
-# Token-Pflicht (kann für Tests/Entwicklung leer sein)
+# -----------------------------------------------------------------------------
+# Authentifizierungs-Token
+# -----------------------------------------------------------------------------
+# Standardfall: Token ist Pflicht. Nur wenn explizit der Entwicklungsmodus
+# aktiv ist (LEITSTAND_DEV=1), darf das Secret fehlen oder leer sein.
+#
+# Vorteil: verhindert versehentlich ungeschützte Deployments, während lokale
+# Tests oder Codespaces weiterhin ohne Token laufen können.
+# -----------------------------------------------------------------------------
+
 SECRET: Final[str | None] = os.environ.get("LEITSTAND_TOKEN")
+DEV_MODE: Final[bool] = os.environ.get("LEITSTAND_DEV") == "1"
+
+if not SECRET and not DEV_MODE:
+    raise RuntimeError(
+        "LEITSTAND_TOKEN not set. For development without auth, export LEITSTAND_DEV=1."
+    )
 
 # RFC-nahe FQDN-Validierung: labels 1..63, a-z0-9 und '-' (kein '_' ), gesamt ≤ 253
 _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(

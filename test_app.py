@@ -1,5 +1,8 @@
 import json
+import os
 from pathlib import Path
+
+os.environ.setdefault("LEITSTAND_DEV", "1")
 
 import pytest
 from fastapi.testclient import TestClient
