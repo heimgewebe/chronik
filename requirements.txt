@@ -1,5 +1,5 @@
-fastapi
-uvicorn
-filelock
+fastapi>=0.110
+uvicorn[standard]>=0.27
+filelock>=3.13
 pytest
 httpx
