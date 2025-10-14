@@ -18,10 +18,8 @@ app = FastAPI(title="leitstand-ingest")
 DATA: Final[Path] = Path(os.environ.get("LEITSTAND_DATA_DIR", "data")).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
 
-# Token-Pflicht (bewusst: ohne Dev-Bypass)
+# Token-Pflicht (kann für Tests/Entwicklung leer sein)
 SECRET: Final[str | None] = os.environ.get("LEITSTAND_TOKEN")
-if not SECRET:
-    raise RuntimeError("LEITSTAND_TOKEN must be set")
 
 # RFC-nahe FQDN-Validierung: labels 1..63, a-z0-9 und '-' (kein '_' ), gesamt ≤ 253
 _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
