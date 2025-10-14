@@ -44,9 +44,11 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 
 ## API
 ### `POST /ingest/{domain}`
-* **Pfadparameter** `domain`: Muss dem Muster  
-  `^(?=.{1,253}$)(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)(?:\.(?:[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?))*$`  
-  entsprechen. Ungültige Werte führen zu `400 invalid domain`.
+* **Pfadparameter** `domain`: Muss dem Muster (RFC-nah, ohne Unterstriche)
+  `^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$`
+  entsprechen. Gültige Beispiele sind `api.example.com` oder `svc-a.local`. Ungültig
+  sind etwa `api__x`, `-foo.` oder `.bar`. Ungültige Werte führen zu
+  `400 invalid domain`.
 * **Header** `X-Auth`: erforderlich, wenn `LEITSTAND_TOKEN` gesetzt ist, sonst optional. Fehlerhafte Werte führen zu `401 unauthorized`.
 * **Request-Body**: UTF-8-kodiertes JSON-Objekt oder -Array. Einzelne Objekte ohne `domain`-Feld erhalten automatisch das Feld `domain` mit dem bereinigten Domainnamen.
 * **Antwort**: `200 ok` als Text bei Erfolg. Bei ungültigem JSON wird `400 invalid json` zurückgegeben.
