@@ -7,6 +7,7 @@ import re
 import secrets
 from pathlib import Path
 from typing import Final
+from werkzeug.utils import secure_filename
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -18,23 +19,13 @@ app = FastAPI(title="leitstand-ingest")
 DATA: Final[Path] = Path(os.environ.get("LEITSTAND_DATA_DIR", "data")).resolve()
 DATA.mkdir(parents=True, exist_ok=True)
 
-# -----------------------------------------------------------------------------
-# Authentifizierungs-Token
-# -----------------------------------------------------------------------------
-# Standardfall: Token ist Pflicht. Nur wenn explizit der Entwicklungsmodus
-# aktiv ist (LEITSTAND_DEV=1), darf das Secret fehlen oder leer sein.
-#
-# Vorteil: verhindert versehentlich ungeschützte Deployments, während lokale
-# Tests oder Codespaces weiterhin ohne Token laufen können.
-# -----------------------------------------------------------------------------
+VERSION: Final[str] = os.environ.get("LEITSTAND_VERSION", "dev")
 
-SECRET: Final[str | None] = os.environ.get("LEITSTAND_TOKEN")
-DEV_MODE: Final[bool] = os.environ.get("LEITSTAND_DEV") == "1"
+SECRET_ENV = os.environ.get("LEITSTAND_TOKEN")
+if not SECRET_ENV:
+    raise RuntimeError("LEITSTAND_TOKEN not set. Auth is required for all requests.")
 
-if not SECRET and not DEV_MODE:
-    raise RuntimeError(
-        "LEITSTAND_TOKEN not set. For development without auth, export LEITSTAND_DEV=1."
-    )
+SECRET: Final[str] = SECRET_ENV
 
 # RFC-nahe FQDN-Validierung: labels 1..63, a-z0-9 und '-' (kein '_' ), gesamt ≤ 253
 _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
@@ -58,22 +49,38 @@ def _is_under(path: Path, base: Path) -> bool:
         return os.path.commonpath([str(path), str(base)]) == str(base)
 
 
-def _filename_from_domain(domain: str) -> str:
-    """Deterministischer, dateisystem-sicherer Name (kein User-Input im Pfad)."""
-    digest = hashlib.sha256(domain.encode("utf-8")).hexdigest()
-    return f"{digest[:32]}.jsonl"
+_FNAME_MAX: Final[int] = 255  # typische FS-Grenze (ext4 etc.)
+
+
+def _target_filename(domain: str) -> str:
+    """
+    Liefert einen deterministischen, dateisystem-sicheren Dateinamen für die Domain.
+    Falls die Domain + '.jsonl' länger als das FS-Limit ist, nehmen wir eine
+    trunkierte Variante plus 8-stelligem SHA-256-Suffix.
+    """
+
+    base = domain
+    ext = ".jsonl"
+    # Reserve 1–2 Zeichen Sicherheit wegen Encoding/FS
+    if len(base) + len(ext) > (_FNAME_MAX - 1):
+        h = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:8]
+        # so viel wie möglich behalten, dann '-{hash}'
+        keep = max(16, (_FNAME_MAX - len(ext) - 1 - len(h)))  # 1 für '-'
+        base = f"{domain[:keep]}-{h}"
+    filename = f"{base}{ext}"
+    # Sanitize filename to avoid any unwanted characters or traversal
+    return secure_filename(filename)
 
 
 def _safe_target_path(domain: str) -> Path:
-    name = _filename_from_domain(domain)
-    candidate = (DATA / name).resolve()
+    candidate = (DATA / _target_filename(domain)).resolve()
     if not _is_under(candidate, DATA):
         raise HTTPException(status_code=400, detail="invalid path")
     return candidate
 
 
 def _require_auth(x_auth: str) -> None:
-    if SECRET and not secrets.compare_digest(x_auth, SECRET):
+    if not x_auth or not secrets.compare_digest(x_auth, SECRET):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -121,3 +128,15 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
                 fh.write("\n")
 
     return PlainTextResponse("ok", status_code=200)
+
+
+@app.get("/health")
+async def health(x_auth: str = Header(default="")) -> dict[str, str]:
+    _require_auth(x_auth)
+    return {"status": "ok"}
+
+
+@app.get("/version")
+async def version(x_auth: str = Header(default="")) -> dict[str, str]:
+    _require_auth(x_auth)
+    return {"version": VERSION}

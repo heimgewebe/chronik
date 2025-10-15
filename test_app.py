@@ -1,12 +1,14 @@
 import json
 import os
+import string
 from pathlib import Path
 
-os.environ.setdefault("LEITSTAND_DEV", "1")
+os.environ.setdefault("LEITSTAND_TOKEN", "test-secret")
 
 import pytest
 from fastapi.testclient import TestClient
 
+import app as app_module
 from app import _sanitize_domain, app
 
 client = TestClient(app)
@@ -33,12 +35,6 @@ def test_ingest_auth_missing(monkeypatch):
     monkeypatch.setattr("app.SECRET", "secret")
     response = client.post("/ingest/example.com", json={"data": "value"})
     assert response.status_code == 401
-
-
-def test_ingest_no_auth(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "")
-    response = client.post("/ingest/example.com", json={"data": "value"})
-    assert response.status_code == 200
 
 
 def test_sanitize_domain_ok():
@@ -138,3 +134,41 @@ def test_ingest_no_content_length(monkeypatch):
     response = client.send(request)
     assert response.status_code == 411
     assert "length required" in response.text
+
+
+def test_health_endpoint(monkeypatch):
+    monkeypatch.setattr("app.SECRET", "secret")
+    response = client.get("/health", headers={"X-Auth": "secret"})
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_version_endpoint(monkeypatch):
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.VERSION", "1.2.3")
+    response = client.get("/version", headers={"X-Auth": "secret"})
+    assert response.status_code == 200
+    assert response.json() == {"version": "1.2.3"}
+
+
+def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
+    long_label = "a" * 63
+    domain = ".".join([long_label, long_label, long_label, "b" * 61])
+    assert len(domain) == 253
+
+    filename = app_module._target_filename(domain)
+    assert filename.endswith(".jsonl")
+    assert len(filename) <= 255
+
+    prefix, hash_part_with_ext = filename.rsplit("-", 1)
+    hash_part, ext = hash_part_with_ext.split(".")
+    assert ext == "jsonl"
+    assert len(hash_part) == 8
+    assert all(ch in string.hexdigits for ch in hash_part)
+    assert prefix.startswith(domain[:16])
+    assert app_module._target_filename(domain) == filename
+
+    monkeypatch.setattr("app.DATA", tmp_path)
+    resolved = app_module._safe_target_path(domain)
+    assert resolved.name == filename
+    assert resolved.parent == tmp_path
