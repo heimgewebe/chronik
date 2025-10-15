@@ -7,6 +7,7 @@ import re
 import secrets
 from pathlib import Path
 from typing import Final
+from werkzeug.utils import secure_filename
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -66,7 +67,9 @@ def _target_filename(domain: str) -> str:
         # so viel wie möglich behalten, dann '-{hash}'
         keep = max(16, (_FNAME_MAX - len(ext) - 1 - len(h)))  # 1 für '-'
         base = f"{domain[:keep]}-{h}"
-    return f"{base}{ext}"
+    filename = f"{base}{ext}"
+    # Sanitize filename to avoid any unwanted characters or traversal
+    return secure_filename(filename)
 
 
 def _safe_target_path(domain: str) -> Path:
