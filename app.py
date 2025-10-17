@@ -96,6 +96,8 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
         cl = int(cl_raw)
     except (ValueError, TypeError):  # defensive
         raise HTTPException(status_code=400, detail="invalid content-length")
+    if cl < 0:
+        raise HTTPException(status_code=400, detail="invalid content-length")
     if cl > 1024 * 1024:
         raise HTTPException(status_code=413, detail="payload too large")
 
