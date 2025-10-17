@@ -136,6 +136,17 @@ def test_ingest_no_content_length(monkeypatch):
     assert "length required" in response.text
 
 
+def test_ingest_negative_content_length(monkeypatch):
+    monkeypatch.setattr("app.SECRET", "secret")
+    response = client.post(
+        "/ingest/example.com",
+        headers={"X-Auth": "secret", "Content-Length": "-1"},
+        json={"data": "value"},
+    )
+    assert response.status_code == 400
+    assert "invalid content-length" in response.text
+
+
 def test_health_endpoint(monkeypatch):
     monkeypatch.setattr("app.SECRET", "secret")
     response = client.get("/health", headers={"X-Auth": "secret"})
