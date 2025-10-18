@@ -7,7 +7,6 @@ import re
 import secrets
 from pathlib import Path
 from typing import Final
-from werkzeug.utils import secure_filename
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -51,6 +50,18 @@ def _is_under(path: Path, base: Path) -> bool:
 
 _FNAME_MAX: Final[int] = 255  # typische FS-Grenze (ext4 etc.)
 
+# Zusätzliche Zeichen, die wir aus Sicherheitsgründen entfernen (neben / und \0)
+_UNSAFE_FILENAME_CHARS: Final[re.Pattern[str]] = re.compile(r'[][<>:"|?*]')
+
+
+def _secure_filename(name: str) -> str:
+    """
+    Vereinfachte, aber ausreichende Bereinigung. Entfernt unsichere Zeichen.
+    Verhindert Directory Traversal ('..').
+    """
+    name = name.replace("..", ".")
+    return _UNSAFE_FILENAME_CHARS.sub("", name)
+
 
 def _target_filename(domain: str) -> str:
     """
@@ -69,7 +80,7 @@ def _target_filename(domain: str) -> str:
         base = f"{domain[:keep]}-{h}"
     filename = f"{base}{ext}"
     # Sanitize filename to avoid any unwanted characters or traversal
-    return secure_filename(filename)
+    return _secure_filename(filename)
 
 
 def _safe_target_path(domain: str) -> Path:
