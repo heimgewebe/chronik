@@ -121,6 +121,35 @@ def test_ingest_invalid_payload_not_dict(monkeypatch):
     assert "invalid payload" in response.text
 
 
+def test_ingest_domain_mismatch(monkeypatch):
+    monkeypatch.setattr("app.SECRET", "secret")
+    response = client.post(
+        "/ingest/example.com",
+        headers={"X-Auth": "secret"},
+        json={"domain": "other.example", "data": "value"},
+    )
+    assert response.status_code == 400
+    assert "domain mismatch" in response.text
+
+
+def test_ingest_domain_normalized(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+
+    payload = {"domain": "Example.COM", "data": "value"}
+    response = client.post(
+        "/ingest/example.com", headers={"X-Auth": "secret"}, json=payload
+    )
+
+    assert response.status_code == 200
+
+    target_file = next(tmp_path.glob("*.jsonl"))
+    with open(target_file, "r", encoding="utf-8") as fh:
+        stored = json.loads(fh.readline())
+    assert stored["domain"] == "example.com"
+    assert stored["data"] == "value"
+
+
 def test_ingest_no_content_length(monkeypatch):
     monkeypatch.setattr("app.SECRET", "secret")
     request = client.build_request(

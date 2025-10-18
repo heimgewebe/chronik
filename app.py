@@ -117,9 +117,20 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
     for entry in items:
         if not isinstance(entry, dict):
             raise HTTPException(status_code=400, detail="invalid payload")
-        if "domain" not in entry:
-            entry = {**entry, "domain": dom}
-        lines.append(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+
+        normalized = dict(entry)
+
+        if "domain" in normalized:
+            entry_domain = normalized["domain"]
+            if not isinstance(entry_domain, str):
+                raise HTTPException(status_code=400, detail="invalid payload")
+
+            sanitized_entry_domain = _sanitize_domain(entry_domain)
+            if sanitized_entry_domain != dom:
+                raise HTTPException(status_code=400, detail="domain mismatch")
+
+        normalized["domain"] = dom
+        lines.append(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
 
     # Atomar via FileLock anhängen (eine Zeile pro Item)
     lock_path = target_path.with_suffix(target_path.suffix + ".lock")
