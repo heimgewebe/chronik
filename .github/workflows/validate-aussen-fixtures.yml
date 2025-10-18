@@ -1,0 +1,20 @@
+name: validate (aussen in leitstand)
+on: [push, pull_request, workflow_dispatch]
+jobs:
+  fixtures:
+    name: fixtures (tests/fixtures/aussen.jsonl)
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
+    with:
+      jsonl_path: tests/fixtures/aussen.jsonl
+      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/aussen.event.schema.json
+      strict: false
+      validate_formats: true
+
+  demo:
+    name: demo (demo/aussen.jsonl)
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
+    with:
+      jsonl_path: demo/aussen.jsonl
+      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/aussen.event.schema.json
+      strict: false
+      validate_formats: true
