@@ -1,2 +1,3 @@
+# Ingested data and locks
 *.jsonl
 *.lock
