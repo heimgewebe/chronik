@@ -11,7 +11,7 @@ from typing import Final
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from filelock import FileLock
-
+from werkzeug.utils import secure_filename
 app = FastAPI(title="leitstand-ingest")
 
 # Datenverzeichnis resolven und anlegen
@@ -56,12 +56,15 @@ _UNSAFE_FILENAME_CHARS: Final[re.Pattern[str]] = re.compile(r'[][<>:"|?*]')
 
 def _secure_filename(name: str) -> str:
     """
-    Vereinfachte, aber ausreichende Bereinigung. Entfernt unsichere Zeichen.
-    Verhindert Directory Traversal ('..').
+    Sichere Umwandlung eines Dateinamens mit werkzeug.utils.secure_filename.
+    Entfernt unsichere Zeichen und verhindert Directory Traversal.
     """
+    # Prevent any traversal: collapse '..', and then use werkzeug secure_filename
     name = name.replace("..", ".")
-    return _UNSAFE_FILENAME_CHARS.sub("", name)
-
+    name = secure_filename(name)
+    if not name:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    return name
 
 def _target_filename(domain: str) -> str:
     """
