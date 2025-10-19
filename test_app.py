@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 import app as app_module
 from app import _sanitize_domain, app
+import storage
 
 client = TestClient(app)
 
@@ -196,7 +197,8 @@ def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
     domain = ".".join([long_label, long_label, long_label, "b" * 61])
     assert len(domain) == 253
 
-    filename = app_module._target_filename(domain)
+    dom = _sanitize_domain(domain)
+    filename = storage.target_filename(dom)
     assert filename.endswith(".jsonl")
     assert len(filename) <= 255
 
@@ -206,7 +208,7 @@ def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
     assert len(hash_part) == 8
     assert all(ch in string.hexdigits for ch in hash_part)
     assert prefix.startswith(domain[:16])
-    assert app_module._target_filename(domain) == filename
+    assert storage.target_filename(dom) == filename
 
     monkeypatch.setattr("app.DATA", tmp_path)
     resolved = app_module._safe_target_path(domain)
