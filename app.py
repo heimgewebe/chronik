@@ -5,7 +5,7 @@ import os
 import secrets
 from typing import TYPE_CHECKING, Final
 
-from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from filelock import FileLock
 
@@ -47,10 +47,7 @@ def _require_auth(x_auth: str) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
-@app.post("/ingest/{domain}")
-async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
-    _require_auth(x_auth)
-
+async def _validate_body_size(req: Request) -> None:
     # Kleines Größenlimit (1 MiB) + valide Content-Length
     cl_raw = req.headers.get("content-length")
     if not cl_raw:
@@ -63,6 +60,16 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
         raise HTTPException(status_code=400, detail="invalid content-length")
     if cl > 1024 * 1024:
         raise HTTPException(status_code=413, detail="payload too large")
+
+
+@app.post("/ingest/{domain}")
+async def ingest(
+    domain: str,
+    req: Request,
+    x_auth: str = Header(default=""),
+    _size_ok: None = Depends(_validate_body_size),
+):
+    _require_auth(x_auth)
 
     dom = _sanitize_domain(domain)
     target_path = _safe_target_path(dom, already_sanitized=True)
