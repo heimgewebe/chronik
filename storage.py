@@ -81,7 +81,8 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
 
     base = DATA_DIR if data_dir is None else data_dir.resolve()
     candidate = (base / target_filename(domain)).resolve()
-    if not _is_under(candidate, base):
+    # Ensure the resolved path is *strictly* inside the data dir, not merely equal.
+    if not _is_under(candidate, base) or candidate == base:
         raise DomainError(domain)
     return candidate
 
