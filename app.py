@@ -131,7 +131,11 @@ async def ingest(
     fname = target_path.name
     lock_path = target_path.parent / (fname + ".lock")
     with FileLock(str(lock_path)):
-        dirfd = os.open(str(target_path.parent), os.O_RDONLY)
+        # Defense-in-depth: always use trusted DATA_DIR for dirfd
+        if target_path.parent != DATA_DIR:
+            # Should never occur; signals a logic or helper bug
+            raise HTTPException(status_code=400, detail="invalid target path: wrong parent directory")
+        dirfd = os.open(str(DATA_DIR), os.O_RDONLY)
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
             nofollow = getattr(os, "O_NOFOLLOW", 0)
