@@ -1,22 +1,25 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
-import re
 import secrets
-from pathlib import Path
 from typing import Final
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from filelock import FileLock
 
+from storage import (
+    DATA_DIR,
+    DomainError,
+    safe_target_path,
+    sanitize_domain,
+    target_filename,
+)
+
 app = FastAPI(title="leitstand-ingest")
 
-# Datenverzeichnis resolven und anlegen
-DATA: Final[Path] = Path(os.environ.get("LEITSTAND_DATA_DIR", "data")).resolve()
-DATA.mkdir(parents=True, exist_ok=True)
+DATA = DATA_DIR
 
 VERSION: Final[str] = os.environ.get("LEITSTAND_VERSION", "dev")
 
@@ -26,73 +29,29 @@ if not SECRET_ENV:
 
 SECRET: Final[str] = SECRET_ENV
 
-# RFC-nahe FQDN-Validierung: labels 1..63, a-z0-9 und '-' (kein '_' ), gesamt ≤ 253
-_DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
-    r"^(?=.{1,253}$)"
-    r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
-    r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
-)
-
-
-def _sanitize_domain(domain: str) -> str:
-    d = (domain or "").strip().lower()
-    if not _DOMAIN_RE.fullmatch(d):
-        raise HTTPException(status_code=400, detail="invalid domain")
-    return d
-
-
-def _is_under(path: Path, base: Path) -> bool:
-    try:
-        return path.is_relative_to(base)  # Py 3.9+
-    except AttributeError:
-        return os.path.commonpath([str(path), str(base)]) == str(base)
-
-
-_FNAME_MAX: Final[int] = 255  # typische FS-Grenze (ext4 etc.)
-
-# Zusätzliche Zeichen, die wir aus Sicherheitsgründen entfernen (neben / und \0)
-_UNSAFE_FILENAME_CHARS: Final[re.Pattern[str]] = re.compile(r'[][<>:"|?*]')
-
-
-def _secure_filename(name: str) -> str:
-    """
-    Vereinfachte, aber ausreichende Bereinigung. Entfernt unsichere Zeichen.
-    Verhindert Directory Traversal ('..').
-    """
-    name = name.replace("..", ".")
-    return _UNSAFE_FILENAME_CHARS.sub("", name)
-
-
-def _target_filename(domain: str) -> str:
-    """
-    Liefert einen deterministischen, dateisystem-sicheren Dateinamen für die Domain.
-    Falls die Domain + '.jsonl' länger als das FS-Limit ist, nehmen wir eine
-    trunkierte Variante plus 8-stelligem SHA-256-Suffix.
-    """
-
-    base = domain
-    ext = ".jsonl"
-    # Reserve 1–2 Zeichen Sicherheit wegen Encoding/FS
-    if len(base) + len(ext) > (_FNAME_MAX - 1):
-        h = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:8]
-        # so viel wie möglich behalten, dann '-{hash}'
-        keep = max(16, (_FNAME_MAX - len(ext) - 1 - len(h)))  # 1 für '-'
-        base = f"{domain[:keep]}-{h}"
-    filename = f"{base}{ext}"
-    # Sanitize filename to avoid any unwanted characters or traversal
-    return _secure_filename(filename)
-
-
-def _safe_target_path(domain: str) -> Path:
-    candidate = (DATA / _target_filename(domain)).resolve()
-    if not _is_under(candidate, DATA):
-        raise HTTPException(status_code=400, detail="invalid path")
-    return candidate
-
-
 def _require_auth(x_auth: str) -> None:
     if not x_auth or not secrets.compare_digest(x_auth, SECRET):
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def _sanitize_domain(domain: str) -> str:
+    try:
+        return sanitize_domain(domain)
+    except DomainError as exc:
+        raise HTTPException(status_code=400, detail="invalid domain") from exc
+
+
+def _target_filename(domain: str) -> str:
+    dom = _sanitize_domain(domain)
+    return target_filename(dom)
+
+
+def _safe_target_path(domain: str, *, already_sanitized: bool = False):
+    dom = domain if already_sanitized else _sanitize_domain(domain)
+    try:
+        return safe_target_path(dom, data_dir=DATA)
+    except DomainError as exc:
+        raise HTTPException(status_code=400, detail="invalid domain") from exc
 
 
 @app.post("/ingest/{domain}")
@@ -113,7 +72,7 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
         raise HTTPException(status_code=413, detail="payload too large")
 
     dom = _sanitize_domain(domain)
-    target_path = _safe_target_path(dom)
+    target_path = _safe_target_path(dom, already_sanitized=True)
 
     # JSON parsen
     try:
@@ -136,7 +95,10 @@ async def ingest(domain: str, req: Request, x_auth: str = Header(default="")):
             if not isinstance(entry_domain, str):
                 raise HTTPException(status_code=400, detail="invalid payload")
 
-            sanitized_entry_domain = _sanitize_domain(entry_domain)
+            try:
+                sanitized_entry_domain = sanitize_domain(entry_domain)
+            except DomainError as exc:
+                raise HTTPException(status_code=400, detail="invalid payload") from exc
             if sanitized_entry_domain != dom:
                 raise HTTPException(status_code=400, detail="domain mismatch")
 

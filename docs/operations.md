@@ -8,7 +8,7 @@ Dieses Dokument fasst die wichtigsten Betriebs- und Wartungsaufgaben für den Le
 uvicorn app:app --host 0.0.0.0 --port 8788
 ```
 * Vor dem Start sicherstellen, dass `LEITSTAND_DATA_DIR` beschreibbar ist.
-* Optionale Secrets (`LEITSTAND_TOKEN`) per Secret-Store oder Deployment-Tool setzen.
+* `LEITSTAND_TOKEN` muss gesetzt sein (ohne Token startet der Dienst nicht).
 
 ### Stoppen
 * Uvicorn-Prozess kontrolliert beenden (z. B. per `Ctrl+C`, `systemctl stop`, Kubernetes Rollout etc.).
@@ -32,7 +32,7 @@ uvicorn app:app --host 0.0.0.0 --port 8788
 | Symptom                        | Maßnahme |
 |--------------------------------|----------|
 | `401 unauthorized`             | Token-Header prüfen, Abgleich mit `LEITSTAND_TOKEN`. |
-| `400 invalid domain`           | Domain-Format prüfen. Nur Kleinbuchstaben, Ziffern, `_` und `-` erlaubt. |
+| `400 invalid domain`           | Domain-Format prüfen. Nur Kleinbuchstaben, Ziffern und `-` erlaubt. |
 | `400 invalid json`             | Payload auf gültiges JSON prüfen. Sonderzeichen ggf. escapen. |
 | Keine neuen Dateien unter `data`| Schreibrechte des Prozesses und Pfadkonfiguration kontrollieren. |
 | Dienst startet nicht           | Fehlermeldungen im Uvicorn-Log auswerten, Python-Abhängigkeiten prüfen. |

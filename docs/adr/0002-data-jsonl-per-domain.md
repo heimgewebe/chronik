@@ -1,4 +1,4 @@
-# ADR-0002: Per-Domain JSONL in `data/` + optional Token
+# ADR-0002: Per-Domain JSONL in `data/` + verpflichtendes Token
 Status: Accepted
 Date: 2025-10-12
 
@@ -7,7 +7,7 @@ Einfacher Speicher für eingehende Events.
 
 ## Entscheidung
 - Append-only `data/{domain}.jsonl`
-- Optionaler Header `x-auth` mit `LEITSTAND_TOKEN`
+- Header `x-auth` ist verpflichtend und muss mit `LEITSTAND_TOKEN` übereinstimmen
 
 ## Konsequenzen
 - Einfach zu debuggen; Logs git-ignorieren.
