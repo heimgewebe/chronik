@@ -45,10 +45,10 @@ def _is_under(path: Path, base: Path) -> bool:
     try:
         return path.is_relative_to(base)  # Py 3.9+
     except AttributeError:
-        # Ensure both paths are absolute and normalized before comparison
-        path_resolved = Path(path).resolve()
-        base_resolved = Path(base).resolve()
-        return os.path.commonpath([str(path_resolved), str(base_resolved)]) == str(base_resolved)
+        # Ensure both paths are absolute and normalized before comparison (no Path constructor on tainted input)
+        path_abs = os.path.abspath(str(path))
+        base_abs = os.path.abspath(str(base))
+        return os.path.commonpath([path_abs, base_abs]) == base_abs
 
 
 _FNAME_MAX: Final[int] = 255  # typische FS-Grenze (ext4 etc.)
