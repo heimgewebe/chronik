@@ -6,10 +6,11 @@ from pathlib import Path
 os.environ.setdefault("LEITSTAND_TOKEN", "test-secret")
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app as app_module
-from app import _sanitize_domain, app
+from app import _safe_target_path, _sanitize_domain, app
 import storage
 
 client = TestClient(app)
@@ -48,6 +49,14 @@ def test_sanitize_domain_bad():
         _sanitize_domain("example_com")
     with pytest.raises(Exception):
         _sanitize_domain("example.com_")
+
+
+def test_safe_target_path_rejects_traversal(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("app.DATA", tmp_path)
+    with pytest.raises(HTTPException) as excinfo:
+        _safe_target_path("../../etc/passwd", already_sanitized=True)
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == "invalid domain"
 
 
 def test_ingest_single_object(monkeypatch, tmp_path: Path):
@@ -164,6 +173,21 @@ def test_ingest_no_content_length(monkeypatch):
     response = client.send(request)
     assert response.status_code == 411
     assert "length required" in response.text
+
+
+def test_ingest_no_content_length_unauthorized(monkeypatch):
+    """Missing auth should fail before we validate content length."""
+    monkeypatch.setattr("app.SECRET", "secret")
+    request = client.build_request(
+        "POST",
+        "/ingest/example.com",
+        headers={"Content-Type": "application/json"},
+        content='{"data": "value"}',
+    )
+    del request.headers["Content-Length"]
+    response = client.send(request)
+    assert response.status_code == 401
+    assert "unauthorized" in response.text
 
 
 def test_ingest_negative_content_length(monkeypatch):
