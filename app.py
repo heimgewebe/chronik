@@ -47,8 +47,19 @@ def _require_auth(x_auth: str) -> None:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
-async def _validate_body_size(req: Request) -> None:
-    # Kleines Größenlimit (1 MiB) + valide Content-Length
+def _require_auth_dep(x_auth: str = Header(default="")) -> None:
+    """
+    FastAPI dependency that enforces authentication.
+    Using a dedicated dep allows us to control execution order at the route decorator.
+    """
+    _require_auth(x_auth)
+
+
+def _validate_body_size(req: Request) -> None:
+    """
+    Validate Content-Length before reading the body. Limited to 1 MiB.
+    Must run *after* auth to avoid leaking details to unauthenticated callers.
+    """
     cl_raw = req.headers.get("content-length")
     if not cl_raw:
         raise HTTPException(status_code=411, detail="length required")
@@ -62,14 +73,15 @@ async def _validate_body_size(req: Request) -> None:
         raise HTTPException(status_code=413, detail="payload too large")
 
 
-@app.post("/ingest/{domain}")
+@app.post(
+    "/ingest/{domain}",
+    # Dependency order matters: auth FIRST, then size check.
+    dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
+)
 async def ingest(
     domain: str,
     req: Request,
-    x_auth: str = Header(default=""),
-    _size_ok: None = Depends(_validate_body_size),
 ):
-    _require_auth(x_auth)
 
     dom = _sanitize_domain(domain)
     target_path = _safe_target_path(dom, already_sanitized=True)
