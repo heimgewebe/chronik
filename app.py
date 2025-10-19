@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import secrets
 from typing import TYPE_CHECKING, Final
 
@@ -9,7 +10,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from filelock import FileLock
 
-from storage import DATA_DIR, DomainError, safe_target_path, sanitize_domain
+from storage import (
+    DATA_DIR,
+    DomainError,
+    safe_target_path,
+    sanitize_domain,
+    target_filename,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -118,12 +125,38 @@ async def ingest(
         lines.append(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
 
     # Atomar via FileLock anhängen (eine Zeile pro Item)
-    lock_path = target_path.with_suffix(target_path.suffix + ".lock")
-    with FileLock(lock_path):
-        with target_path.open("a", encoding="utf-8") as fh:
-            for line in lines:
-                fh.write(line)
-                fh.write("\n")
+    # CodeQL: Pfad nicht direkt aus Nutzereingabe verwenden – stattdessen
+    # nur relativ zum vertrauenswürdigen DATA-Dir arbeiten (dirfd + Symlink-Block).
+    fname = target_filename(dom)  # bereits sanitizt, keine Separatoren
+    lock_path = (DATA / (fname + ".lock"))
+    with FileLock(str(lock_path)):
+        dirfd = os.open(str(DATA), os.O_RDONLY)
+        try:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+            nofollow = getattr(os, "O_NOFOLLOW", 0)
+            if nofollow:
+                flags |= nofollow
+            else:
+                try:
+                    st = os.lstat(fname, dir_fd=dirfd)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if stat.S_ISLNK(st.st_mode):
+                        raise HTTPException(status_code=400, detail="invalid target")
+
+            fd = os.open(
+                fname,
+                flags,
+                0o600,
+                dir_fd=dirfd,
+            )  # codeql[py/uncontrolled-data-in-path-expression]: fname ist sanitizt, Basis ist trusted
+            with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                for line in lines:
+                    fh.write(line)
+                    fh.write("\n")
+        finally:
+            os.close(dirfd)
 
     return PlainTextResponse("ok", status_code=200)
 
