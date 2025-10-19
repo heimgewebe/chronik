@@ -1,4 +1,6 @@
 name: validate-leitstand-fixtures
+permissions:
+  contents: read
 
 on:
   push:
