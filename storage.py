@@ -81,19 +81,14 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     The filename is fully sanitized; we additionally assert no path separators pass through.
     """
 
-    base = (DATA_DIR if data_dir is None else data_dir).resolve()
+    base = (DATA_DIR if data_dir is None else data_dir).resolve(strict=True)
     fname = target_filename(domain)
     # Extra defense: enforce no separators after sanitizing (helps static analyzers)
     if "/" in fname or "\\" in fname:
         raise DomainError(domain)
     # Join with trusted base. CodeQL: fname is sanitized and checked above.
     candidate = base / fname  # codeql[py/uncontrolled-data-in-path-expression]
-    # Canonicalize without following non-existent leaf
-    try:
-        resolved = candidate.resolve(strict=True)
-    except FileNotFoundError:
-        # Resolve base, append fname again (avoids false positives and symlink tricks)
-        resolved = base / fname
-    if not _is_under(resolved, base):
+    # Containment check using canonical base directory
+    if not _is_under(candidate, base):
         raise DomainError(domain)
-    return resolved
+    return candidate
