@@ -127,10 +127,11 @@ async def ingest(
     # Atomar via FileLock anhängen (eine Zeile pro Item)
     # CodeQL: Pfad nicht direkt aus Nutzereingabe verwenden – stattdessen
     # nur relativ zum vertrauenswürdigen DATA-Dir arbeiten (dirfd + Symlink-Block).
-    fname = target_filename(dom)  # bereits sanitizt, keine Separatoren
-    lock_path = (DATA / (fname + ".lock"))
+    # Use canonical and sanitized path components from target_path
+    fname = target_path.name
+    lock_path = target_path.parent / (fname + ".lock")
     with FileLock(str(lock_path)):
-        dirfd = os.open(str(DATA), os.O_RDONLY)
+        dirfd = os.open(str(target_path.parent), os.O_RDONLY)
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
             nofollow = getattr(os, "O_NOFOLLOW", 0)
@@ -150,7 +151,7 @@ async def ingest(
                 flags,
                 0o600,
                 dir_fd=dirfd,
-            )  # codeql[py/uncontrolled-data-in-path-expression]: fname ist sanitizt, Basis ist trusted
+            )
             with os.fdopen(fd, "a", encoding="utf-8") as fh:
                 for line in lines:
                     fh.write(line)
