@@ -62,15 +62,16 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 | `LEITSTAND_TOKEN`      |  ja     | ``       | Shared-Secret. Jeder Request muss den Header `X-Auth` mit exakt diesem Wert enthalten. |
 | `LEITSTAND_DATA_DIR`   | nein    | `data`   | Zielverzeichnis für die pro Domain erzeugten JSONL-Dateien. Wird beim Start erstellt, falls nicht vorhanden. |
 
-## API
+## API & Contracts
+Siehe auch: docs/event-contracts.md und docs/cli-curl.md.
 ### `POST /ingest/{domain}`
-* **Pfadparameter** `domain`: Muss dem Muster (RFC-nah, ohne Unterstriche)
-  `^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$`
-  entsprechen. Gültige Beispiele sind `api.example.com` oder `svc-a.local`. Ungültig
-  sind etwa `api__x`, `-foo.` oder `.bar`. Ungültige Werte führen zu
-  `400 invalid domain`.
+* **Pfadparameter** `domain`: Muss klassischen, RFC-nahen FQDN-Regeln folgen (siehe auch `docs/api.md`).
+  Gültige Beispiele sind `api.example.com` oder `svc-a.local`. Ungültig sind etwa `api__x`,
+  `-foo.` oder `.bar`. Ungültige Werte führen zu `400 invalid domain`.
 * **Header** `X-Auth`: muss immer exakt dem Wert von `LEITSTAND_TOKEN` entsprechen, sonst folgt `401 unauthorized`.
-* **Request-Body**: UTF-8-kodiertes JSON-Objekt oder -Array. Einzelne Objekte ohne `domain`-Feld erhalten automatisch das Feld `domain` mit dem bereinigten Domainnamen.
+* **Request-Body**: UTF-8-kodiertes JSON-Objekt oder -Array (max. 1 MiB). Einzelne Objekte ohne `domain`-Feld erhalten automatisch das Feld `domain`
+  mit dem bereinigten Domainnamen. Fehlt der Header `Content-Length`, wird `411 length required` zurückgegeben; bei zu großen Payloads
+  folgt `413 payload too large` (weitere Hinweise siehe `docs/api.md`).
 * **Antwort**: `200 ok` als Text bei Erfolg. Bei ungültigem JSON wird `400 invalid json` zurückgegeben.
 
 ### Beispiel
