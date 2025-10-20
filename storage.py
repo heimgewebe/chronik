@@ -86,10 +86,10 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     # Extra defense: enforce no separators after sanitizing (helps static analyzers)
     if "/" in fname or "\\" in fname:
         raise DomainError(domain)
-    # Join with trusted base. CodeQL: fname is sanitized and checked above.
-    candidate = (base / fname).resolve(strict=False)  # canonicalize before check
+    # Solution: normalize joined path before containment check
+    candidate = (base / fname).resolve(strict=True)  # canonicalize with strict=True
     base_resolved = base  # already resolved above
-    # Containment check using canonical base directory
+    # Containment check using canonical base directory and normalized paths
     if not _is_under(candidate, base_resolved):
         raise DomainError(domain)
     return candidate
