@@ -137,7 +137,7 @@ async def ingest(
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,240}\.jsonl", fname):
         raise HTTPException(status_code=400, detail="invalid target")
     # Extra normalization/containment check before file access
-    access_path = (DATA / fname).resolve(strict=False)
+    access_path = target_path.resolve(strict=False)
     data_dir_resolved = DATA.resolve(strict=True)
     if not _is_under(access_path, data_dir_resolved):
         raise HTTPException(status_code=400, detail="invalid target path: path escape detected")
