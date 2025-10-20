@@ -87,8 +87,9 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     if "/" in fname or "\\" in fname:
         raise DomainError(domain)
     # Join with trusted base. CodeQL: fname is sanitized and checked above.
-    candidate = base / fname  # codeql[py/uncontrolled-data-in-path-expression]
+    candidate = (base / fname).resolve(strict=False)  # canonicalize before check
+    base_resolved = base  # already resolved above
     # Containment check using canonical base directory
-    if not _is_under(candidate, base):
+    if not _is_under(candidate, base_resolved):
         raise DomainError(domain)
     return candidate
