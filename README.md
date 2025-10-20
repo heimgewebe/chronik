@@ -65,33 +65,9 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 ## API & Contracts
 Weitere Beispiele und Details finden sich in der begleitenden Dokumentation:
 
+* [docs/api.md](docs/api.md) – Ausführliche API-Dokumentation.
 * [docs/cli-curl.md](docs/cli-curl.md) – Curl-Beispiele für Health-, Version- und Ingest-Aufrufe.
 * [docs/event-contracts.md](docs/event-contracts.md) – Beschreibung des JSONL-Speicherlayouts und referenziertes Schema.
-### `POST /ingest/{domain}`
-* **Pfadparameter** `domain`: Muss klassischen, RFC-nahen FQDN-Regeln folgen (siehe auch `docs/api.md`).
-  Gültige Beispiele sind `api.example.com` oder `svc-a.local`. Ungültig sind etwa `api__x`,
-  `-foo.` oder `.bar`. Ungültige Werte führen zu `400 invalid domain`.
-* **Header** `X-Auth`: muss immer exakt dem Wert von `LEITSTAND_TOKEN` entsprechen, sonst folgt `401 unauthorized`.
-* **Request-Body**: UTF-8-kodiertes JSON-Objekt oder -Array (max. 1 MiB). Einzelne Objekte ohne `domain`-Feld erhalten automatisch das Feld `domain`
-  mit dem bereinigten Domainnamen. Fehlt der Header `Content-Length`, wird `411 length required` zurückgegeben; bei zu großen Payloads
-  folgt `413 payload too large` (weitere Hinweise siehe [docs/api.md](docs/api.md)).
-* **Antwort**: `200 ok` als Text bei Erfolg. Bei ungültigem JSON wird `400 invalid json` zurückgegeben.
-
-### Beispiel
-```bash
-curl -X POST "http://localhost:8788/ingest/example.com" \
-     -H "Content-Type: application/json" \
-     -H "X-Auth: ${LEITSTAND_TOKEN}" \
-     -d '{"event": "deploy", "status": "success"}'
-```
-
-### `GET /health`
-* **Header** `X-Auth`: muss ebenfalls dem Wert von `LEITSTAND_TOKEN` entsprechen.
-* **Antwort**: `{ "status": "ok" }`. Kann ohne Request-Body abgefragt werden.
-
-### `GET /version`
-* **Header** `X-Auth`: identisch zu den anderen Endpunkten.
-* **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `LEITSTAND_VERSION`.
 
 ## Datenspeicherung
 * Für jede Domain entsteht eine JSONL-Datei im Verzeichnis `LEITSTAND_DATA_DIR`.

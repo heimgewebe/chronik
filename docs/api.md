@@ -15,7 +15,7 @@ Dieses Dokument beschreibt die HTTP-Schnittstelle des Leitstand-Ingest-Dienstes 
 | Eigenschaft    | Beschreibung |
 |----------------|--------------|
 | Methode        | `POST` |
-| Pfadparameter  | `domain` – wird in Kleinbuchstaben gewandelt und muss klassischen FQDN-Regeln folgen (Labels 1–63 Zeichen, Kleinbuchstaben/Ziffern/Bindestrich, maximal 253 Zeichen gesamt). |
+| Pfadparameter  | `domain` – wird in Kleinbuchstaben umgewandelt und muss den folgenden FQDN-Regeln entsprechen:<ul><li>Gesamtlänge maximal 253 Zeichen.</li><li>Labels (Teile zwischen Punkten) dürfen 1 bis 63 Zeichen lang sein.</li><li>Labels dürfen nur aus Kleinbuchstaben, Ziffern und Bindestrichen (`-`) bestehen.</li><li>Labels dürfen nicht mit einem Bindestrich beginnen oder enden.</li></ul> |
 | Header         | `Content-Type: application/json`; `X-Auth: <token>` (Pflicht). |
 | Request-Body   | Gültiges JSON-Dokument. Einzelne Objekte erhalten automatisch ein Feld `domain`, sofern es fehlt. |
 | Antwort        | `200 OK` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid domain` / `400 invalid json`, fehlende Authentifizierung `401 unauthorized`. |
@@ -32,6 +32,14 @@ curl -X POST "http://localhost:8788/ingest/example.com" \
 http POST :8788/ingest/service.internal event:=\
     "deploy" status:=\"success\" X-Auth:${LEITSTAND_TOKEN}
 ```
+
+### `GET /health`
+* **Header** `X-Auth`: muss ebenfalls dem Wert von `LEITSTAND_TOKEN` entsprechen.
+* **Antwort**: `{ "status": "ok" }`. Kann ohne Request-Body abgefragt werden.
+
+### `GET /version`
+* **Header** `X-Auth`: identisch zu den anderen Endpunkten.
+* **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `LEITSTAND_VERSION`.
 
 #### Fehlerfälle
 | Status | Detail              | Ursache |
