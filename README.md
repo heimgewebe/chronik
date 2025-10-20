@@ -63,7 +63,10 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 | `LEITSTAND_DATA_DIR`   | nein    | `data`   | Zielverzeichnis für die pro Domain erzeugten JSONL-Dateien. Wird beim Start erstellt, falls nicht vorhanden. |
 
 ## API & Contracts
-Siehe auch: docs/event-contracts.md und docs/cli-curl.md.
+Weitere Beispiele und Details finden sich in der begleitenden Dokumentation:
+
+* [docs/cli-curl.md](docs/cli-curl.md) – Curl-Beispiele für Health-, Version- und Ingest-Aufrufe.
+* [docs/event-contracts.md](docs/event-contracts.md) – Beschreibung des JSONL-Speicherlayouts und referenziertes Schema.
 ### `POST /ingest/{domain}`
 * **Pfadparameter** `domain`: Muss klassischen, RFC-nahen FQDN-Regeln folgen (siehe auch `docs/api.md`).
   Gültige Beispiele sind `api.example.com` oder `svc-a.local`. Ungültig sind etwa `api__x`,
@@ -71,7 +74,7 @@ Siehe auch: docs/event-contracts.md und docs/cli-curl.md.
 * **Header** `X-Auth`: muss immer exakt dem Wert von `LEITSTAND_TOKEN` entsprechen, sonst folgt `401 unauthorized`.
 * **Request-Body**: UTF-8-kodiertes JSON-Objekt oder -Array (max. 1 MiB). Einzelne Objekte ohne `domain`-Feld erhalten automatisch das Feld `domain`
   mit dem bereinigten Domainnamen. Fehlt der Header `Content-Length`, wird `411 length required` zurückgegeben; bei zu großen Payloads
-  folgt `413 payload too large` (weitere Hinweise siehe `docs/api.md`).
+  folgt `413 payload too large` (weitere Hinweise siehe [docs/api.md](docs/api.md)).
 * **Antwort**: `200 ok` als Text bei Erfolg. Bei ungültigem JSON wird `400 invalid json` zurückgegeben.
 
 ### Beispiel
