@@ -131,6 +131,9 @@ async def ingest(
     # Use canonical and sanitized path components from target_path
     fname = target_path.name
 
+    # Ensure fname is exactly as expected for sanitized domain
+    if fname != target_filename(dom):
+        raise HTTPException(status_code=400, detail="invalid target")
     if os.path.basename(fname) != fname or ".." in fname:
         raise HTTPException(status_code=400, detail="invalid target")
     if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,240}\.jsonl", fname):
