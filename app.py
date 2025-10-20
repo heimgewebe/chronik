@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import stat
 import secrets
 from typing import TYPE_CHECKING, Final
@@ -129,15 +130,21 @@ async def ingest(
     # nur relativ zum vertrauenswürdigen DATA-Dir arbeiten (dirfd + Symlink-Block).
     # Use canonical and sanitized path components from target_path
     fname = target_path.name
+
+    if os.path.basename(fname) != fname or ".." in fname:
+        raise HTTPException(status_code=400, detail="invalid target")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,240}\.jsonl", fname):
+        raise HTTPException(status_code=400, detail="invalid target")
     lock_path = target_path.parent / (fname + ".lock")
     with FileLock(str(lock_path)):
         # Defense-in-depth: always use trusted DATA_DIR for dirfd
-        if target_path.parent != DATA_DIR:
+        if target_path.parent != DATA:
             # Should never occur; signals a logic or helper bug
             raise HTTPException(status_code=400, detail="invalid target path: wrong parent directory")
-        dirfd = os.open(str(DATA_DIR), os.O_RDONLY)
+        dirfd = os.open(str(DATA), os.O_RDONLY)
         try:
             flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+            flags |= getattr(os, "O_CLOEXEC", 0)
             nofollow = getattr(os, "O_NOFOLLOW", 0)
             if nofollow:
                 flags |= nofollow
@@ -155,7 +162,7 @@ async def ingest(
                 flags,
                 0o600,
                 dir_fd=dirfd,
-            )
+            )  # codeql[py/uncontrolled-data-in-path-expression] fname is whitelisted and basename-only; dir_fd points to trusted DATA_DIR
             with os.fdopen(fd, "a", encoding="utf-8") as fh:
                 for line in lines:
                     fh.write(line)
