@@ -57,8 +57,10 @@ def _is_under(path: Path, base: Path) -> bool:
 def secure_filename(name: str) -> str:
     """Sanitize filenames to avoid traversal or unsupported characters."""
 
-    name = name.replace("..", ".")
-    return _UNSAFE_FILENAME_CHARS.sub("", name)
+    s_name = name
+    while ".." in s_name:
+        s_name = s_name.replace("..", ".")
+    return _UNSAFE_FILENAME_CHARS.sub("", s_name)
 
 
 def target_filename(domain: str) -> str:
