@@ -59,6 +59,13 @@ def test_safe_target_path_rejects_traversal(monkeypatch, tmp_path: Path):
     assert excinfo.value.detail == "invalid domain"
 
 
+def test_secure_filename_rejects_nested_traversal():
+    assert ".." not in storage.secure_filename("....test")
+    assert ".." not in storage.secure_filename("..test")
+    assert ".." not in storage.secure_filename("test..")
+    assert ".." not in storage.secure_filename("...test...")
+
+
 def test_ingest_single_object(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("app.SECRET", "secret")
     monkeypatch.setattr("app.DATA", tmp_path)
