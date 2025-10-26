@@ -61,8 +61,28 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 |------------------------|:-------:|----------|--------------|
 | `LEITSTAND_TOKEN`      |  ja     | ``       | Shared-Secret. Jeder Request muss den Header `X-Auth` mit exakt diesem Wert enthalten. |
 | `LEITSTAND_DATA_DIR`   | nein    | `data`   | Zielverzeichnis für die pro Domain erzeugten JSONL-Dateien. Wird beim Start erstellt, falls nicht vorhanden. |
+| `LEITSTAND_MAX_BODY`   | nein    | `1048576`| Maximale Größe des Request-Bodys in Bytes (Standard 1&nbsp;MiB). |
+| `LEITSTAND_LOCK_TIMEOUT`| nein   | `30`     | Timeout in Sekunden beim Schreiben (FileLock). |
+| `LEITSTAND_RATE_LIMIT` | nein    | `60/minute` | Rate-Limit pro Quell-IP (SlowAPI-Format). |
+| `LOG_LEVEL`            | nein    | `INFO`   | Log-Level (z. B. `DEBUG`, `INFO`, `WARNING`). |
 
 ## API & Contracts
+
+### `GET /version`
+* **Header** `X-Auth`: identisch zu den anderen Endpunkten.
+* **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `LEITSTAND_VERSION`.
+
+### `GET /metrics`
+* **Auth**: Keine. Exponiert Prometheus-Metriken (Request-Latenz, -Zähler etc.).
+
+### Typische Fehlercodes
+* `401 Unauthorized`: Token fehlt oder stimmt nicht.
+* `411 Length Required`: `Content-Length`-Header fehlt.
+* `413 Payload Too Large`: Request-Body überschreitet `LEITSTAND_MAX_BODY`.
+* `429 Too Many Requests`: Rate-Limit aus `LEITSTAND_RATE_LIMIT` erreicht.
+* `503 Service Unavailable`: Schreibzugriff blockiert (`LEITSTAND_LOCK_TIMEOUT` überschritten).
+* `507 Insufficient Storage`: Kein freier Speicherplatz im Zielverzeichnis.
+
 Weitere Beispiele und Details finden sich in der begleitenden Dokumentation:
 
 * [docs/api.md](docs/api.md) – Ausführliche API-Dokumentation.
@@ -84,3 +104,4 @@ Weitere Beispiele und Details finden sich in der begleitenden Dokumentation:
 * Formatierung: Standard Python Code-Formatierung (z. B. `black`) kann verwendet werden.
 * Tests: Für die API können `pytest`-basierte Tests oder Integrationstests mit `httpx` genutzt werden.
 * FastAPI generiert automatisch eine OpenAPI-Spezifikation unter `http://localhost:8788/docs`, sobald der Server läuft.
+* `/metrics` ist für Prometheus vorgesehen; im lokalen Development bleibt der Endpunkt bewusst ohne Authentifizierung erreichbar.
