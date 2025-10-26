@@ -209,11 +209,11 @@ async def ingest(
 
                 try:
                     fd = os.open(
-                        fname,
+                        target_path.name,
                         flags,
                         0o600,
                         dir_fd=dirfd,
-                    )  # codeql[py/uncontrolled-data-in-path-expression] fname is whitelisted and basename-only; dir_fd points to trusted DATA_DIR
+                    )  # use name from fully validated target_path
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
                         logger.error("disk full", extra={"file": str(target_path)})
