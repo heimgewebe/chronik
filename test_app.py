@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import string
@@ -246,3 +247,127 @@ def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
     resolved = app_module._safe_target_path(domain)
     assert resolved.name == filename
     assert resolved.parent == tmp_path
+
+
+def test_metrics_endpoint_exposed():
+    """Metrics endpoint should be accessible without auth."""
+
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "http_requests" in response.text
+
+
+def test_lock_timeout_returns_503(monkeypatch):
+    """Lock acquisition timeout should map to 503."""
+
+    class _DummyLock:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            from filelock import Timeout
+
+            raise Timeout("dummy.lock")
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("app.FileLock", _DummyLock)
+    monkeypatch.setattr("app.SECRET", "secret")
+    response = client.post(
+        "/ingest/example.com",
+        headers={
+            "X-Auth": "secret",
+            "Content-Length": "2",
+            "Content-Type": "application/json",
+        },
+        content="{}",
+    )
+    assert response.status_code == 503
+    assert "lock timeout" in response.text
+
+
+def test_path_traversal_domain_is_rejected(monkeypatch):
+    monkeypatch.setattr("app.SECRET", "secret")
+    response = client.post(
+        "/ingest/..example.com",
+        headers={
+            "X-Auth": "secret",
+            "Content-Type": "application/json",
+            "Content-Length": "2",
+        },
+        content="{}",
+    )
+    assert response.status_code == 400
+    assert "invalid domain" in response.text
+
+
+def test_symlink_attack_rejected(monkeypatch, tmp_path):
+    import os
+
+    if not hasattr(os, "symlink") or getattr(os, "O_NOFOLLOW", 0) == 0:
+        pytest.skip("platform lacks symlink or O_NOFOLLOW")
+
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+
+    victim = tmp_path / "victim.txt"
+    victim.write_text("do not touch", encoding="utf-8")
+    link_name = tmp_path / "example.com.jsonl"
+    os.symlink(victim, link_name)
+
+    response = client.post(
+        "/ingest/example.com",
+        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        json={"data": "value"},
+    )
+
+    assert response.status_code in (400, 500)
+    assert victim.read_text(encoding="utf-8") == "do not touch"
+
+
+def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
+    import concurrent.futures
+
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+
+    def _one(i: int) -> int:
+        return client.post(
+            "/ingest/example.com",
+            headers={"X-Auth": "secret", "Content-Type": "application/json"},
+            json={"i": i},
+        ).status_code
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        codes = list(executor.map(_one, range(20)))
+
+    assert all(code == 200 for code in codes)
+
+    output = tmp_path / "example.com.jsonl"
+    assert output.exists()
+    lines = output.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 20
+
+
+def test_disk_full_returns_507(monkeypatch, tmp_path):
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+
+    original_open = app_module.os.open
+
+    def _raise_enospc(path, flags, mode=0o777, *, dir_fd=None):
+        if dir_fd is not None:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return original_open(path, flags, mode)
+
+    monkeypatch.setattr("app.os.open", _raise_enospc)
+
+    response = client.post(
+        "/ingest/example.com",
+        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        json={},
+    )
+
+    assert response.status_code == 507
+    assert "insufficient" in response.text.lower()

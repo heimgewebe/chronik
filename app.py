@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import errno
 import json
+import logging
 import os
 import re
 import stat
 import secrets
+import time
+import uuid
 from typing import TYPE_CHECKING, Final
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
-from filelock import FileLock
+from filelock import FileLock, Timeout
+from prometheus_fastapi_instrumentator import Instrumentator
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from storage import (
     DATA_DIR,
@@ -17,11 +25,20 @@ from storage import (
     safe_target_path,
     sanitize_domain,
     target_filename,
-    _is_under,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+# --- Runtime constants & logging ---
+MAX_PAYLOAD_SIZE: Final[int] = int(os.getenv("LEITSTAND_MAX_BODY", str(1024 * 1024)))
+LOCK_TIMEOUT: Final[int] = int(os.getenv("LEITSTAND_LOCK_TIMEOUT", "30"))
+RATE_LIMIT: Final[str] = os.getenv("LEITSTAND_RATE_LIMIT", "60/minute")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+FILENAME_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9][a-z0-9.-]{0,248}\.jsonl")
+
+logging.basicConfig(level=LOG_LEVEL)
+logger = logging.getLogger("leitstand")
 
 app = FastAPI(title="leitstand-ingest")
 
@@ -34,6 +51,41 @@ if not SECRET_ENV:
     raise RuntimeError("LEITSTAND_TOKEN not set. Auth is required for all requests.")
 
 SECRET: Final[str] = SECRET_ENV
+
+
+@app.middleware("http")
+async def request_id_logging(request: Request, call_next):
+    rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    start = time.time()
+    status = None
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        dur_ms = int((time.time() - start) * 1000)
+        logger.info(
+            "access",
+            extra={
+                "request_id": rid,
+                "method": request.method,
+                "path": request.url.path,
+                "status": status,
+                "duration_ms": dur_ms,
+            },
+        )
+
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _on_rate_limited(request: Request, exc: RateLimitExceeded):
+    return PlainTextResponse("too many requests", status_code=429)
+
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 
 def _sanitize_domain(domain: str) -> str:
@@ -66,7 +118,7 @@ def _require_auth_dep(x_auth: str = Header(default="")) -> None:
 
 def _validate_body_size(req: Request) -> None:
     """
-    Validate Content-Length before reading the body. Limited to 1 MiB.
+    Validate Content-Length before reading the body. Limited by MAX_PAYLOAD_SIZE.
     Must run *after* auth to avoid leaking details to unauthenticated callers.
     """
     cl_raw = req.headers.get("content-length")
@@ -78,7 +130,7 @@ def _validate_body_size(req: Request) -> None:
         raise HTTPException(status_code=400, detail="invalid content-length")
     if cl < 0:
         raise HTTPException(status_code=400, detail="invalid content-length")
-    if cl > 1024 * 1024:
+    if cl > MAX_PAYLOAD_SIZE:
         raise HTTPException(status_code=413, detail="payload too large")
 
 
@@ -87,9 +139,10 @@ def _validate_body_size(req: Request) -> None:
     # Dependency order matters: auth FIRST, then size check.
     dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
 )
+@limiter.limit(RATE_LIMIT)
 async def ingest(
     domain: str,
-    req: Request,
+    request: Request,
 ):
 
     dom = _sanitize_domain(domain)
@@ -97,7 +150,7 @@ async def ingest(
 
     # JSON parsen
     try:
-        raw = await req.body()
+        raw = await request.body()
         obj = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:  # defensive
         raise HTTPException(status_code=400, detail="invalid json") from exc
@@ -137,47 +190,44 @@ async def ingest(
         raise HTTPException(status_code=400, detail="invalid target")
     if os.path.basename(fname) != fname or ".." in fname:
         raise HTTPException(status_code=400, detail="invalid target")
-    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,240}\.jsonl", fname):
+    if not FILENAME_RE.fullmatch(fname):
         raise HTTPException(status_code=400, detail="invalid target")
-    # Extra normalization/containment check before file access
-    access_path = target_path.resolve(strict=False)
-    data_dir_resolved = DATA.resolve(strict=True)
-    if not _is_under(access_path, data_dir_resolved):
-        raise HTTPException(status_code=400, detail="invalid target path: path escape detected")
+    # Extra defense-in-depth: ensure resolved parent is the trusted data dir
+    if target_path.parent != DATA:
+        raise HTTPException(status_code=400, detail="invalid target path: wrong parent directory")
     lock_path = target_path.parent / (fname + ".lock")
-    with FileLock(str(lock_path)):
-        # Defense-in-depth: always use trusted DATA_DIR for dirfd
-        if target_path.parent != DATA:
-            # Should never occur; signals a logic or helper bug
-            raise HTTPException(status_code=400, detail="invalid target path: wrong parent directory")
-        dirfd = os.open(str(DATA), os.O_RDONLY)
-        try:
-            flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-            flags |= getattr(os, "O_CLOEXEC", 0)
-            nofollow = getattr(os, "O_NOFOLLOW", 0)
-            if nofollow:
+    try:
+        with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
+            # Defense-in-depth: always use trusted DATA_DIR for dirfd
+            dirfd = os.open(str(DATA), os.O_RDONLY)
+            try:
+                flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
+                nofollow = getattr(os, "O_NOFOLLOW", 0)
+                if not nofollow:
+                    raise HTTPException(status_code=500, detail="platform lacks O_NOFOLLOW")
                 flags |= nofollow
-            else:
-                try:
-                    st = os.lstat(fname, dir_fd=dirfd)
-                except FileNotFoundError:
-                    pass
-                else:
-                    if stat.S_ISLNK(st.st_mode):
-                        raise HTTPException(status_code=400, detail="invalid target")
 
-            fd = os.open(
-                fname,
-                flags,
-                0o600,
-                dir_fd=dirfd,
-            )  # codeql[py/uncontrolled-data-in-path-expression] fname is whitelisted and basename-only; dir_fd points to trusted DATA_DIR
-            with os.fdopen(fd, "a", encoding="utf-8") as fh:
-                for line in lines:
-                    fh.write(line)
-                    fh.write("\n")
-        finally:
-            os.close(dirfd)
+                try:
+                    fd = os.open(
+                        str(target_path),
+                        flags,
+                        0o600,
+                    )  # use strictly validated canonical path
+                except OSError as exc:
+                    if exc.errno == errno.ENOSPC:
+                        logger.error("disk full", extra={"file": str(target_path)})
+                        raise HTTPException(status_code=507, detail="insufficient storage") from exc
+                    raise
+
+                with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                    for line in lines:
+                        fh.write(line)
+                        fh.write("\n")
+            finally:
+                os.close(dirfd)
+    except Timeout as exc:
+        logger.warning("lock timeout", extra={"file": str(target_path)})
+        raise HTTPException(status_code=503, detail="lock timeout") from exc
 
     return PlainTextResponse("ok", status_code=200)
 
