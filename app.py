@@ -209,11 +209,11 @@ async def ingest(
 
                 try:
                     fd = os.open(
-                        target_path.name,
+                        fname,
                         flags,
                         0o600,
                         dir_fd=dirfd,
-                    )  # use name from fully validated target_path
+                    )  # use strictly validated filename
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
                         logger.error("disk full", extra={"file": str(target_path)})
