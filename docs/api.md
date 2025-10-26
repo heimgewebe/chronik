@@ -18,7 +18,7 @@ Dieses Dokument beschreibt die HTTP-Schnittstelle des Leitstand-Ingest-Dienstes 
 | Pfadparameter  | `domain` – wird in Kleinbuchstaben umgewandelt und muss den folgenden FQDN-Regeln entsprechen:<ul><li>Gesamtlänge maximal 253 Zeichen.</li><li>Labels (Teile zwischen Punkten) dürfen 1 bis 63 Zeichen lang sein.</li><li>Labels dürfen nur aus Kleinbuchstaben, Ziffern und Bindestrichen (`-`) bestehen.</li><li>Labels dürfen nicht mit einem Bindestrich beginnen oder enden.</li></ul> |
 | Header         | `Content-Type: application/json`; `X-Auth: <token>` (Pflicht). |
 | Request-Body   | Gültiges JSON-Dokument. Einzelne Objekte erhalten automatisch ein Feld `domain`, sofern es fehlt. |
-| Antwort        | `200 OK` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid domain` / `400 invalid json`, fehlende Authentifizierung `401 unauthorized`. |
+| Antwort        | `200 OK` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid domain` / `400 invalid json`, fehlende Authentifizierung `401 unauthorized`. Bei gesetztem Rate-Limit werden zusätzlich die Header `X-RateLimit-Limit` und `X-RateLimit-Remaining` übertragen; bei `429 Too Many Requests` kommt `Retry-After` hinzu. |
 
 #### Beispiel-Requests
 ```bash
