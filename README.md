@@ -79,7 +79,7 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 * `401 Unauthorized`: Token fehlt oder stimmt nicht.
 * `411 Length Required`: `Content-Length`-Header fehlt.
 * `413 Payload Too Large`: Request-Body überschreitet `LEITSTAND_MAX_BODY`.
-* `429 Too Many Requests`: Rate-Limit aus `LEITSTAND_RATE_LIMIT` erreicht. Die Antwort enthält zusätzlich `Retry-After` sowie die Header `X-RateLimit-Limit` und `X-RateLimit-Remaining`.
+* `429 Too Many Requests`: Rate-Limit aus `LEITSTAND_RATE_LIMIT` erreicht. Die Antwort enthält zusätzlich `Retry-After` sowie die Header `X-RateLimit-Limit` und `X-RateLimit-Remaining` (SlowAPI kümmert sich um die Berechnung dieser Werte).
 * `503 Service Unavailable`: Schreibzugriff blockiert (`LEITSTAND_LOCK_TIMEOUT` überschritten).
 * `507 Insufficient Storage`: Kein freier Speicherplatz im Zielverzeichnis.
 
@@ -99,6 +99,7 @@ Weitere Beispiele und Details finden sich in der begleitenden Dokumentation:
 * Backups: Das Datenverzeichnis lässt sich als Ganzes sichern. Durch die reine Anhänge-Strategie eignen sich inkrementelle Backups.
 * Monitoring: Ein erfolgreicher `POST` liefert Status 200. Fehlermeldungen (`400`, `401`) sollten ausgewertet werden, um Integrationsfehler zu erkennen.
 * Rotierendes Secret: Wird `LEITSTAND_TOKEN` geändert, muss der neue Wert zeitgleich bei allen Clients hinterlegt werden.
+* Rate-Limits & Locks: Bei hohem Traffic liefert der Dienst `429` mitsamt `Retry-After` sowie `X-RateLimit-*`. Wenn ein Lock nicht rechtzeitig frei wird, antwortet die API mit `503 lock timeout`.
 
 ## Entwicklung & Tests
 * Formatierung: Standard Python Code-Formatierung (z. B. `black`) kann verwendet werden.
