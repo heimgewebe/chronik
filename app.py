@@ -210,15 +210,15 @@ async def ingest(
                 flags |= nofollow
 
                 try:
-                    # Use the trusted dirfd together with the file name so that the
-                    # monkeypatched os.open in tests (and the real implementation in
-                    # production) can surface ENOSPC errors for the target directory.
+                    # Use the trusted dirfd together with the basename (fname). The name
+                    # is strictly validated (basename-only + FILENAME_RE) and bound to
+                    # the trusted DATA directory via dir_fd. This is safe; suppress CodeQL FP.
                     fd = os.open(
                         fname,
                         flags,
                         0o600,
                         dir_fd=dirfd,
-                    )  # use strictly validated canonical path
+                    )  # codeql[py/uncontrolled-data-in-path-expression]: fname is validated basename; dir_fd=trusted DATA directory
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
                         logger.error("disk full", extra={"file": str(target_path)})
