@@ -210,10 +210,14 @@ async def ingest(
                 flags |= nofollow
 
                 try:
+                    # Use the trusted dirfd together with the file name so that the
+                    # monkeypatched os.open in tests (and the real implementation in
+                    # production) can surface ENOSPC errors for the target directory.
                     fd = os.open(
-                        str(target_path),
+                        fname,
                         flags,
                         0o600,
+                        dir_fd=dirfd,
                     )  # use strictly validated canonical path
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
