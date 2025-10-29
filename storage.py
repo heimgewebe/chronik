@@ -88,10 +88,13 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     # Extra defense: enforce no separators after sanitizing (helps static analyzers)
     if "/" in fname or "\\" in fname:
         raise DomainError(domain)
+    # Additional defense: reject anything that would change when interpreted as a
+    # path component (e.g. trailing spaces on Windows, reserved characters, etc.).
+    if fname != Path(fname).name:
+        raise DomainError(domain)
     # Solution: normalize joined path before containment check
     candidate = (base / fname).resolve(strict=False)  # canonicalize
-    base_resolved = base  # already resolved above
     # Containment check using canonical base directory and normalized paths
-    if not _is_under(candidate, base_resolved):
+    if not _is_under(candidate, base):
         raise DomainError(domain)
     return candidate
