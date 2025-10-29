@@ -93,9 +93,9 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
         raise DomainError(domain)
     # Solution: normalize joined path before containment check
     candidate = (base / fname).resolve(strict=False)  # canonicalize
-    base_resolved = base  # already resolved above
-    # Containment check using canonical base directory and normalized paths
-    if candidate.is_absolute() and not _is_under(candidate, base_resolved):
+    base_resolved = base.resolve(strict=True)
+    # Strong containment check: candidate must not escape base directory
+    if candidate.parent != base_resolved or not candidate.is_absolute():
         raise DomainError(domain)
     if candidate.is_dir():
         raise DomainError(domain)
