@@ -16,7 +16,7 @@ Leitstand ist ein einfacher Ingest-Dienst, der auf Python und FastAPI basiert. D
 3.  **Speicherschicht (`storage.py`):**
     *   Eingehende Daten werden in domain-spezifischen JSON-Lines-Dateien (`.jsonl`) im `LEITSTAND_DATA_DIR`-Verzeichnis gespeichert.
     *   Die `filelock`-Bibliothek wird verwendet, um Race Conditions beim Schreiben in die Dateien zu verhindern.
-    *   Die Funktion `sanitize_domain` stellt sicher, dass Domain-Namen den RFC-ähnlichen Regeln entsprechen.
+    *   Die Funktion `sanitize_domain` normalisiert Domain-Schlüssel streng deterministisch (Lowercase, Whitespace entfernen, unerlaubte Zeichen ersetzen) und stellt sicher, dass anschließend ein sicherer Dateiname erzeugt werden kann.
     *   Die Funktion `secure_filename` sorgt für sichere Dateinamen.
 
 ## Datenfluss

@@ -257,8 +257,8 @@ def test_metrics_endpoint_exposed():
     assert "http_requests" in response.text
 
 
-def test_lock_timeout_returns_503(monkeypatch):
-    """Lock acquisition timeout should map to 503."""
+def test_lock_timeout_returns_429(monkeypatch):
+    """Lock acquisition timeout should map to 429."""
 
     class _DummyLock:
         def __init__(self, *args, **kwargs):
@@ -283,8 +283,8 @@ def test_lock_timeout_returns_503(monkeypatch):
         },
         content="{}",
     )
-    assert response.status_code == 503
-    assert "lock timeout" in response.text
+    assert response.status_code == 429
+    assert "busy" in response.text
 
 
 def test_path_traversal_domain_is_rejected(monkeypatch):

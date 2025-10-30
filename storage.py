@@ -15,6 +15,7 @@ __all__ = [
     "secure_filename",
     "target_filename",
     "safe_target_path",
+    "FILENAME_RE",
 ]
 
 
@@ -33,6 +34,9 @@ _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
 )
 
 _FNAME_MAX: Final[int] = 255  # typische FS-Grenze (ext4 etc.)
+
+# Zentraler, restriktiver Dateinamen-Check (nur a-z0-9._- + .jsonl)
+FILENAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9._-]+\.jsonl$", re.IGNORECASE)
 
 # Zusätzliche Zeichen, die wir aus Sicherheitsgründen entfernen (neben / und \0)
 _UNSAFE_FILENAME_CHARS: Final[re.Pattern[str]] = re.compile(r"[][<>:\"|?*]")
@@ -74,8 +78,10 @@ def target_filename(domain: str) -> str:
         # so viel wie möglich behalten, dann '-{hash}'
         keep = max(16, (_FNAME_MAX - len(ext) - 1 - len(h)))  # 1 für '-'
         base = f"{domain[:keep]}-{h}"
-    filename = f"{base}{ext}"
-    return secure_filename(filename)
+    filename = secure_filename(f"{base}{ext}")
+    if not FILENAME_RE.fullmatch(filename):
+        raise DomainError(domain)
+    return filename
 
 
 def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
