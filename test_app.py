@@ -109,6 +109,20 @@ def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
         assert data2 == {**payload[1], "domain": domain}
 
 
+def test_ingest_empty_array(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+    response = client.post(
+        "/ingest/example.com",
+        headers={"X-Auth": "secret"},
+        json=[],
+    )
+
+    assert response.status_code == 200
+    assert response.text == "ok"
+    assert not any(tmp_path.iterdir())
+
+
 def test_ingest_invalid_json(monkeypatch):
     monkeypatch.setattr("app.SECRET", "secret")
     response = client.post(

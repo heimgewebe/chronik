@@ -58,7 +58,8 @@ SECRET: Final[str] = SECRET_ENV
 async def request_id_logging(request: Request, call_next):
     rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     start = time.time()
-    status = None
+    # Falls im Handler ein Fehler hochgeht, loggen wir konservativ 500
+    status = 500
     try:
         response = await call_next(request)
         status = response.status_code
@@ -160,6 +161,12 @@ async def ingest(
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
     items = obj if isinstance(obj, list) else [obj]
     lines: list[str] = []
+    # Leeres Array: nichts zu tun – optional warnen, aber 200 behalten
+    if isinstance(obj, list) and not obj:
+        logger.warning("empty payload array received", extra={"domain": dom})
+        return PlainTextResponse("ok", status_code=200)
+
+    # Normalisieren & validieren
     for entry in items:
         if not isinstance(entry, dict):
             raise HTTPException(status_code=400, detail="invalid payload")
