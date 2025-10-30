@@ -4,12 +4,13 @@ import errno
 import json
 import logging
 import os
-import re
-import stat
 import secrets
 import time
 import uuid
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Any, Final
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import PlainTextResponse
@@ -23,21 +24,17 @@ from slowapi.util import get_remote_address
 from storage import (
     DATA_DIR,
     DomainError,
+    FILENAME_RE,
     safe_target_path,
     sanitize_domain,
     target_filename,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(os.getenv("LEITSTAND_MAX_BODY", str(1024 * 1024)))
 LOCK_TIMEOUT: Final[int] = int(os.getenv("LEITSTAND_LOCK_TIMEOUT", "30"))
 RATE_LIMIT: Final[str] = os.getenv("LEITSTAND_RATE_LIMIT", "60/minute")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-FILENAME_RE: Final[re.Pattern[str]] = re.compile(r"[a-z0-9][a-z0-9.-]{0,248}\.jsonl")
-
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger("leitstand")
 
@@ -98,12 +95,11 @@ def _sanitize_domain(domain: str) -> str:
         raise HTTPException(status_code=400, detail="invalid domain") from exc
 
 
-def _safe_target_path(domain: str, *, already_sanitized: bool = False) -> "Path":
-    dom = domain if already_sanitized else _sanitize_domain(domain)
-    try:
-        return safe_target_path(dom, data_dir=DATA)
-    except DomainError as exc:
-        raise HTTPException(status_code=400, detail="invalid domain") from exc
+def _safe_target_path(domain: str, *, already_sanitized: bool = False) -> Path:
+    # Even if the caller claims the value is already sanitized, we re-run the
+    # validation to avoid trusting potentially unsafe inputs.
+    dom = _sanitize_domain(domain)
+    return safe_target_path(dom, data_dir=DATA)
 
 
 def _require_auth(x_auth: str) -> None:
@@ -149,7 +145,7 @@ async def ingest(
 ):
 
     dom = _sanitize_domain(domain)
-    target_path = _safe_target_path(dom, already_sanitized=True)
+    target_path = safe_target_path(dom, data_dir=DATA)
 
     # JSON parsen
     try:
@@ -172,6 +168,10 @@ async def ingest(
             raise HTTPException(status_code=400, detail="invalid payload")
 
         normalized = dict(entry)
+
+        summary_val = normalized.get("summary")
+        if isinstance(summary_val, str) and len(summary_val) > 500:
+            raise HTTPException(status_code=422, detail="summary too long (max 500)")
 
         if "domain" in normalized:
             entry_domain = normalized["domain"]
@@ -199,7 +199,7 @@ async def ingest(
         raise HTTPException(status_code=400, detail="invalid target")
     if os.path.basename(fname) != fname or ".." in fname:
         raise HTTPException(status_code=400, detail="invalid target")
-    if not FILENAME_RE.fullmatch(fname):
+    if FILENAME_RE is None or not FILENAME_RE.fullmatch(fname):
         raise HTTPException(status_code=400, detail="invalid target")
     # Extra defense-in-depth: ensure resolved parent is the trusted data dir
     if target_path.parent != DATA:
@@ -211,10 +211,9 @@ async def ingest(
             dirfd = os.open(str(DATA), os.O_RDONLY)
             try:
                 flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
-                nofollow = getattr(os, "O_NOFOLLOW", 0)
-                if not nofollow:
+                if not hasattr(os, "O_NOFOLLOW"):
                     raise HTTPException(status_code=500, detail="platform lacks O_NOFOLLOW")
-                flags |= nofollow
+                flags |= os.O_NOFOLLOW
 
                 try:
                     # Use the trusted dirfd together with the basename (fname). The name
@@ -230,6 +229,9 @@ async def ingest(
                     if exc.errno == errno.ENOSPC:
                         logger.error("disk full", extra={"file": str(target_path)})
                         raise HTTPException(status_code=507, detail="insufficient storage") from exc
+                    if exc.errno == errno.ELOOP:
+                        logger.warning("symlink attempt rejected", extra={"file": str(target_path)})
+                        raise HTTPException(status_code=400, detail="invalid target") from exc
                     raise
 
                 with os.fdopen(fd, "a", encoding="utf-8") as fh:
@@ -239,8 +241,8 @@ async def ingest(
             finally:
                 os.close(dirfd)
     except Timeout as exc:
-        logger.warning("lock timeout", extra={"file": str(target_path)})
-        raise HTTPException(status_code=503, detail="lock timeout") from exc
+        logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
+        raise HTTPException(status_code=429, detail="busy, try again") from exc
 
     return PlainTextResponse("ok", status_code=200)
 
@@ -252,6 +254,5 @@ async def health(x_auth: str = Header(default="")) -> dict[str, str]:
 
 
 @app.get("/version")
-async def version(x_auth: str = Header(default="")) -> dict[str, str]:
-    _require_auth(x_auth)
+async def version() -> dict[str, Any]:
     return {"version": VERSION}
