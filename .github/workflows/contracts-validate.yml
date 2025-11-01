@@ -1,0 +1,214 @@
+name: contracts-validate
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref_name || github.run_id }}
+  cancel-in-progress: true
+
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - "contracts/**"
+      - "schemas/**"
+      - ".github/workflows/contracts-validate.yml"
+  pull_request:
+    paths:
+      - "contracts/**"
+      - "schemas/**"
+      - ".github/workflows/contracts-validate.yml"
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -eo pipefail {0}
+
+env:
+  FAIL_ON_NO_BASE: "1"   # fail-closed, wenn keine sichere Diff-Basis ermittelbar
+  ALLOW_REMOVALS:  "0"   # 0 = blockiere Löschungen in contracts/schemas
+
+jobs:
+  compute-inputs:
+    name: Compute expected refs & inputs
+    runs-on: ubuntu-latest
+    env:
+      WANT_CONTRACTS_REF: ${{ vars.CONTRACTS_WORKFLOW_REF || 'contracts-v1' }}
+      FIXTURES_GLOB_VAR:  ${{ vars.FIXTURES_GLOB || 'fixtures/**/*.jsonl' }}
+    outputs:
+      contracts_ref: ${{ steps.out.outputs.contracts_ref }}
+      fixtures_glob: ${{ steps.out.outputs.fixtures_glob }}
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Validate reusable ref & expose outputs
+        id: out
+        run: |
+          set -euo pipefail
+          want="${WANT_CONTRACTS_REF}"
+          fg="${FIXTURES_GLOB_VAR}"
+
+          if [[ "$want" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            :
+          elif ! git check-ref-format --allow-onelevel -- "$want" >/dev/null 2>&1; then
+            echo "::error::Invalid expected ref for reusable workflow: '${want}'"
+            exit 1
+          fi
+
+          if command -v uuidgen >/dev/null 2>&1; then
+            delim="uuid_$(uuidgen | tr 'A-Z' 'a-z' | tr -d '-')"
+          elif command -v openssl >/dev/null 2>&1; then
+            delim="rand_$(openssl rand -hex 8)"
+          else
+            rnd="$(od -An -N4 -tu4 /dev/urandom 2>/dev/null | tr -d ' ' || echo $$:$RANDOM)"
+            delim="ts_$(date +%s)_$rnd"
+          fi
+          [[ -n "${delim:-}" ]] || { echo "::error::Cannot generate delimiter"; exit 1; }
+
+          {
+            echo "contracts_ref<<${delim}"
+            echo "${want}"
+            echo "${delim}"
+            echo "fixtures_glob<<${delim}"
+            echo "${fg}"
+            echo "${delim}"
+          } >> "$GITHUB_OUTPUT"
+
+  version-sync-check:
+    name: Verify static uses@ref pins (repo-wide)
+    runs-on: ubuntu-latest
+    needs: [compute-inputs]
+    steps:
+      - name: Checkout (read-only)
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 1
+
+      - name: Check pins in .github/workflows/**
+        env:
+          WANT: ${{ needs.compute-inputs.outputs.contracts_ref }}
+        run: |
+          set -euo pipefail
+          mism=0
+          mapfile -d '' files < <(git ls-files -z -- '.github/workflows' | grep -zE '\.(yml|yaml)$' || true)
+          if (( ${#files[@]} == 0 )); then
+            echo "::notice::No workflow files found under .github/workflows"
+            exit 0
+          fi
+
+          for wf in "${files[@]}"; do
+            while IFS= read -r line || [[ -n "$line" ]]; do
+              l="${line%%#*}"
+              shopt -s extglob
+              l="${l##+([[:space:]])}"
+              l="${l%%+([[:space:]])}"
+              shopt -u extglob
+              if [[ "$l" =~ ^(-[[:space:]]*)?uses:[[:space:]]*['"]?([^@[:space:]'"]+)@([^[:space:]'"]+)['"]? ]]; then
+                repo="${BASH_REMATCH[2]}"
+                ref="${BASH_REMATCH[3]}"
+                if [[ "$repo" != "heimgewebe/contracts/.github/workflows/contracts-ajv-reusable.yml" ]]; then
+                  continue
+                fi
+                if [[ "$ref" =~ ^\$\{\{ ]]; then
+                  echo "::error file=${wf}::Dynamic 'uses:' ref not allowed: ${ref}"
+                  mism=1
+                  continue
+                fi
+                if [[ "$ref" != "$WANT" ]]; then
+                  echo "::error file=${wf}::Pin drift: ${ref} != expected ${WANT}"
+                  mism=1
+                fi
+              fi
+            done < "$wf"
+          done
+          exit $mism
+
+  guard:
+    name: Guard changes (only deletions are policy-blocked)
+    runs-on: ubuntu-latest
+    env:
+      GH_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      GH_PR_BASE_SHA:    ${{ github.event.pull_request.base.sha }}
+      GH_PUSH_BEFORE:    ${{ github.event.before }}
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Execute Guard Logic
+        run: |
+          set -eo pipefail
+          fail(){ echo "::error::${*}"; exit 1; }
+          warn(){ echo "::warning::${*}"; }
+          info(){ echo "::notice::${*}"; }
+          is_zero(){ [[ "$1" =~ ^0{40}$ ]]; }
+
+          re_dir='(^|/)(contracts|schemas)(/.*)?$'
+          blocked=()
+
+          check_delete(){
+            local _s="$1" _p="$2"
+            [[ -z "$_p" ]] && return 0
+            [[ "$_p" =~ $re_dir ]] || return 0
+            if [[ "$_s" == "D" && "${ALLOW_REMOVALS:-0}" != "1" ]]; then
+              blocked+=("$_s $_p")
+            fi
+          }
+
+          base=""
+          if [[ -n "${GH_PR_BASE_SHA:-}" ]] && git rev-parse --verify "${GH_PR_BASE_SHA}^{commit}" >/dev/null 2>&1; then
+            base="$(git merge-base "$GH_PR_BASE_SHA" HEAD || true)"
+          elif [[ -n "${GH_PUSH_BEFORE:-}" ]] && ! is_zero "$GH_PUSH_BEFORE" && git rev-parse --verify "${GH_PUSH_BEFORE}^{commit}" >/dev/null 2>&1; then
+            base="$GH_PUSH_BEFORE"
+          else
+            def="${GH_DEFAULT_BRANCH:-main}"
+            git fetch --no-tags origin "refs/heads/${def}:refs/remotes/origin/${def}" >/dev/null 2>&1 || true
+            base="$(git merge-base "origin/${def}" HEAD || true)"
+          fi
+
+          if [[ -z "$base" ]]; then
+            if [[ "${FAIL_ON_NO_BASE:-1}" == "1" ]]; then
+              fail "No merge-base found; FAIL_ON_NO_BASE=1"
+            else
+              warn "No merge-base found; continuing (FAIL_ON_NO_BASE=0)"
+              exit 0
+            fi
+          fi
+
+          diff_range="${base}...HEAD"
+
+          while IFS= read -r -d '' status && IFS= read -r -d '' p1; do
+            p2=""
+            base_st="${status%%[0-9]*}"
+            if [[ "$base_st" =~ ^[RC]$ ]]; then
+              IFS= read -r -d '' p2 || fail "Incomplete R/C record for '$p1'"
+            fi
+
+            if [[ "$base_st" =~ ^[RC]$ ]]; then
+              check_delete "D" "$p1"
+            else
+              check_delete "$base_st" "$p1"
+            fi
+          done < <(git diff -z --name-status -M -B --diff-filter=ACMRTD "$diff_range")
+
+          if (( ${#blocked[@]} )); then
+            echo "::group::Blocked deletions under contracts/schemas"
+            printf '%s\n' "${blocked[@]}" | sort -u | sed 's/^/  - /'
+            echo "::endgroup::"
+            fail "Policy violation: deletions found (ALLOW_REMOVALS=0)"
+          fi
+          info "Guard OK - no policy violations."
+
+  validate:
+    name: Validate JSON fixtures with reusable workflow
+    needs: [compute-inputs, version-sync-check, guard]
+    uses: heimgewebe/contracts/.github/workflows/contracts-ajv-reusable.yml@${{ needs.compute-inputs.outputs.contracts_ref }}
+    # Keine Secret-Vererbung per Default; bei Bedarf gezielt setzen:
+    # secrets:
+    #   SOME_SECRET: ${{ secrets.SOME_SECRET }}
+    with:
+      fixtures_glob: ${{ needs.compute-inputs.outputs.fixtures_glob }}
