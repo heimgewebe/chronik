@@ -1,0 +1,47 @@
+name: contracts-validate
+
+on:
+  push:
+    paths: ['.github/workflows/contracts-validate.yml','fixtures/**']
+  pull_request:
+    paths: ['.github/workflows/contracts-validate.yml','fixtures/**']
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Ensure contracts are sourced from heimgewebe/contracts
+        env:
+          # Setze in den Repo-Variablen ALLOW_LOCAL_CONTRACTS=1, um den Guard auszuschalten (Ausnahmefälle).
+          ALLOW_LOCAL_CONTRACTS: ${{ vars.ALLOW_LOCAL_CONTRACTS }}
+        run: |
+          set -euo pipefail
+          if [[ "${ALLOW_LOCAL_CONTRACTS:-0}" == "1" ]]; then
+            echo "::notice::ALLOW_LOCAL_CONTRACTS=1 – Guard übersprungen."
+            exit 0
+          fi
+          for d in contracts schemas; do
+            if [ -d "$d" ]; then
+              echo "::error::Dieses Repo darf kein '$d/' enthalten. Verträge gehören nach heimgewebe/contracts."
+              exit 1
+            fi
+          done
+
+  validate:
+    needs: guard
+    permissions:
+      contents: read
+    uses: heimgewebe/contracts/.github/workflows/contracts-ajv-reusable.yml@v0
+    with:
+      # Optional in den Repo-Variablen setzen: CONTRACTS_REF (Tag/Branch/SHA), sonst Fallback.
+      contracts_ref: ${{ vars.CONTRACTS_REF || 'v0' }}
+      # Optional in den Repo-Variablen FIXTURES_GLOB überschreiben (kommagetrennt).
+      fixtures_glob: ${{ vars.FIXTURES_GLOB || 'fixtures/**/*.jsonl,fixtures/**/*.json' }}
