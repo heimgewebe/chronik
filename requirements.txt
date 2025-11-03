@@ -1,5 +1,4 @@
 fastapi>=0.110
-Werkzeug==3.1.3
 uvicorn[standard]>=0.27
 filelock>=3.13
 prometheus-fastapi-instrumentator>=6.1,<7
