@@ -321,6 +321,29 @@ def test_path_traversal_domain_is_rejected(monkeypatch):
     assert "invalid domain" in response.text
 
 
+def test_symlink_attack_rejected_after_resolve(monkeypatch, tmp_path):
+    # This is the more advanced attack: a symlink that gets resolved *by*
+    # `resolve()` to a valid-looking path inside the data dir.
+    # We must still reject it.
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    real_data_dir = tmp_path / "data"
+    real_data_dir.mkdir()
+    (real_data_dir / "legit.jsonl").touch()
+
+    # The attacker-controlled symlink
+    link_path = tmp_path / "symlink.jsonl"
+    link_path.symlink_to(real_data_dir / "legit.jsonl")
+
+    # Now, trick the code into thinking the symlink is the domain file
+    # This requires us to bypass the normal filename generation.
+    monkeypatch.setattr(
+        "storage.target_filename", lambda domain: "symlink.jsonl"
+    )
+
+    with pytest.raises(storage.DomainError):
+        storage.safe_target_path("example.com", data_dir=tmp_path)
+
+
 def test_symlink_attack_rejected(monkeypatch, tmp_path):
     import os
 

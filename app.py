@@ -145,7 +145,10 @@ async def ingest(
 ):
 
     dom = _sanitize_domain(domain)
-    target_path = safe_target_path(dom, data_dir=DATA)
+    try:
+        target_path = safe_target_path(dom, data_dir=DATA)
+    except DomainError as exc:
+        raise HTTPException(status_code=400, detail="invalid domain") from exc
 
     # JSON parsen
     try:
