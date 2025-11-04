@@ -109,7 +109,7 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     # Containment check using canonical base directory and normalized paths
     if not _is_under(candidate, base):
         raise DomainError(domain)
-    # TOCTOU: Nach dem Auflösen erneut prüfen, ob der Pfad existiert und ein Symlink ist
+    # TOCTOU: After resolving, check again whether the path exists and is a symlink
     if candidate.is_symlink():
         raise DomainError(domain)
     return candidate
