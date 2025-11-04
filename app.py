@@ -145,7 +145,7 @@ async def ingest(
 ):
 
     dom = _sanitize_domain(domain)
-    target_path = safe_target_path(dom, data_dir=DATA)
+    target_path = _safe_target_path(dom, already_sanitized=True)
 
     # JSON parsen
     try:

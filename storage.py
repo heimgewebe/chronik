@@ -98,9 +98,18 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     # path component (e.g. trailing spaces on Windows, reserved characters, etc.).
     if fname != Path(fname).name:
         raise DomainError(domain)
-    # Solution: normalize joined path before containment check
-    candidate = (base / fname).resolve(strict=False)  # canonicalize
+    # Solution: check for symlinks on the unresolved path
+    unresolved_candidate = base / fname
+    if unresolved_candidate.is_symlink():
+        raise DomainError(domain)
+
+    # Now, resolve and normalize the path
+    candidate = unresolved_candidate.resolve(strict=False)  # canonicalize
+
     # Containment check using canonical base directory and normalized paths
     if not _is_under(candidate, base):
+        raise DomainError(domain)
+    # TOCTOU: After resolving, check again whether the path exists and is a symlink
+    if candidate.is_symlink():
         raise DomainError(domain)
     return candidate
