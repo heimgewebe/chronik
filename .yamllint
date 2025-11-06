@@ -1,0 +1,12 @@
+extends: default
+ignore: |
+  .venv/
+  venv/
+  node_modules/
+  target/
+rules:
+  line-length:
+    max: 120
+    level: warning
+  truthy:
+    allowed-values: ['true','false']
