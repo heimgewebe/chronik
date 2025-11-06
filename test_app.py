@@ -67,6 +67,7 @@ def test_secure_filename_rejects_nested_traversal():
     assert ".." not in storage.secure_filename("...test...")
     assert storage.secure_filename("....test") == ".test"
     assert "/" not in storage.secure_filename("a/b")
+    assert "\\" not in storage.secure_filename("a\\b")
     assert ".." not in storage.secure_filename("..")
     assert ".." not in storage.secure_filename("../")
     assert ".." not in storage.secure_filename("/..")
