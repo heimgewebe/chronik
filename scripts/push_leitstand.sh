@@ -9,7 +9,10 @@ set -euo pipefail
 : "${DOMAIN:?Domain fehlt (DOMAIN)}"
 : "${N:?Anzahl letzter Events fehlt (N)}"
 
-need() { command -v "$1" >/dev/null 2>&1 || { echo "Fehlt: $1" >&2; exit 127; }; }
+need() { command -v "$1" >/dev/null 2>&1 || {
+  echo "Fehlt: $1" >&2
+  exit 127
+}; }
 need jq
 need curl
 
