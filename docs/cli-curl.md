@@ -33,4 +33,5 @@ for i in 1 2 3 4 5; do
   [ "$code" != "429" ] && echo "fail:$code" && exit 1
   sleep $((2**i))
 done
+echo "failed after 5 retries" && exit 1
 ```
