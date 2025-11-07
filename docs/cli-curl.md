@@ -22,7 +22,7 @@ cat "$LEITSTAND_DATA_DIR/example.com.jsonl"
 ```
 
 
-# Beispiel: 429 Retry mit Curl (exponentielles Backoff bis 5x)
+# Beispiel: 429 Retry mit Curl (exponentieller Backoff, bis zu 5 Versuche)
 ```bash
 for i in 1 2 3 4 5; do
   code=$(curl -s -o /dev/null -w "%{http_code}" \
