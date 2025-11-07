@@ -21,3 +21,16 @@ cat "$LEITSTAND_DATA_DIR/example.com.jsonl"
 
 ```
 
+
+# Beispiel: 429 Retry mit Curl (exponentielles Backoff bis 5x)
+```bash
+for i in 1 2 3 4 5; do
+  code=$(curl -s -o /dev/null -w "%{http_code}" \
+    -H "X-Auth:$LEITSTAND_TOKEN" -H "Content-Type: application/json" \
+    -d '{"event":"batch","status":"ok"}' \
+    http://localhost:8788/ingest/example.com)
+  [ "$code" = "200" ] && echo ok && break
+  [ "$code" != "429" ] && echo "fail:$code" && exit 1
+  sleep $((2**i))
+done
+```
