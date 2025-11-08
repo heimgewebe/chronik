@@ -1,0 +1,63 @@
+ai_context_version: 1.0
+
+project:
+name: contracts
+summary: Central contracts repo providing JSON Schemas, Protobufs, and fixtures.
+role: schema_provider
+primary_language: mixed
+visibility: internal
+
+dependencies:
+internal:
+- name: leitstand
+  relationship: provides
+  interface: json_schema | proto
+- name: aussensensor
+  relationship: provides
+  interface: json_schema
+- name: heimlern
+  relationship: provides
+  interface: json_schema
+- name: wgx
+  relationship: provides
+  interface: cli_contracts
+external:
+- name: ajv-cli
+  version: "^5"
+- name: buf
+  note: optional, for proto workflows
+
+architecture:
+entrypoints:
+- json/ # JSON Schemas
+- proto/ # Protobuf IDL
+key_paths:
+- path: json/
+  purpose: validation contracts (JSON Schema)
+- path: proto/
+  purpose: service and event IDL
+- path: fixtures/
+  purpose: golden samples / JSONL fixtures
+data_flow:
+  input: PR change proposals
+  processing: guard checks + AJV validation
+  output: versioned, pinned contracts for consumers
+
+conventions:
+branching: "main, feature/*, hotfix/*"
+commit_prefix: "contracts"
+ci_platform: "github_actions"
+
+documentation:
+adr: docs/adr/
+runbook: docs/runbook.md
+references:
+- json/*
+- proto/*
+
+ai_guidance:
+do:
+- prefer additive schema changes; add new versions when breaking
+- validate JSONL fixtures with AJV; keep examples minimal yet complete
+dont:
+- remove/rename files in protected folders without a migration plan

@@ -1,0 +1,46 @@
+ai_context_version: 1.0
+
+project:
+name: aussensensor
+summary: Scripted data collection pushing events to leitstand.
+role: sensor_event_producer
+primary_language: bash
+visibility: internal
+
+dependencies:
+internal:
+- name: leitstand
+  relationship: uses
+  interface: "HTTP POST /ingest/aussen"
+- name: contracts
+  relationship: uses
+  interface: json_schema (preflight validation)
+external:
+- name: curl
+- name: jq
+
+architecture:
+entrypoints:
+- scripts/*.sh
+key_paths:
+- path: lib/validation.sh
+  purpose: local JSON/JSONL validation
+data_flow:
+  input: polling/external sensors
+  processing: map to contract shape + validate
+  output: POST to leitstand
+
+conventions:
+branching: "main, feature/*"
+commit_prefix: "aussensensor"
+ci_platform: "github_actions"
+
+documentation:
+runbook: docs/runbook.md
+
+ai_guidance:
+do:
+- implement exponential backoff/retries
+- validate JSON before sending to reduce ingest noise
+dont:
+- send oversized payloads or unbounded retries
