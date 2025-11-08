@@ -1,63 +1,52 @@
 ai_context_version: 1.0
 
 project:
-name: contracts
-summary: Central contracts repo providing JSON Schemas, Protobufs, and fixtures.
-role: schema_provider
-primary_language: mixed
-visibility: internal
+  name: contracts
+  summary: Central contract repo providing JSON/Proto schemas and fixtures.
+  role: schema_contract_provider
+  primary_language: mixed
+  visibility: internal
 
 dependencies:
-internal:
-- name: leitstand
-  relationship: provides
-  interface: json_schema | proto
-- name: aussensensor
-  relationship: provides
-  interface: json_schema
-- name: heimlern
-  relationship: provides
-  interface: json_schema
-- name: wgx
-  relationship: provides
-  interface: cli_contracts
-external:
-- name: ajv-cli
-  version: "^5"
-- name: buf
-  note: optional, for proto workflows
+  internal: []
+  external:
+    - name: ajv-cli
+      version: "5.x"
+    - name: buf
+      note: for protobuf (optional)
 
 architecture:
-entrypoints:
-- json/ # JSON Schemas
-- proto/ # Protobuf IDL
-key_paths:
-- path: json/
-  purpose: validation contracts (JSON Schema)
-- path: proto/
-  purpose: service and event IDL
-- path: fixtures/
-  purpose: golden samples / JSONL fixtures
-data_flow:
-  input: PR change proposals
-  processing: guard checks + AJV validation
-  output: versioned, pinned contracts for consumers
+  entrypoints:
+    - json/
+    - proto/
+  key_paths:
+    - path: json/
+      purpose: JSON Schemas
+    - path: proto/
+      purpose: Protobuf IDL
+    - path: fixtures/
+      purpose: Golden samples for validation
+  data_flow:
+    input: change proposals via PR
+    processing: guard checks + AJV validation
+    output: pinned, versioned contracts for consumers
 
 conventions:
-branching: "main, feature/*, hotfix/*"
-commit_prefix: "contracts"
-ci_platform: "github_actions"
+  branching: "main, feature/*, hotfix/*"
+  commit_prefix: "contracts"
+  ci_platform: github_actions
 
 documentation:
-adr: docs/adr/
-runbook: docs/runbook.md
-references:
-- json/*
-- proto/*
+  adr: docs/adr/
+  runbook: docs/runbook.md
+  api_reference:
+    - json/*
+    - proto/*
 
 ai_guidance:
-do:
-- prefer additive schema changes; add new versions when breaking
-- validate JSONL fixtures with AJV; keep examples minimal yet complete
-dont:
-- remove/rename files in protected folders without a migration plan
+  do:
+    - never break schemas; use additive changes and/or new versions
+    - validate JSONL fixtures with AJV; keep examples minimal but complete
+    - keep file moves as renames (git mv) to preserve history
+  dont:
+    - change formats without version bump

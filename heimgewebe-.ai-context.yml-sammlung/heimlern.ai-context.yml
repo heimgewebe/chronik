@@ -1,46 +1,48 @@
 ai_context_version: 1.0
 
 project:
-name: heimlern
-summary: Learning/feedback loops over events, scoring & policies.
-role: analytics_policy_feedback
-primary_language: python
-visibility: internal
+  name: heimlern
+  summary: Learning/feedback loops over events, scoring & policies.
+  role: analytics_and_policy_feedback
+  primary_language: python
+  visibility: internal
 
 dependencies:
-internal:
-- name: leitstand
-  relationship: uses
-  interface: event_feed | metrics
-- name: contracts
-  relationship: uses
-  interface: json_schema
-external:
-- name: pydantic
-- name: pandas
+  internal:
+    - name: leitstand
+      relationship: uses
+      interface:
+        - event_feed
+        - metrics
+    - name: contracts
+      relationship: uses
+      interface:
+        - json_schema
+  external:
+    - name: pydantic
+    - name: pandas
 
 architecture:
-entrypoints:
-- src/main.py
-key_paths:
-- path: src/scoring/
-  purpose: quality scoring & policy checks
-data_flow:
-  input: events/metrics from leitstand
-  processing: scoring + feedback
-  output: reports/signals
+  entrypoints:
+    - src/main.py
+  key_paths:
+    - path: src/scoring/
+      purpose: quality scoring & policy checks
+  data_flow:
+    input: events/metrics from leitstand
+    processing: scoring + feedback
+    output: reports, signals
 
 conventions:
-branching: "main, feature/*"
-commit_prefix: "heimlern"
-ci_platform: "github_actions"
+  branching: "main, feature/*"
+  commit_prefix: "heimlern"
+  ci_platform: github_actions
 
 documentation:
-adr: docs/adr/
-runbook: docs/runbook.md
+  adr: docs/adr/
 
 ai_guidance:
-do:
-- log model versions and seeds for reproducibility
-dont:
-- change scoring semantics without a version bump
+  do:
+    - log model versions and seeds for reproducibility
+  dont:
+    - run experiments without capturing metadata

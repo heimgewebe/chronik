@@ -1,46 +1,49 @@
 ai_context_version: 1.0
 
 project:
-name: metarepo
-summary: Docs, templates, and reusable workflows for all repos.
-role: standards_and_automation
-primary_language: mixed
-visibility: internal
+  name: metarepo
+  summary: Docs/templates/workflows for all repos.
+  role: standards_and_reusable_automation
+  primary_language: mixed
+  visibility: internal
 
 dependencies:
-internal:
-- name: contracts
-  relationship: uses
-  interface: validation_workflows | fixtures
-- name: wgx
-  relationship: uses
-  interface: fleet_rollout
-external:
-- name: github_actions
+  internal:
+    - name: contracts
+      relationship: uses
+      interface:
+        - validation_workflows
+        - fixtures
+    - name: wgx
+      relationship: uses
+      interface:
+        - fleet_rollout
+  external:
+    - name: github_actions
 
 architecture:
-entrypoints:
-- docs/*
-- .github/workflows/*
-key_paths:
-- path: templates/
-  purpose: repo templates
-data_flow:
-  input: proposals
-  processing: codify → templates/workflows
-  output: standards
+  entrypoints:
+    - docs/*
+    - .github/workflows/*
+  key_paths:
+    - path: templates/
+      purpose: repo templates
+  data_flow:
+    input: proposals
+    processing: codify → templates
+    output: standards
 
 conventions:
-branching: "main, feature/*"
-commit_prefix: "metarepo"
-ci_platform: "github_actions"
+  branching: "main, feature/*"
+  commit_prefix: "metarepo"
+  ci_platform: github_actions
 
 documentation:
-adr: docs/adr/
-runbook: docs/runbook.md
+  adr: docs/adr/
+  runbook: docs/runbook.md
 
 ai_guidance:
-do:
-- prefer workflow_call for reuse; pin external actions
-dont:
-- introduce floating refs in org-wide templates
+  do:
+    - prefer workflow_call for reuse and pin external actions
+  dont:
+    - duplicate shared logic across repos
