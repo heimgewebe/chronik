@@ -1,0 +1,21 @@
+name: ai-context-guard
+permissions:
+contents: read
+on:
+pull_request:
+  paths:
+  - ".ai-context.yml"
+  - ".github/workflows/ai-context-guard.yml"
+push:
+  branches: [ main ]
+  paths:
+  - ".ai-context.yml"
+  - ".github/workflows/ai-context-guard.yml"
+jobs:
+check:
+  runs-on: ubuntu-latest
+  steps:
+  - uses: actions/checkout@v4
+  - name: Ensure AI context exists and is non-empty
+    run: |
+      test -s .ai-context.yml || { echo "::error::.ai-context.yml missing or empty"; exit 1; }
