@@ -1,59 +1,62 @@
 ai_context_version: 1.0
 
 project:
-name: vault-gewebe
-summary: Unified personal and shared Obsidian vault for structured knowledge, notes, and educational materials.
-role: knowledge_vault
-primary_language: markdown
-visibility: internal
+  name: vault-gewebe
+  summary: Unified personal and shared Obsidian vault for structured knowledge and notes.
+  role: knowledge_vault
+  primary_language: markdown
+  visibility: internal
 
 dependencies:
-internal:
-- name: semantah
-  relationship: provides
-  interface: document_exports | embeddings_source
-- name: leitstand
-  relationship: uses
-  interface: ingest_events (knowledge updates)
-- name: hauski
-  relationship: uses
-  interface: ui_sync | note_links
-external:
-- name: obsidian
-  note: local editor platform
-- name: pandoc
-  note: for export to other formats (pdf/docx/rtf)
+  internal:
+    - name: semantah
+      relationship: uses
+      interface:
+        - semantic_linking
+        - search_integration
+    - name: leitstand
+      relationship: uses
+      interface:
+        - ingest_events
+    - name: contracts
+      relationship: uses
+      interface:
+        - knowledge_graph_schemas
+  external:
+    - name: obsidian
+      note: local editor platform
+    - name: pandoc
+      note: exports to other formats
 
 architecture:
-entrypoints:
-- vault/
-- vault/.obsidian/
-key_paths:
-- path: vault/
-  purpose: main knowledge base (markdown + canvas files)
-- path: vault/templates/
-  purpose: content and project templates
-- path: vault/meta/
-  purpose: metadata, indices, linkmaps
-data_flow:
-  input: notes, interviews, transcripts, project docs
-  processing: tagging → linking → export
-  output: semantic index for semantah and synced UI state for hauski
+  entrypoints:
+    - vault/
+    - vault/.obsidian/
+  key_paths:
+    - path: vault/
+      purpose: main knowledge base (markdown + canvas files)
+    - path: vault/templates/
+      purpose: content and project templates
+    - path: vault/meta/
+      purpose: metadata, indices, linkmaps
+  data_flow:
+    input: notes, interviews, transcripts, project docs
+    processing: tagging → linking → export
+    output: semantic index and sync signals
 
 conventions:
-branching: "main, feature/*"
-commit_prefix: "vault-gewebe"
-ci_platform: "github_actions"
+  branching: "main, feature/*"
+  commit_prefix: "vault-gewebe"
+  ci_platform: github_actions
 
 documentation:
-adr: docs/adr/
-runbook: docs/runbook.md
+  adr: docs/adr/
+  runbook: docs/runbook.md
 
 ai_guidance:
-do:
-- preserve structure of vault folders; keep filenames human-readable
-- prefer markdown + frontmatter for metadata
-- when exporting, validate frontmatter fields against contracts repo
-dont:
-- insert generated text directly into primary vault without review
-- modify Obsidian config files automatically
+  do:
+    - preserve structure of vault folders; filenames human-readable
+    - prefer markdown + frontmatter for metadata
+    - validate frontmatter fields against contracts where applicable
+  dont:
+    - auto-modify Obsidian config files
