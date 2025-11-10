@@ -106,3 +106,40 @@ Weitere Beispiele und Details finden sich in der begleitenden Dokumentation:
 * Tests: Für die API können `pytest`-basierte Tests oder Integrationstests mit `httpx` genutzt werden.
 * FastAPI generiert automatisch eine OpenAPI-Spezifikation unter `http://localhost:8788/docs`, sobald der Server läuft.
 * `/metrics` ist für Prometheus vorgesehen; im lokalen Development bleibt der Endpunkt bewusst ohne Authentifizierung erreichbar.
+
+## Client-Library (hausKI → Leitstand)
+Für hausKI-Module gibt es eine kleine Helper-Lib unter `tools/hauski_ingest.py`, die Events zuverlässig in den Leitstand schreibt:
+
+```python
+from tools.hauski_ingest import ingest_event
+ingest_event("example.com", {"event": "heartbeat", "status": "ok"})
+```
+
+**Konfiguration (ENV):**
+| Variable               | Default                 | Beschreibung |
+|------------------------|-------------------------|--------------|
+| `LEITSTAND_URL`        | `http://localhost:8788` | Basis-URL des Leitstands |
+| `LEITSTAND_TOKEN`      | — (Pflicht)             | Shared Secret für `X-Auth` |
+| `LEITSTAND_TIMEOUT`    | `5`                     | HTTP-Timeout in Sekunden |
+| `LEITSTAND_RETRIES`    | `3`                     | Anzahl Retries bei 429/5xx/Timeout |
+| `LEITSTAND_BACKOFF`    | `0.5`                   | Start-Backoff (Sek.) für exponentielles Backoff |
+
+Die Library gibt bei Erfolg `"ok"` zurück oder wirft eine Exception (z. B. bei 4xx/5xx nach Retries).
+
+### Mini-Test
+```bash
+python -c 'import os; os.environ["LEITSTAND_TOKEN"]="dev"; from tools.hauski_ingest import ingest_event; print(ingest_event("example.com", {"event":"test","status":"ok"}))'
+```
+
+### Testen ohne echte Netzwerk-Sockets
+Für hermetische Tests kann `httpx.ASGITransport` genutzt werden, sodass Requests direkt gegen die laufende FastAPI-App gehen:
+
+```python
+import os
+os.environ["LEITSTAND_TOKEN"] = "dev"
+import httpx
+from app import app  # die FastAPI-App
+from tools.hauski_ingest import ingest_event
+transport = httpx.ASGITransport(app=app)
+print(ingest_event("example.com", {"event":"test","status":"ok"}, url="http://test", transport=transport))
+```
