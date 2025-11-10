@@ -1,0 +1,48 @@
+name: "📊 Metrics Snapshot & Validation"
+permissions:
+  contents: read          # Repo lesen, um Skripte auszuführen
+  actions: write          # notwendig für upload-artifact
+  checks: write
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 * * * *"
+
+env:
+  METRICS_SCHEMA_URL: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/wgx/metrics.json
+  HAUSKI_POST_URL: ${{ secrets.HAUSKI_METRICS_URL }}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ensure Node for ajv-cli
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Snapshot metrics
+        run: scripts/wgx-metrics-snapshot.sh --json
+
+      - name: Validate metrics contract
+        run: npx --yes ajv-cli@5 validate -s "$METRICS_SCHEMA_URL" -d metrics.json
+
+      - name: Optional POST to hausKI
+        if: ${{ env.HAUSKI_POST_URL && env.HAUSKI_POST_URL != '' }}
+        run: |
+          curl --fail --silent --show-error --retry 3 --retry-delay 2 \
+            -H 'Content-Type: application/json' \
+            --data @metrics.json \
+            "$HAUSKI_POST_URL"
+        continue-on-error: true
+
+      - name: Upload metrics.json artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: metrics-snapshot
+          path: metrics.json
+          retention-days: 7
