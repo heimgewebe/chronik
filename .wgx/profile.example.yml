@@ -1,0 +1,16 @@
+wgx:
+  apiVersion: v1
+  requiredWgx: "^2.0.0"
+  repoKind: generic
+
+  tooling:
+    shell:
+      default: bash
+
+  tasks:
+    up: "echo bootstrap"
+    lint: "bash -n $(git ls-files '*.sh' '*.bash') && echo lint ok"
+    test: "echo test"
+    build: "echo build"
+    smoke: "echo smoke"
+    metrics: "scripts/wgx-metrics-snapshot.sh --output metrics.json"
