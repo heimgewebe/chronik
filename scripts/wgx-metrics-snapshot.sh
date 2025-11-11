@@ -44,7 +44,7 @@ else
   last_ok=$(date -v-"${age_days}"d +%F)
 fi
 else
-  last_ok=$(date -v-1d +%F) # BSD/macOS
+  last_ok=$(date -v-"${age_days}"d +%F) # BSD/macOS
 fi
 age_days=${BACKUP_AGE_DAYS:-1}
 drift_templates=${DRIFT_TEMPLATES:-0}
