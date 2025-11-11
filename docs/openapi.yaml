@@ -2,6 +2,9 @@ openapi: 3.0.3
 info:
   title: Leitstand Ingest API
   version: 1.0.0
+servers:
+  - url: https://your-api-domain.example.com
+    description: Production server
 paths:
   /ingest/{domain}:
     post:
@@ -49,7 +52,12 @@ paths:
           description: Accepted
       security:
         - XAuth: []
+        - BearerAuth: []
 components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
   schemas:
     Event:
       type: object
