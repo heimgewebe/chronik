@@ -2,13 +2,49 @@ openapi: 3.0.3
 info:
   title: Leitstand Ingest API
   version: 1.0.0
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
 servers:
-  - url: https://your-api-domain.example.com
-    description: Production server
+  - url: http://localhost:8788
+    description: Development server
 paths:
+  /ingest/{domain}:
+    post:
+      summary: Ingest event for a specific domain (deprecated)
+      operationId: ingest_deprecated
+      deprecated: true
+      parameters:
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '200':
+          description: OK
+        '400':
+          description: Bad Request
+        '401':
+          description: Unauthorized
+      security:
+        - XAuth: []
   /v1/ingest:
     post:
       summary: Universal event ingest (JSON or NDJSON)
+      operationId: ingest_v1
+      parameters:
+        - name: domain
+          in: query
+          required: false
+          schema:
+            type: string
       requestBody:
         required: true
         content:
@@ -22,15 +58,20 @@ paths:
       responses:
         '202':
           description: Accepted
+        '400':
+          description: Bad Request
+        '401':
+          description: Unauthorized
       security:
-        - BearerAuth: []
+        - XAuth: []
 components:
-  securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
   schemas:
     Event:
       type: object
       required: [ts, type, source]
       additionalProperties: true
+  securitySchemes:
+    XAuth:
+      type: apiKey
+      in: header
+      name: X-Auth

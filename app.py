@@ -99,7 +99,10 @@ def _safe_target_path(domain: str, *, already_sanitized: bool = False) -> Path:
     # Even if the caller claims the value is already sanitized, we re-run the
     # validation to avoid trusting potentially unsafe inputs.
     dom = _sanitize_domain(domain)
-    return safe_target_path(dom, data_dir=DATA)
+    try:
+        return safe_target_path(dom, data_dir=DATA)
+    except DomainError as exc:
+        raise HTTPException(status_code=400, detail="invalid domain") from exc
 
 
 def _require_auth(x_auth: str) -> None:
@@ -133,34 +136,11 @@ def _validate_body_size(req: Request) -> None:
         raise HTTPException(status_code=413, detail="payload too large")
 
 
-@app.post(
-    "/ingest/{domain}",
-    # Dependency order matters: auth FIRST, then size check.
-    dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
-)
-@limiter.limit(RATE_LIMIT)
-async def ingest(
-    domain: str,
-    request: Request,
-):
-
-    dom = _sanitize_domain(domain)
-    target_path = _safe_target_path(dom, already_sanitized=True)
-
-    # JSON parsen
-    try:
-        raw = await request.body()
-        obj = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:  # defensive
-        raise HTTPException(status_code=400, detail="invalid json") from exc
-
-    # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
-    items = obj if isinstance(obj, list) else [obj]
+def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
-    # Leeres Array: nichts zu tun – optional warnen, aber 200 behalten
-    if isinstance(obj, list) and not obj:
-        logger.warning("empty payload array received", extra={"domain": dom})
-        return PlainTextResponse("ok", status_code=200)
+    # Leeres Array: nichts zu tun
+    if not items:
+        return lines
 
     # Normalisieren & validieren
     for entry in items:
@@ -187,11 +167,11 @@ async def ingest(
 
         normalized["domain"] = dom
         lines.append(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
+    return lines
 
-    # Atomar via FileLock anhängen (eine Zeile pro Item)
-    # CodeQL: Pfad nicht direkt aus Nutzereingabe verwenden – stattdessen
-    # nur relativ zum vertrauenswürdigen DATA-Dir arbeiten (dirfd + Symlink-Block).
-    # Use canonical and sanitized path components from target_path
+
+def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
+    target_path = _safe_target_path(dom, already_sanitized=True)
     fname = target_path.name
 
     # Ensure fname is exactly as expected for sanitized domain
@@ -216,9 +196,6 @@ async def ingest(
                 flags |= os.O_NOFOLLOW
 
                 try:
-                    # Use the trusted dirfd together with the basename (fname). The name
-                    # is strictly validated (basename-only + FILENAME_RE) and bound to
-                    # the trusted DATA directory via dir_fd. This is safe; suppress CodeQL FP.
                     fd = os.open(
                         fname,
                         flags,
@@ -243,6 +220,100 @@ async def ingest(
     except Timeout as exc:
         logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
         raise HTTPException(status_code=429, detail="busy, try again") from exc
+
+
+@app.post(
+    "/v1/ingest",
+    # Dependency order matters: auth FIRST, then size check.
+    dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
+    status_code=202,
+)
+@limiter.limit(RATE_LIMIT)
+async def ingest_v1(
+    request: Request,
+    domain: str | None = None,
+):
+    # Determine domain from query param or payload
+    if domain:
+        dom = _sanitize_domain(domain)
+    else:
+        dom = None
+
+    content_type = request.headers.get("content-type", "").lower()
+
+    try:
+        raw = await request.body()
+        body = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid encoding") from exc
+
+    items = []
+    if "application/json" in content_type:
+        try:
+            obj = json.loads(body)
+            items = obj if isinstance(obj, list) else [obj]
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid json") from exc
+    elif "application/x-ndjson" in content_type:
+        lines = body.strip().split("\n")
+        for line in lines:
+            if not line:
+                continue
+            try:
+                items.append(json.loads(line))
+            except json.JSONDecodeError as exc:
+                raise HTTPException(status_code=400, detail="invalid ndjson") from exc
+    else:
+        raise HTTPException(status_code=415, detail="unsupported content-type")
+
+    if not items:
+        logger.warning("empty payload received")
+        return PlainTextResponse("ok", status_code=202)
+
+    # If domain was not in query, try to get it from the first item.
+    if not dom:
+        first_item_domain = items[0].get("domain")
+        if not first_item_domain or not isinstance(first_item_domain, str):
+            raise HTTPException(status_code=400, detail="domain must be specified via query or payload")
+        dom = _sanitize_domain(first_item_domain)
+
+    lines_to_write = _process_items(items, dom)
+    if not lines_to_write:
+        logger.warning("empty payload array received", extra={"domain": dom})
+        return PlainTextResponse("ok", status_code=202)
+
+    _write_lines_to_storage(dom, lines_to_write)
+    return PlainTextResponse("ok", status_code=202)
+
+
+@app.post(
+    "/ingest/{domain}",
+    # Dependency order matters: auth FIRST, then size check.
+    dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
+    deprecated=True,
+)
+@limiter.limit(RATE_LIMIT)
+async def ingest(
+    domain: str,
+    request: Request,
+):
+    dom = _sanitize_domain(domain)
+
+    # JSON parsen
+    try:
+        raw = await request.body()
+        obj = json.loads(raw.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="invalid json") from exc
+
+    # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
+    items = obj if isinstance(obj, list) else [obj]
+    if isinstance(obj, list) and not obj:
+        logger.warning("empty payload array received", extra={"domain": dom})
+        return PlainTextResponse("ok", status_code=200)
+
+    lines = _process_items(items, dom)
+    _write_lines_to_storage(dom, lines)
 
     return PlainTextResponse("ok", status_code=200)
 
