@@ -66,28 +66,12 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 | `LEITSTAND_RATE_LIMIT` | nein    | `60/minute` | Rate-Limit pro Quell-IP (SlowAPI-Format). |
 | `LOG_LEVEL`            | nein    | `INFO`   | Log-Level (z. B. `DEBUG`, `INFO`, `WARNING`). |
 
-## API & Contracts
+## API
 
-### `GET /version`
-* **Header** `X-Auth`: identisch zu den anderen Endpunkten.
-* **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `LEITSTAND_VERSION`.
+Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml).
 
-### `GET /metrics`
-* **Auth**: Keine. Exponiert Prometheus-Metriken (Request-Latenz, -Zähler etc.).
-
-### Typische Fehlercodes
-* `401 Unauthorized`: Token fehlt oder stimmt nicht.
-* `411 Length Required`: `Content-Length`-Header fehlt.
-* `413 Payload Too Large`: Request-Body überschreitet `LEITSTAND_MAX_BODY`.
-* `429 Too Many Requests`: Rate-Limit aus `LEITSTAND_RATE_LIMIT` erreicht. Die Antwort enthält zusätzlich `Retry-After` sowie die Header `X-RateLimit-Limit` und `X-RateLimit-Remaining` (SlowAPI kümmert sich um die Berechnung dieser Werte). Ein Beispiel für einen Client-Backoff findet sich in [docs/cli-curl.md](docs/cli-curl.md).
-* `503 Service Unavailable`: Schreibzugriff blockiert (`LEITSTAND_LOCK_TIMEOUT` überschritten).
-* `507 Insufficient Storage`: Kein freier Speicherplatz im Zielverzeichnis.
-
-Weitere Beispiele und Details finden sich in der begleitenden Dokumentation:
-
-* [docs/api.md](docs/api.md) – Ausführliche API-Dokumentation.
-* [docs/cli-curl.md](docs/cli-curl.md) – Curl-Beispiele für Health-, Version- und Ingest-Aufrufe.
-* [docs/event-contracts.md](docs/event-contracts.md) – Beschreibung des JSONL-Speicherlayouts und referenziertes Schema.
+> **Deprecation (6 Monate):** Domainspezifische Endpoints (`/ingest/aussen`, …) sind veraltet.
+> Bitte auf `POST /v1/ingest` migrieren. Die Domain wird per `event.domain` oder `?domain=aussen` bestimmt.
 
 ## Datenspeicherung
 * Für jede Domain entsteht eine JSONL-Datei im Verzeichnis `LEITSTAND_DATA_DIR`.

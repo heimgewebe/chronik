@@ -1,0 +1,18 @@
+name: openapi-lint
+on:
+  pull_request:
+    paths: ['docs/openapi.yaml']
+  push:
+    paths: ['docs/openapi.yaml']
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Lint OpenAPI (redocly)
+        run: |
+          npx --yes @redocly/cli@1.16.0 lint docs/openapi.yaml

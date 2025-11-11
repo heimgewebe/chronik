@@ -1,0 +1,27 @@
+openapi: 3.0.3
+info:
+  title: Leitstand Ingest API
+  version: 1.0.0
+paths:
+  /v1/ingest:
+    post:
+      summary: Universal event ingest (JSON or NDJSON)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+          application/x-ndjson:
+            schema:
+              type: string
+              description: NDJSON stream of Event objects (one per line)
+      responses:
+        '202':
+          description: Accepted
+components:
+  schemas:
+    Event:
+      type: object
+      required: [ts, type, source]
+      additionalProperties: true
