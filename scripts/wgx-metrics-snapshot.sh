@@ -34,7 +34,15 @@ updates_os=${UPDATES_OS:-0}
 updates_pkg=${UPDATES_PKG:-0}
 updates_flatpak=${UPDATES_FLATPAK:-0}
 if date -d "yesterday" +%F >/dev/null 2>&1; then
-  last_ok=$(date -d "yesterday" +%F)
+# Backup-Status konsistent: age_days steuert last_ok
+age_days=${BACKUP_AGE_DAYS:-1}
+if date -d "today" +%F >/dev/null 2>&1; then
+  # GNU date
+  last_ok=$(date -d "${age_days} day ago" +%F)
+else
+  # BSD/macOS date
+  last_ok=$(date -v-"${age_days}"d +%F)
+fi
 else
   last_ok=$(date -v-1d +%F) # BSD/macOS
 fi
