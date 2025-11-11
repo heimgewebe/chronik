@@ -1,0 +1,19 @@
+name: validate-aussen
+on:
+  pull_request:
+    paths:
+      - 'export/**.jsonl'
+      - 'fixtures/**.jsonl'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
+    with:
+      jsonl_paths_list: |
+        export/*.jsonl
+        fixtures/aussen/**/*.jsonl
+      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/aussen.event.schema.json
+      strict: false
+      validate_formats: true
+      fail_on_empty: false
