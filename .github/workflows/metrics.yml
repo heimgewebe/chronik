@@ -27,6 +27,10 @@ jobs:
 
       - name: Snapshot metrics
         run: scripts/wgx-metrics-snapshot.sh --json
+      - name: Fetch AJV schema (local file)
+        run: |
+          mkdir -p .ci
+          curl -fsSL "$METRICS_SCHEMA_URL" -o .ci/metrics.schema.json
 
       - name: Validate metrics contract
         run: npx --yes ajv-cli@5 validate -s "$METRICS_SCHEMA_URL" -d metrics.json
