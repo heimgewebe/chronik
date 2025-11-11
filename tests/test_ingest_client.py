@@ -1,7 +1,12 @@
 import os
 import asyncio
-os.environ["LEITSTAND_TOKEN"] = "dev"
+
+# Set a default token for when the module is first imported.
+# Tests should override this for hermeticity.
+os.environ.setdefault("LEITSTAND_TOKEN", "test-secret")
+
 import httpx
+import pytest
 from app import app
 from tools.hauski_ingest import ingest_event
 
@@ -30,12 +35,17 @@ class SyncASGITransport(httpx.BaseTransport):
         return asyncio.run(_handle_request())
 
 
-def test_ingest_event_hermetic():
+def test_ingest_event_hermetic(monkeypatch):
+    # Ensure the app's secret matches the token we're sending.
+    test_token = "hermetic-secret"
+    monkeypatch.setattr("app.SECRET", test_token)
+
     transport = SyncASGITransport(app=app)
     response = ingest_event(
         "example.com",
         {"event": "test", "status": "ok"},
         url="http://test",
+        token=test_token,
         transport=transport,
     )
     assert response == "ok"

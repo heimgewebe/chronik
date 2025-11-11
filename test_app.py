@@ -322,6 +322,71 @@ def test_path_traversal_domain_is_rejected(monkeypatch):
     assert "invalid domain" in response.text
 
 
+def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+    domain = "example.com"
+    payload = {"data": "value"}
+    response = client.post(
+        f"/v1/ingest?domain={domain}",
+        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        json=payload,
+    )
+    assert response.status_code == 202
+    assert response.text == "ok"
+
+    files = list(tmp_path.glob("*.jsonl"))
+    assert len(files) == 1
+    with open(files[0], "r") as f:
+        data = json.loads(f.readline())
+        assert data == {**payload, "domain": domain}
+
+
+def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+    domain = "example.com"
+    payload = {"domain": domain, "data": "value"}
+    response = client.post(
+        "/v1/ingest",
+        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        json=payload,
+    )
+    assert response.status_code == 202
+    assert response.text == "ok"
+
+    files = list(tmp_path.glob("*.jsonl"))
+    assert len(files) == 1
+    with open(files[0], "r") as f:
+        data = json.loads(f.readline())
+        assert data == payload
+
+
+def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr("app.SECRET", "secret")
+    monkeypatch.setattr("app.DATA", tmp_path)
+    domain = "example.com"
+    payload = [{"data": "value1"}, {"data": "value2"}]
+    ndjson_payload = "\n".join(json.dumps(item) for item in payload)
+    response = client.post(
+        f"/v1/ingest?domain={domain}",
+        headers={"X-Auth": "secret", "Content-Type": "application/x-ndjson"},
+        content=ndjson_payload,
+    )
+    assert response.status_code == 202
+    assert response.text == "ok"
+
+    files = list(tmp_path.glob("*.jsonl"))
+    assert len(files) == 1
+    with open(files[0], "r") as f:
+        lines = f.readlines()
+        assert len(lines) == 2
+        data1 = json.loads(lines[0])
+        assert data1 == {**payload[0], "domain": domain}
+        data2 = json.loads(lines[1])
+        assert data2 == {**payload[1], "domain": domain}
+
+
 def test_symlink_attack_rejected_after_resolve(monkeypatch, tmp_path):
     # This is the more advanced attack: a symlink that gets resolved *by*
     # `resolve()` to a valid-looking path inside the data dir.
