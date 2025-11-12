@@ -4,6 +4,9 @@
 als JSON entgegennimmt und domain-spezifisch in JSON Lines Dateien ablegt. Die Anwendung ist in
 FastAPI implementiert und lässt sich lokal oder in Codespaces betreiben.
 
+- **API-Spezifikation:** siehe `docs/openapi.yaml`.
+ Alte Pfade `POST /ingest/{domain}` sind **deprecated** (Ablauf 6 Monate nach Merge) und werden durch `POST /v1/ingest` ersetzt.
+
 ## Quickstart
 ```bash
 git clone <repository-url>

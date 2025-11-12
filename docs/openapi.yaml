@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
-  title: Leitstand Ingest API
-  version: 1.0.0
+  title: Leitstand API
+  version: 0.1.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -9,14 +9,36 @@ servers:
   - url: http://localhost:8788
     description: Development server
 paths:
+  /v1/ingest:
+    post:
+      summary: Universal ingest endpoint
+      operationId: ingestEvent
+      security:
+        - XAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Event'
+      responses:
+        '202':
+          description: Accepted
+        '400':
+          description: Bad request
+        '401':
+          description: Unauthorized
   /ingest/{domain}:
     post:
-      summary: Ingest event for a specific domain (deprecated)
-      operationId: ingest_deprecated
       deprecated: true
+      summary: Deprecated ingest endpoint
+      operationId: ingestEventDeprecated
+      security:
+        - XAuth: []
+      description: "Ersetzt durch **POST /v1/ingest** (Ablauf: 6 Monate nach Merge)."
       parameters:
-        - name: domain
-          in: path
+        - in: path
+          name: domain
           required: true
           schema:
             type: string
@@ -27,51 +49,28 @@ paths:
             schema:
               $ref: '#/components/schemas/Event'
       responses:
-        '200':
-          description: OK
-        '400':
-          description: Bad Request
-        '401':
-          description: Unauthorized
-      security:
-        - XAuth: []
-  /v1/ingest:
-    post:
-      summary: Universal event ingest (JSON or NDJSON)
-      operationId: ingest_v1
-      parameters:
-        - name: domain
-          in: query
-          required: false
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/Event'
-          application/x-ndjson:
-            schema:
-              type: string
-              description: NDJSON stream of Event objects (one per line)
-      responses:
         '202':
-          description: Accepted
+          description: Accepted (deprecated)
         '400':
-          description: Bad Request
+          description: Bad request
         '401':
           description: Unauthorized
-      security:
-        - XAuth: []
 components:
-  schemas:
-    Event:
-      type: object
-      required: [ts, type, source]
-      additionalProperties: true
   securitySchemes:
     XAuth:
       type: apiKey
       in: header
       name: X-Auth
+  schemas:
+    Event:
+      type: object
+      required: [ts, kind, payload]
+      properties:
+        ts:
+          type: string
+          format: date-time
+        kind:
+          type: string
+        payload:
+          type: object
+          additionalProperties: true
