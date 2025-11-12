@@ -13,6 +13,14 @@ paths:
     post:
       summary: Universal ingest endpoint
       operationId: ingestEvent
+      description: Domain must be specified either via query parameter or as a field in the payload.
+      parameters:
+        - name: domain
+          in: query
+          description: Target domain for the event. Can also be supplied in the payload.
+          required: false
+          schema:
+            type: string
       security:
         - XAuth: []
       requestBody:
