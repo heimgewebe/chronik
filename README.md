@@ -73,6 +73,11 @@ Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml)
 > **Deprecation (6 Monate):** Domainspezifische Endpoints (`/ingest/aussen`, …) sind veraltet.
 > Bitte auf `POST /v1/ingest` migrieren. Die Domain wird per `event.domain` oder `?domain=aussen` bestimmt.
 
+## Clients
+- **Rust (Stub):** `clients/rust/leitstand_producer`
+  - Blocking (default) und optional `async` Feature.
+  - Beispiel: `cargo run --example send` (läuft gegen `POST /v1/ingest`).
+
 ## Datenspeicherung
 * Für jede Domain entsteht eine JSONL-Datei im Verzeichnis `LEITSTAND_DATA_DIR`.
 * Der Dateiname entspricht der Domain (`<domain>.jsonl`). Extrem lange Domains werden automatisch gekürzt und erhalten einen 8-stelligen Hash-Suffix (z. B. `very-long…-1a2b3c4d.jsonl`), um Dateisystemlimits einzuhalten.
