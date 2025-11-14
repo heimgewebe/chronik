@@ -1,5 +1,7 @@
-import os
 import asyncio
+import os
+import secrets
+import string
 
 # Set a default token for when the module is first imported.
 # Tests should override this for hermeticity.
@@ -37,7 +39,7 @@ class SyncASGITransport(httpx.BaseTransport):
 
 def test_ingest_event_hermetic(monkeypatch):
     # Ensure the app's secret matches the token we're sending.
-    test_token = "hermetic-secret"
+    test_token = "".join(secrets.choice(string.ascii_letters) for i in range(16))
     monkeypatch.setattr("app.SECRET", test_token)
 
     transport = SyncASGITransport(app=app)

@@ -1,6 +1,7 @@
 import errno
 import json
 import os
+import secrets
 import string
 from pathlib import Path
 
@@ -17,17 +18,23 @@ import storage
 client = TestClient(app)
 
 
+def _test_secret() -> str:
+    return "".join(secrets.choice(string.ascii_letters) for i in range(16))
+
+
 def test_ingest_auth_ok(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
-        "/ingest/example.com", headers={"X-Auth": "secret"}, json={"data": "value"}
+        "/ingest/example.com", headers={"X-Auth": secret}, json={"data": "value"}
     )
     assert response.status_code == 200
     assert response.text == "ok"
 
 
 def test_ingest_auth_fail(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
         "/ingest/example.com", headers={"X-Auth": "wrong"}, json={"data": "value"}
     )
@@ -35,7 +42,8 @@ def test_ingest_auth_fail(monkeypatch):
 
 
 def test_ingest_auth_missing(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post("/ingest/example.com", json={"data": "value"})
     assert response.status_code == 401
 
@@ -75,11 +83,12 @@ def test_secure_filename_rejects_nested_traversal():
 
 
 def test_ingest_single_object(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
     domain = "example.com"
     payload = {"data": "value"}
-    response = client.post(f"/ingest/{domain}", headers={"X-Auth": "secret"}, json=payload)
+    response = client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload)
     assert response.status_code == 200
     assert response.text == "ok"
 
@@ -94,11 +103,12 @@ def test_ingest_single_object(monkeypatch, tmp_path: Path):
 
 
 def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
     domain = "example.com"
     payload = [{"data": "value1"}, {"data": "value2"}]
-    response = client.post(f"/ingest/{domain}", headers={"X-Auth": "secret"}, json=payload)
+    response = client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload)
     assert response.status_code == 200
     assert response.text == "ok"
 
@@ -116,11 +126,12 @@ def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
 
 
 def test_ingest_empty_array(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
     response = client.post(
         "/ingest/example.com",
-        headers={"X-Auth": "secret"},
+        headers={"X-Auth": secret},
         json=[],
     )
 
@@ -130,10 +141,11 @@ def test_ingest_empty_array(monkeypatch, tmp_path: Path):
 
 
 def test_ingest_invalid_json(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
         "/ingest/example.com",
-        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
         content="{invalid json}",
     )
     assert response.status_code == 400
@@ -141,30 +153,33 @@ def test_ingest_invalid_json(monkeypatch):
 
 
 def test_ingest_payload_too_large(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     # Limit is 1 MiB
     large_payload = {"key": "v" * (1024 * 1024)}
     response = client.post(
-        "/ingest/example.com", headers={"X-Auth": "secret"}, json=large_payload
+        "/ingest/example.com", headers={"X-Auth": secret}, json=large_payload
     )
     assert response.status_code == 413
     assert "payload too large" in response.text
 
 
 def test_ingest_invalid_payload_not_dict(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
-        "/ingest/example.com", headers={"X-Auth": "secret"}, json=["not-a-dict"]
+        "/ingest/example.com", headers={"X-Auth": secret}, json=["not-a-dict"]
     )
     assert response.status_code == 400
     assert "invalid payload" in response.text
 
 
 def test_ingest_domain_mismatch(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
         "/ingest/example.com",
-        headers={"X-Auth": "secret"},
+        headers={"X-Auth": secret},
         json={"domain": "other.example", "data": "value"},
     )
     assert response.status_code == 400
@@ -172,12 +187,13 @@ def test_ingest_domain_mismatch(monkeypatch):
 
 
 def test_ingest_domain_normalized(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
 
     payload = {"domain": "Example.COM", "data": "value"}
     response = client.post(
-        "/ingest/example.com", headers={"X-Auth": "secret"}, json=payload
+        "/ingest/example.com", headers={"X-Auth": secret}, json=payload
     )
 
     assert response.status_code == 200
@@ -190,11 +206,12 @@ def test_ingest_domain_normalized(monkeypatch, tmp_path: Path):
 
 
 def test_ingest_no_content_length(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     request = client.build_request(
         "POST",
         "/ingest/example.com",
-        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
         content='{"data": "value"}',
     )
     # httpx TestClient adds this header automatically.
@@ -206,7 +223,8 @@ def test_ingest_no_content_length(monkeypatch):
 
 def test_ingest_no_content_length_unauthorized(monkeypatch):
     """Missing auth should fail before we validate content length."""
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     request = client.build_request(
         "POST",
         "/ingest/example.com",
@@ -220,10 +238,11 @@ def test_ingest_no_content_length_unauthorized(monkeypatch):
 
 
 def test_ingest_negative_content_length(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
         "/ingest/example.com",
-        headers={"X-Auth": "secret", "Content-Length": "-1"},
+        headers={"X-Auth": secret, "Content-Length": "-1"},
         json={"data": "value"},
     )
     assert response.status_code == 400
@@ -231,16 +250,18 @@ def test_ingest_negative_content_length(monkeypatch):
 
 
 def test_health_endpoint(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
-    response = client.get("/health", headers={"X-Auth": "secret"})
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
+    response = client.get("/health", headers={"X-Auth": secret})
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
 def test_version_endpoint(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.VERSION", "1.2.3")
-    response = client.get("/version", headers={"X-Auth": "secret"})
+    response = client.get("/version", headers={"X-Auth": secret})
     assert response.status_code == 200
     assert response.json() == {"version": "1.2.3"}
 
@@ -293,11 +314,12 @@ def test_lock_timeout_returns_429(monkeypatch):
             return False
 
     monkeypatch.setattr("app.FileLock", _DummyLock)
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
         "/ingest/example.com",
         headers={
-            "X-Auth": "secret",
+            "X-Auth": secret,
             "Content-Length": "2",
             "Content-Type": "application/json",
         },
@@ -308,11 +330,12 @@ def test_lock_timeout_returns_429(monkeypatch):
 
 
 def test_path_traversal_domain_is_rejected(monkeypatch):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
         "/ingest/..example.com",
         headers={
-            "X-Auth": "secret",
+            "X-Auth": secret,
             "Content-Type": "application/json",
             "Content-Length": "2",
         },
@@ -323,13 +346,14 @@ def test_path_traversal_domain_is_rejected(monkeypatch):
 
 
 def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
     domain = "example.com"
     payload = {"data": "value"}
     response = client.post(
         f"/v1/ingest?domain={domain}",
-        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
         json=payload,
     )
     assert response.status_code == 202
@@ -343,13 +367,14 @@ def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path):
 
 
 def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
     domain = "example.com"
     payload = {"domain": domain, "data": "value"}
     response = client.post(
         "/v1/ingest",
-        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
         json=payload,
     )
     assert response.status_code == 202
@@ -363,14 +388,15 @@ def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path):
 
 
 def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
     domain = "example.com"
     payload = [{"data": "value1"}, {"data": "value2"}]
     ndjson_payload = "\n".join(json.dumps(item) for item in payload)
     response = client.post(
         f"/v1/ingest?domain={domain}",
-        headers={"X-Auth": "secret", "Content-Type": "application/x-ndjson"},
+        headers={"X-Auth": secret, "Content-Type": "application/x-ndjson"},
         content=ndjson_payload,
     )
     assert response.status_code == 202
@@ -416,7 +442,8 @@ def test_symlink_attack_rejected(monkeypatch, tmp_path):
     if not hasattr(os, "symlink") or getattr(os, "O_NOFOLLOW", 0) == 0:
         pytest.skip("platform lacks symlink or O_NOFOLLOW")
 
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
 
     victim = tmp_path / "victim.txt"
@@ -426,7 +453,7 @@ def test_symlink_attack_rejected(monkeypatch, tmp_path):
 
     response = client.post(
         "/ingest/example.com",
-        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
         json={"data": "value"},
     )
 
@@ -437,13 +464,14 @@ def test_symlink_attack_rejected(monkeypatch, tmp_path):
 def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
     import concurrent.futures
 
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
 
     def _one(i: int) -> int:
         return client.post(
             "/ingest/example.com",
-            headers={"X-Auth": "secret", "Content-Type": "application/json"},
+            headers={"X-Auth": secret, "Content-Type": "application/json"},
             json={"i": i},
         ).status_code
 
@@ -459,7 +487,8 @@ def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
 
 
 def test_disk_full_returns_507(monkeypatch, tmp_path):
-    monkeypatch.setattr("app.SECRET", "secret")
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
     monkeypatch.setattr("app.DATA", tmp_path)
 
     original_open = app_module.os.open
@@ -473,7 +502,7 @@ def test_disk_full_returns_507(monkeypatch, tmp_path):
 
     response = client.post(
         "/ingest/example.com",
-        headers={"X-Auth": "secret", "Content-Type": "application/json"},
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
         json={},
     )
 
