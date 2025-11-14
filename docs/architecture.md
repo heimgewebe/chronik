@@ -1,6 +1,6 @@
 # Architekturübersicht
 
-Leitstand ist ein einfacher Ingest-Dienst, der auf Python und FastAPI basiert. Die Architektur ist darauf ausgelegt, leichtgewichtig und einfach zu betreiben zu sein.
+Chronik ist ein einfacher Ingest-Dienst, der auf Python und FastAPI basiert. Die Architektur ist darauf ausgelegt, leichtgewichtig und einfach zu betreiben zu sein.
 
 ## Komponenten
 
@@ -10,11 +10,11 @@ Leitstand ist ein einfacher Ingest-Dienst, der auf Python und FastAPI basiert. D
 
 2.  **Ingest-Endpunkt (`/ingest/{domain}`):**
     *   Nimmt JSON-Daten per `POST`-Request entgegen.
-    *   Authentifiziert Anfragen über einen Shared-Secret-Token (`LEITSTAND_TOKEN`), der im `X-Auth`-Header übergeben wird.
+    *   Authentifiziert Anfragen über einen Shared-Secret-Token (`CHRONIK_TOKEN`), der im `X-Auth`-Header übergeben wird.
     *   Validiert und bereinigt den `domain`-Pfadparameter.
 
 3.  **Speicherschicht (`storage.py`):**
-    *   Eingehende Daten werden in domain-spezifischen JSON-Lines-Dateien (`.jsonl`) im `LEITSTAND_DATA_DIR`-Verzeichnis gespeichert.
+    *   Eingehende Daten werden in domain-spezifischen JSON-Lines-Dateien (`.jsonl`) im `CHRONIK_DATA_DIR`-Verzeichnis gespeichert.
     *   Die `filelock`-Bibliothek wird verwendet, um Race Conditions beim Schreiben in die Dateien zu verhindern.
     *   Die Funktion `sanitize_domain` normalisiert Domain-Schlüssel streng deterministisch (Lowercase, Whitespace entfernen, unerlaubte Zeichen ersetzen) und stellt sicher, dass anschließend ein sicherer Dateiname erzeugt werden kann.
     *   Die Funktion `secure_filename` sorgt für sichere Dateinamen.

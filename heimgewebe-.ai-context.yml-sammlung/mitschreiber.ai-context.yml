@@ -13,7 +13,7 @@ dependencies:
       relationship: uses
       interface:
         - jsonl_line_schema
-    - name: leitstand
+    - name: chronik
       relationship: uses
       interface:
         - http_ingest_optional

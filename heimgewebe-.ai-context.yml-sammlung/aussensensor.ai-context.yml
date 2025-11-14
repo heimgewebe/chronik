@@ -2,14 +2,14 @@ ai_context_version: 1.0
 
 project:
   name: aussensensor
-  summary: Scripted data collection pushing events to leitstand.
+  summary: Scripted data collection pushing events to chronik.
   role: sensor_event_producer
   primary_language: bash
   visibility: internal
 
 dependencies:
   internal:
-    - name: leitstand
+    - name: chronik
       relationship: uses
       interface:
         - http_ingest_aussen
@@ -30,7 +30,7 @@ architecture:
   data_flow:
     input: polling / external sensors
     processing: map to contract shape
-    output: POST to leitstand ingest
+    output: POST to chronik ingest
 
 conventions:
   branching: "main, feature/*"

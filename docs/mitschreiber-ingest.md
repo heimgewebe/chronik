@@ -1,6 +1,6 @@
-# OS Context Ingest (mitschreiber → leitstand)
+# OS Context Ingest (mitschreiber → chronik)
 
-leitstand ist Single Point of Ingest, Audit & Panels.
+chronik ist Single Point of Ingest, Audit & Panels.
 
 ## Endpoints
 - `POST /ingest/os/context/state`

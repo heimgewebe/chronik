@@ -1,4 +1,4 @@
-use leitstand_producer::ProducerClient;
+use chronik_producer::ProducerClient;
 use serde::Serialize;
 
 #[derive(Serialize)]

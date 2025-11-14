@@ -13,7 +13,7 @@ dependencies:
       relationship: uses
       interface:
         - audio_events_schema
-    - name: leitstand
+    - name: chronik
       relationship: uses
       interface:
         - event_ingest

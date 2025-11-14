@@ -9,7 +9,7 @@ project:
 
 dependencies:
   internal:
-    - name: leitstand
+    - name: chronik
       relationship: uses
       interface:
         - event_feed
@@ -29,7 +29,7 @@ architecture:
     - path: src/scoring/
       purpose: quality scoring & policy checks
   data_flow:
-    input: events/metrics from leitstand
+    input: events/metrics from chronik
     processing: scoring + feedback
     output: reports, signals
 

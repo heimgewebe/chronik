@@ -1,6 +1,6 @@
 # Event-Contracts
 
-Eingehende Events werden als JSON Lines (NDJSON) in `LEITSTAND_DATA_DIR` gespeichert, wobei jede Datei einer Domain entspricht.
+Eingehende Events werden als JSON Lines (NDJSON) in `CHRONIK_DATA_DIR` gespeichert, wobei jede Datei einer Domain entspricht.
 Dieses Dokument beschreibt das empfohlene Schema für Events der Domain `aussen`.
 
 ## Schema: `aussen.event.schema.json`

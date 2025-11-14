@@ -1,14 +1,14 @@
 # Betriebshandbuch
 
-Dieses Dokument fasst die wichtigsten Betriebs- und Wartungsaufgaben für den Leitstand-Ingest-Dienst zusammen.
+Dieses Dokument fasst die wichtigsten Betriebs- und Wartungsaufgaben für den Chronik-Ingest-Dienst zusammen.
 
 ## Lifecycle
 ### Starten
 ```bash
 uvicorn app:app --host 0.0.0.0 --port 8788
 ```
-* Vor dem Start sicherstellen, dass `LEITSTAND_DATA_DIR` beschreibbar ist.
-* `LEITSTAND_TOKEN` muss gesetzt sein (ohne Token startet der Dienst nicht).
+* Vor dem Start sicherstellen, dass `CHRONIK_DATA_DIR` beschreibbar ist.
+* `CHRONIK_TOKEN` muss gesetzt sein (ohne Token startet der Dienst nicht).
 
 ### Stoppen
 * Uvicorn-Prozess kontrolliert beenden (z. B. per `Ctrl+C`, `systemctl stop`, Kubernetes Rollout etc.).
@@ -25,19 +25,19 @@ uvicorn app:app --host 0.0.0.0 --port 8788
 * Eingehende Domains werden validiert; zusätzliche Allow-/Deny-Listen können vorgeschaltet werden.
 
 ## Backup & Restore
-* JSONL-Dateien sind anhängende Logs. Regelmäßige inkrementelle Backups des Verzeichnisses `LEITSTAND_DATA_DIR` sind ausreichend.
+* JSONL-Dateien sind anhängende Logs. Regelmäßige inkrementelle Backups des Verzeichnisses `CHRONIK_DATA_DIR` sind ausreichend.
 * Für Wiederherstellungen Dateien in ein leeres Datenverzeichnis kopieren und Dienst neu starten.
 
 ## Fehlerbehebung
 | Symptom                        | Maßnahme |
 |--------------------------------|----------|
-| `401 unauthorized`             | Token-Header prüfen, Abgleich mit `LEITSTAND_TOKEN`. |
+| `401 unauthorized`             | Token-Header prüfen, Abgleich mit `CHRONIK_TOKEN`. |
 | `400 invalid domain`           | Domain-Format prüfen. Nur Kleinbuchstaben, Ziffern und `-` erlaubt. |
 | `400 invalid json`             | Payload auf gültiges JSON prüfen. Sonderzeichen ggf. escapen. |
 | Keine neuen Dateien unter `data`| Schreibrechte des Prozesses und Pfadkonfiguration kontrollieren. |
 | Dienst startet nicht           | Fehlermeldungen im Uvicorn-Log auswerten, Python-Abhängigkeiten prüfen. |
 
 ## Deployment-Hinweise
-* Containerisierung: Für Docker-Deployments `LEITSTAND_DATA_DIR` als Volume mounten und `LEITSTAND_TOKEN` per Secret setzen.
+* Containerisierung: Für Docker-Deployments `CHRONIK_DATA_DIR` als Volume mounten und `CHRONIK_TOKEN` per Secret setzen.
 * Skalierung: Da pro Request eine Datei geöffnet und beschrieben wird, sollte bei hohem Durchsatz ein vorgeschalteter Message-Broker erwogen werden.
 * Infrastruktur: Reverse Proxy (z. B. Traefik, Nginx) kann TLS beenden und Auth-Token verwalten.

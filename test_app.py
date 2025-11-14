@@ -4,7 +4,7 @@ import os
 import string
 from pathlib import Path
 
-os.environ.setdefault("LEITSTAND_TOKEN", "test-secret")
+os.environ.setdefault("CHRONIK_TOKEN", "test-secret")
 
 import pytest
 from fastapi import HTTPException
