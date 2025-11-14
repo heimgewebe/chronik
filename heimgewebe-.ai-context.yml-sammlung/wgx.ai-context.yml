@@ -13,7 +13,7 @@ dependencies:
       relationship: uses
       interface:
         - validation_hooks
-    - name: leitstand
+    - name: chronik
       relationship: uses
       interface:
         - ci_e2e_orchestration

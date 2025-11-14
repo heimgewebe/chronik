@@ -1,10 +1,10 @@
 [package]
-name = "leitstand_producer"
+name = "chronik_producer"
 version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Minimal client to send events to leitstand /v1/ingest"
-repository = "https://github.com/heimgewebe/leitstand"
+description = "Minimal client to send events to chronik /v1/ingest"
+repository = "https://github.com/heimgewebe/chronik"
 
 [features]
 default = ["blocking"]

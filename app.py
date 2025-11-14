@@ -31,22 +31,22 @@ from storage import (
 )
 
 # --- Runtime constants & logging ---
-MAX_PAYLOAD_SIZE: Final[int] = int(os.getenv("LEITSTAND_MAX_BODY", str(1024 * 1024)))
-LOCK_TIMEOUT: Final[int] = int(os.getenv("LEITSTAND_LOCK_TIMEOUT", "30"))
-RATE_LIMIT: Final[str] = os.getenv("LEITSTAND_RATE_LIMIT", "60/minute")
+MAX_PAYLOAD_SIZE: Final[int] = int(os.getenv("CHRONIK_MAX_BODY", str(1024 * 1024)))
+LOCK_TIMEOUT: Final[int] = int(os.getenv("CHRONIK_LOCK_TIMEOUT", "30"))
+RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT", "60/minute")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(level=LOG_LEVEL)
-logger = logging.getLogger("leitstand")
+logger = logging.getLogger("chronik")
 
-app = FastAPI(title="leitstand-ingest")
+app = FastAPI(title="chronik-ingest")
 
 DATA: Final = DATA_DIR
 
-VERSION: Final[str] = os.environ.get("LEITSTAND_VERSION", "dev")
+VERSION: Final[str] = os.environ.get("CHRONIK_VERSION", "dev")
 
-SECRET_ENV = os.environ.get("LEITSTAND_TOKEN")
+SECRET_ENV = os.environ.get("CHRONIK_TOKEN")
 if not SECRET_ENV:
-    raise RuntimeError("LEITSTAND_TOKEN not set. Auth is required for all requests.")
+    raise RuntimeError("CHRONIK_TOKEN not set. Auth is required for all requests.")
 
 SECRET: Final[str] = SECRET_ENV
 

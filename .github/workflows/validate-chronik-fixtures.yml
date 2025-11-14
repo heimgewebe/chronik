@@ -1,0 +1,28 @@
+name: validate-chronik-fixtures
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  fixtures:
+    name: fixtures (tests/fixtures/chronik.jsonl)
+    if: hashFiles('tests/fixtures/chronik.jsonl') != ''
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@codex/add-github-workflows
+    with:
+      jsonl_path: tests/fixtures/chronik.jsonl
+      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/main/contracts/chronik-fixtures.schema.json
+      strict: false
+      validate_formats: true
+
+  demo:
+    name: demo (demo/chronik.jsonl)
+    if: hashFiles('demo/chronik.jsonl') != ''
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@codex/add-github-workflows
+    with:
+      jsonl_path: demo/chronik.jsonl
+      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/main/contracts/chronik-fixtures.schema.json
+      strict: false
+      validate_formats: true

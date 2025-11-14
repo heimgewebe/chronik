@@ -1,7 +1,7 @@
 ai_context_version: 1.0
 
 project:
-  name: leitstand
+  name: chronik
   summary: Event ingest and processing hub.
   role: central_event_store
   primary_language: rust
@@ -36,7 +36,7 @@ architecture:
 
 conventions:
   branching: "main, feature/*, hotfix/*"
-  commit_prefix: "leitstand"
+  commit_prefix: "chronik"
   ci_platform: github_actions
 
 documentation:

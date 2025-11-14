@@ -1,10 +1,10 @@
 # API-Handbuch
 
-Dieses Dokument beschreibt die HTTP-Schnittstelle des Leitstand-Ingest-Dienstes im Detail.
+Dieses Dokument beschreibt die HTTP-Schnittstelle des Chronik-Ingest-Dienstes im Detail.
 
 ## Übersicht
 * Basis-URL: `http://<host>:<port>` (Standard-Port 8788)
-* Authentifizierung: Verpflichtender Header `X-Auth` mit dem Wert aus `LEITSTAND_TOKEN`
+* Authentifizierung: Verpflichtender Header `X-Auth` mit dem Wert aus `CHRONIK_TOKEN`
 * Datenformat: JSON bzw. JSON Lines
 * OpenAPI/Swagger: Automatisch unter `/docs` (Swagger UI) bzw. `/openapi.json` verfügbar
 
@@ -24,22 +24,22 @@ Dieses Dokument beschreibt die HTTP-Schnittstelle des Leitstand-Ingest-Dienstes 
 ```bash
 curl -X POST "http://localhost:8788/ingest/example.com" \
      -H "Content-Type: application/json" \
-     -H "X-Auth: ${LEITSTAND_TOKEN}" \
+     -H "X-Auth: ${CHRONIK_TOKEN}" \
      -d '{"event": "deploy", "status": "success"}'
 ```
 
 ```bash
 http POST :8788/ingest/service.internal event:=\
-    "deploy" status:=\"success\" X-Auth:${LEITSTAND_TOKEN}
+    "deploy" status:=\"success\" X-Auth:${CHRONIK_TOKEN}
 ```
 
 ### `GET /health`
-* **Header** `X-Auth`: muss ebenfalls dem Wert von `LEITSTAND_TOKEN` entsprechen.
+* **Header** `X-Auth`: muss ebenfalls dem Wert von `CHRONIK_TOKEN` entsprechen.
 * **Antwort**: `{ "status": "ok" }`. Kann ohne Request-Body abgefragt werden.
 
 ### `GET /version`
 * **Header** `X-Auth`: identisch zu den anderen Endpunkten.
-* **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `LEITSTAND_VERSION`.
+* **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `CHRONIK_VERSION`.
 
 #### Fehlerfälle
 | Status | Detail              | Ursache |

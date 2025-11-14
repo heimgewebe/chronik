@@ -14,7 +14,7 @@ dependencies:
       interface:
         - semantic_linking
         - search_integration
-    - name: leitstand
+    - name: chronik
       relationship: uses
       interface:
         - ingest_events

@@ -1,10 +1,10 @@
 ai_context_version: 1.0
 
 project:
-  name: leitstand
-  summary: Event ingest and processing hub.
+  name: chronik
+  summary: Event ingest and persistence hub (formerly leitstand).
   role: central_event_store
-  primary_language: rust
+  primary_language: python
   visibility: internal
 
 dependencies:
@@ -13,30 +13,28 @@ dependencies:
       relationship: uses
       interface:
         - json_schema
-        - proto
   external:
-    - name: tokio
-      version: "1.x"
-    - name: serde
-    - name: serde_json
-    - name: tracing
+    - name: fastapi
+    - name: uvicorn
+    - name: httpx
+    - name: filelock
 
 architecture:
   entrypoints:
-    - src/main.rs
+    - app.py
   key_paths:
-    - path: src/ingest/
+    - path: app.py
       purpose: HTTP ingest + validation
-    - path: src/pipeline/
-      purpose: event processing
+    - path: storage.py
+      purpose: event persistence
   data_flow:
-    input: HTTP POST /ingest/*
-    processing: JSON Schema validation + pipelines
-    output: storage + metrics
+    input: HTTP POST /v1/ingest
+    processing: JSON Schema validation
+    output: storage in domain-specific jsonl files
 
 conventions:
   branching: "main, feature/*, hotfix/*"
-  commit_prefix: "leitstand"
+  commit_prefix: "chronik"
   ci_platform: github_actions
 
 documentation:
