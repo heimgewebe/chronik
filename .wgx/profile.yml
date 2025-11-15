@@ -1,0 +1,26 @@
+class: python-service
+tasks:
+  smoke: |
+    set -euxo pipefail
+    bash scripts/setup-venv.sh
+    . .venv/bin/activate
+    export CHRONIK_TOKEN="${CHRONIK_TOKEN:-dev}"
+    python3 -c 'import httpx; from app import app; from tools.hauski_ingest import ingest_event; transport = httpx.ASGITransport(app=app); print(ingest_event("example.com", {"event":"test","status":"ok"}, url="http://test", transport=transport))'
+  guard: |
+    set -euxo pipefail
+    bash scripts/setup-venv.sh
+    . .venv/bin/activate
+    export PYTHONPATH="${PYTHONPATH:-.}:."
+    python3 -m pytest
+  metrics: |
+    set -euxo pipefail
+    if [ -x scripts/wgx-metrics-snapshot.sh ]; then
+      scripts/wgx-metrics-snapshot.sh --json
+    else
+      echo "[wgx.metrics] scripts/wgx-metrics-snapshot.sh fehlt, übersprungen"
+    fi
+  snapshot: |
+    set -euxo pipefail
+    bash scripts/setup-venv.sh
+    . .venv/bin/activate
+    python3 -m pytest -q
