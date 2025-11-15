@@ -1,6 +1,8 @@
 # API-Handbuch
 
 Dieses Dokument beschreibt die HTTP-Schnittstelle des Chronik-Ingest-Dienstes im Detail.
+Chronik dient ausschließlich als Ereignis-Ablage für die Domains `aussen` und
+`hauski`. Andere Integrationen sind ausgeschlossen.
 
 ## Übersicht
 * Basis-URL: `http://<host>:<port>` (Standard-Port 8788)
@@ -9,8 +11,39 @@ Dieses Dokument beschreibt die HTTP-Schnittstelle des Chronik-Ingest-Dienstes im
 * OpenAPI/Swagger: Automatisch unter `/docs` (Swagger UI) bzw. `/openapi.json` verfügbar
 
 ## Endpunkte
+### `POST /v1/ingest`
+Standard-Endpunkt für alle Ereignisse der Domains `aussen` und `hauski`.
+Die Domain kann über den Query-Parameter `?domain=` oder als Feld innerhalb
+der JSON-Payload gesetzt werden. Wird keine Domain angegeben, erwartet der
+Dienst ein Feld `domain` im ersten Objekt des Payloads.
+
+| Eigenschaft    | Beschreibung |
+|----------------|--------------|
+| Methode        | `POST` |
+| Pfadparameter  | — |
+| Query-Parameter| `domain` (optional) – wird wie bei `/ingest/{domain}` normalisiert und validiert. |
+| Header         | `Content-Type: application/json` oder `application/x-ndjson`; `X-Auth: <token>` (Pflicht). |
+| Request-Body   | JSON-Objekt oder Array aus Objekten. Jedes Objekt erhält automatisch ein Feld `domain`, sofern es fehlt. |
+| Antwort        | `202 Accepted` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid json`, fehlende Domain-Angaben `400 domain must be specified ...`, fehlende Authentifizierung `401 unauthorized`. Bei gesetztem Rate-Limit werden zusätzlich die Header `X-RateLimit-Limit` und `X-RateLimit-Remaining` übertragen; bei `429 Too Many Requests` kommt `Retry-After` hinzu. |
+
+#### Beispiel-Request (Query-Parameter)
+```bash
+curl -X POST "http://localhost:8788/v1/ingest?domain=aussen" \
+     -H "Content-Type: application/json" \
+     -H "X-Auth: ${CHRONIK_TOKEN}" \
+     -d '{"event": "deploy", "status": "success"}'
+```
+
+#### Beispiel-Request (Domain in Payload)
+```bash
+curl -X POST "http://localhost:8788/v1/ingest" \
+     -H "Content-Type: application/json" \
+     -H "X-Auth: ${CHRONIK_TOKEN}" \
+     -d '{"event": "deploy", "status": "success", "domain": "hauski"}'
+```
+
 ### `POST /ingest/{domain}`
-Übernimmt beliebige JSON-Payloads und speichert sie domain-spezifisch.
+Kompatibilitäts-Endpunkt (Deprecated). Übernimmt beliebige JSON-Payloads und speichert sie domain-spezifisch.
 
 | Eigenschaft    | Beschreibung |
 |----------------|--------------|

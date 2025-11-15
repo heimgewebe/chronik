@@ -5,6 +5,9 @@ info:
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
+  description: >-
+    Chronik nimmt Ereignisse der Domains `aussen` und `hauski` entgegen und
+    persistiert sie als JSON Lines.
 servers:
   - url: http://localhost:8788
     description: Development server
@@ -13,11 +16,14 @@ paths:
     post:
       summary: Universal ingest endpoint
       operationId: ingestEvent
-      description: Domain must be specified either via query parameter or as a field in the payload.
+      description: >-
+        Domain kann über den Query-Parameter `domain` oder als Feld im ersten
+        Event angegeben werden. Fehlt die Information, wird die Anfrage
+        abgelehnt.
       parameters:
         - name: domain
           in: query
-          description: Target domain for the event. Can also be supplied in the payload.
+          description: Ziel-Domain (`aussen` oder `hauski`). Kann alternativ im Payload stehen.
           required: false
           schema:
             type: string
@@ -28,14 +34,27 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Event'
+              $ref: '#/components/schemas/EventIngestRequest'
+          application/x-ndjson:
+            schema:
+              type: string
+              description: Newline-separierte JSON-Objekte gemäß `EventPayload`.
       responses:
         '202':
           description: Accepted
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
         '400':
           description: Bad request
         '401':
           description: Unauthorized
+        '429':
+          description: Too many requests
+        '415':
+          description: Unsupported media type
   /ingest/{domain}:
     post:
       deprecated: true
@@ -55,14 +74,21 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Event'
+              $ref: '#/components/schemas/EventIngestRequest'
       responses:
         '202':
           description: Accepted (deprecated)
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
         '400':
           description: Bad request
         '401':
           description: Unauthorized
+        '429':
+          description: Too many requests
 components:
   securitySchemes:
     XAuth:
@@ -70,15 +96,28 @@ components:
       in: header
       name: X-Auth
   schemas:
-    Event:
+    EventPayload:
       type: object
-      required: [ts, kind, payload]
+      required:
+        - event
       properties:
-        ts:
+        event:
           type: string
-          format: date-time
-        kind:
+          description: Name des Ereignisses (z. B. "deploy").
+        status:
           type: string
-        payload:
-          type: object
-          additionalProperties: true
+          description: Optionaler Status (z. B. "success", "failure").
+        summary:
+          type: string
+          description: Optionale Kurzbeschreibung (maximal 500 Zeichen).
+          maxLength: 500
+        domain:
+          type: string
+          description: Domain des Ereignisses. Wird automatisch gesetzt, falls nicht vorhanden.
+      additionalProperties: true
+    EventIngestRequest:
+      oneOf:
+        - $ref: '#/components/schemas/EventPayload'
+        - type: array
+          items:
+            $ref: '#/components/schemas/EventPayload'

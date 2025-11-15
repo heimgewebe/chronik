@@ -2,6 +2,9 @@
 
 Dieses Dokument fasst die wichtigsten Betriebs- und Wartungsaufgaben für den Chronik-Ingest-Dienst zusammen.
 
+Chronik verarbeitet ausschließlich Ereignisse aus den HausKI- und Aussen-
+Domänen.
+
 ## Lifecycle
 ### Starten
 ```bash

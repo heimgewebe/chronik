@@ -1,7 +1,8 @@
 # chronik
 
 `chronik` (vormals `leitstand`) stellt einen sehr kleinen HTTP-Ingest-Dienst bereit, der strukturierte Ereignisse
-als JSON entgegennimmt und domain-spezifisch in JSON Lines Dateien ablegt. Die Anwendung ist in
+als JSON entgegennimmt und domain-spezifisch in JSON Lines Dateien ablegt. Der Fokus liegt auf den Domains
+`aussen` und `hauski`. Die Anwendung ist in
 FastAPI implementiert und lässt sich lokal oder in Codespaces betreiben.
 
 - **API-Spezifikation:** siehe `docs/openapi.yaml`.
