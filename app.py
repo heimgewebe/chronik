@@ -44,9 +44,9 @@ DATA: Final = DATA_DIR
 
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION", "dev")
 
-SECRET_ENV = os.environ.get("CHRONIK_TOKEN")
+SECRET_ENV = os.environ.get("CHRONIK_TOKEN") or os.environ.get("LEITSTAND_TOKEN")
 if not SECRET_ENV:
-    raise RuntimeError("CHRONIK_TOKEN not set. Auth is required for all requests.")
+    raise RuntimeError("CHRONIK_TOKEN or LEITSTAND_TOKEN not set. Auth is required for all requests.")
 
 SECRET: Final[str] = SECRET_ENV
 

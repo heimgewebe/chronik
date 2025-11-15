@@ -40,16 +40,16 @@ def ingest_event(
     transport: Optional[httpx.BaseTransport] = None,
 ) -> str:
     """
-    Send a single JSON event to Leitstand.
+    Send a single JSON event to Chronik.
 
     Args:
         domain: target domain (e.g. "example.com")
         data: JSON-serializable mapping with at least an "event" field
-        url: base URL of Leitstand (env LEITSTAND_URL if None)
-        token: shared secret for X-Auth (env LEITSTAND_TOKEN if None)
-        timeout: request timeout seconds (env LEITSTAND_TIMEOUT, default 5)
-        retries: retry count for 429/5xx/timeout (env LEITSTAND_RETRIES, default 3)
-        backoff: initial backoff seconds (env LEITSTAND_BACKOFF, default 0.5)
+        url: base URL of Chronik (env CHRONIK_URL if None)
+        token: shared secret for X-Auth (env CHRONIK_TOKEN if None)
+        timeout: request timeout seconds (env CHRONIK_TIMEOUT, default 5)
+        retries: retry count for 429/5xx/timeout (env CHRONIK_RETRIES, default 3)
+        backoff: initial backoff seconds (env CHRONIK_BACKOFF, default 0.5)
         transport: optional httpx transport (e.g., httpx.ASGITransport) for in-process testing
 
     Returns:
@@ -58,14 +58,14 @@ def ingest_event(
     Raises:
         IngestError on permanent failure or invalid configuration
     """
-    base_url = (url or os.getenv("LEITSTAND_URL") or "http://localhost:8788").rstrip("/")
-    tok = token or os.getenv("LEITSTAND_TOKEN")
+    base_url = (url or os.getenv("CHRONIK_URL") or os.getenv("LEITSTAND_URL") or "http://localhost:8788").rstrip("/")
+    tok = token or os.getenv("CHRONIK_TOKEN") or os.getenv("LEITSTAND_TOKEN")
     if not tok:
-        raise IngestError("LEITSTAND_TOKEN not set")
+        raise IngestError("CHRONIK_TOKEN or LEITSTAND_TOKEN not set")
 
-    t = float(timeout if timeout is not None else _env_float("LEITSTAND_TIMEOUT", 5.0))
-    n = int(retries if retries is not None else _env_int("LEITSTAND_RETRIES", 3))
-    b0 = float(backoff if backoff is not None else _env_float("LEITSTAND_BACKOFF", 0.5))
+    t = float(timeout if timeout is not None else _env_float("CHRONIK_TIMEOUT", _env_float("LEITSTAND_TIMEOUT", 5.0)))
+    n = int(retries if retries is not None else _env_int("CHRONIK_RETRIES", _env_int("LEITSTAND_RETRIES", 3)))
+    b0 = float(backoff if backoff is not None else _env_float("CHRONIK_BACKOFF", _env_float("LEITSTAND_BACKOFF", 0.5)))
 
     # Validate payload early (must be JSON-serializable mapping)
     if not isinstance(data, Mapping):

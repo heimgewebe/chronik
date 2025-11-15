@@ -1,4 +1,4 @@
-"""Shared domain and storage helpers for Leitstand ingest components."""
+"""Shared domain and storage helpers for Chronik ingest components."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ class DomainError(ValueError):
     """Raised when a domain does not meet the validation requirements."""
 
 
-DATA_DIR: Final[Path] = Path(os.environ.get("LEITSTAND_DATA_DIR", "data")).resolve()
+DATA_DIR: Final[Path] = Path(os.environ.get("CHRONIK_DATA_DIR", os.environ.get("LEITSTAND_DATA_DIR", "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # RFC-nahe FQDN-Validierung: labels 1..63, a-z0-9 und '-' (kein '_' ), gesamt ≤ 253
