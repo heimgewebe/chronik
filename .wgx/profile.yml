@@ -4,11 +4,11 @@ tasks:
     bash scripts/setup-venv.sh
     source .venv/bin/activate
     export CHRONIK_TOKEN="dev"
-    python -c 'import httpx; from app import app; from tools.hauski_ingest import ingest_event; transport = httpx.ASGITransport(app=app); print(ingest_event("example.com", {"event":"test","status":"ok"}, url="http://test", transport=transport))'
+    python3 -c 'import httpx; from app import app; from tools.hauski_ingest import ingest_event; transport = httpx.ASGITransport(app=app); print(ingest_event("example.com", {"event":"test","status":"ok"}, url="http://test", transport=transport))'
   guard: |
     bash scripts/setup-venv.sh
     source .venv/bin/activate
     export PYTHONPATH=$PYTHONPATH:.
-    python -m pytest
+    python3 -m pytest
   metrics: "scripts/wgx-metrics-snapshot.sh --json"
   snapshot: ""

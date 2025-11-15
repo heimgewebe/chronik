@@ -5,7 +5,7 @@ set -e
 # Wenn nicht, wird es erstellt und die Abhängigkeiten installiert.
 if [ ! -d ".venv" ]; then
   echo "INFO: .venv-Verzeichnis nicht gefunden. Erstelle es und installiere Abhängigkeiten..."
-  python -m venv .venv
+  python3 -m venv .venv
   source .venv/bin/activate
   pip install -r requirements.txt
 else
