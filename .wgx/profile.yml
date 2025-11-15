@@ -1,0 +1,16 @@
+class: python-service
+tasks:
+  smoke: |
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    export CHRONIK_TOKEN="dev"
+    python -c 'import httpx; from app import app; from tools.hauski_ingest import ingest_event; transport = httpx.ASGITransport(app=app); print(ingest_event("example.com", {"event":"test","status":"ok"}, url="http://test", transport=transport))'
+  guard: |
+    python -m venv .venv
+    source .venv/bin/activate
+    pip install -r requirements.txt
+    export PYTHONPATH=$PYTHONPATH:.
+    python -m pytest
+  metrics: "scripts/wgx-metrics-snapshot.sh --json"
+  snapshot: ""
