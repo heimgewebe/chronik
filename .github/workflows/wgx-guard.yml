@@ -1,0 +1,11 @@
+name: wgx-guard
+
+permissions:
+  contents: read
+
+on:
+  pull_request:
+
+jobs:
+  guard:
+    uses: heimgewebe/wgx/.github/workflows/wgx-guard.yml@main

@@ -1,0 +1,13 @@
+name: wgx-smoke
+
+permissions:
+  contents: read
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  smoke:
+    uses: heimgewebe/wgx/.github/workflows/wgx-smoke.yml@main
