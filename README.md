@@ -1,6 +1,6 @@
 # chronik
 
-`chronik` (vormals `leitstand`) stellt einen sehr kleinen HTTP-Ingest-Dienst bereit, der strukturierte Ereignisse
+`chronik` stellt einen sehr kleinen HTTP-Ingest-Dienst bereit, der strukturierte Ereignisse
 als JSON entgegennimmt und domain-spezifisch in JSON Lines Dateien ablegt. Die Anwendung ist in
 FastAPI implementiert und lässt sich lokal oder in Codespaces betreiben.
 
@@ -69,6 +69,8 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 | `CHRONIK_RATE_LIMIT` | nein    | `60/minute` | Rate-Limit pro Quell-IP (SlowAPI-Format). |
 | `LOG_LEVEL`            | nein    | `INFO`   | Log-Level (z. B. `DEBUG`, `INFO`, `WARNING`). |
 
+**Hinweis:** `CHRONIK_TOKEN` ist die primäre Umgebungsvariable für das Authentifizierungs-Token. Aus Kompatibilitätsgründen wird `LEITSTAND_TOKEN` weiterhin akzeptiert, falls `CHRONIK_TOKEN` nicht gesetzt ist.
+
 ## API
 
 Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml).
@@ -77,7 +79,7 @@ Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml)
 > Bitte auf `POST /v1/ingest` migrieren. Die Domain wird per `event.domain` oder `?domain=aussen` bestimmt.
 
 ## Clients
-- **Rust (Stub):** `clients/rust/leitstand_producer`
+- **Rust (Stub):** `clients/rust/chronik_producer`
   - Blocking (default) und optional `async` Feature.
   - Beispiel: `cargo run --example send` (läuft gegen `POST /v1/ingest`).
 
