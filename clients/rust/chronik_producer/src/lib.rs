@@ -12,6 +12,7 @@ pub enum ProducerError {
 #[derive(Clone, Debug)]
 pub struct ProducerClient {
     base_url: String,
+    token: String,
     #[cfg(feature = "blocking")]
     client: reqwest::blocking::Client,
     #[cfg(feature = "async")]
@@ -19,9 +20,10 @@ pub struct ProducerClient {
 }
 
 impl ProducerClient {
-    pub fn new(base_url: impl Into<String>) -> Self {
+    pub fn new(base_url: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
             base_url: base_url.into(),
+            token: token.into(),
             #[cfg(feature = "blocking")]
             client: reqwest::blocking::Client::new(),
             #[cfg(feature = "async")]
@@ -38,6 +40,7 @@ impl ProducerClient {
         self.client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
+            .header("X-Auth", &self.token)
             .body(line)
             .send()?
             .error_for_status()?;
@@ -58,6 +61,7 @@ impl ProducerClient {
         self.client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
+            .header("X-Auth", &self.token)
             .body(ndjson)
             .send()?
             .error_for_status()?;
@@ -80,6 +84,7 @@ mod r#async {
             self.async_client
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
+                .header("X-Auth", &self.token)
                 .body(line)
                 .send()
                 .await?
@@ -102,6 +107,7 @@ mod r#async {
             self.async_client
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
+                .header("X-Auth", &self.token)
                 .body(body)
                 .send()
                 .await?
