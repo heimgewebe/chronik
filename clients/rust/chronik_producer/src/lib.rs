@@ -9,7 +9,7 @@ pub enum ProducerError {
     Json(#[from] serde_json::Error),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ProducerClient {
     base_url: String,
     token: String,
@@ -29,6 +29,28 @@ impl ProducerClient {
             #[cfg(feature = "async")]
             async_client: reqwest::Client::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug_redacts_token() {
+        let client = ProducerClient::new("http://localhost:8788", "my-secret-token");
+        let debug_output = format!("{:?}", client);
+        assert!(debug_output.contains("token: \"[redacted]\""));
+        assert!(!debug_output.contains("my-secret-token"));
+    }
+}
+
+impl std::fmt::Debug for ProducerClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProducerClient")
+            .field("base_url", &self.base_url)
+            .field("token", &"[redacted]")
+            .finish()
     }
 }
 
