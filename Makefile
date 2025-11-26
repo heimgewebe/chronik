@@ -7,10 +7,10 @@ dev:
 uvicorn app:app --reload --port $(PORT)
 
 ingest-test: ensure-token
-curl --fail-with-body -sS -X POST "http://localhost:$(PORT)/ingest/aussen" \
--H "Content-Type: application/json" \
--H "X-Auth: $(AUTH_TOKEN)" \
--d '{"event": "demo", "status": "ok"}'
+	curl --fail-with-body -sS -X POST "http://localhost:$(PORT)/ingest/aussen" \
+	-H "Content-Type: application/json" \
+	-H "X-Auth: $(AUTH_TOKEN)" \
+	-d '{"event": "demo", "status": "ok"}'
 
 ensure-token:
 @if [ -z "$${CHRONIK_TOKEN:-$${LEITSTAND_TOKEN:-}}" ]; then \
