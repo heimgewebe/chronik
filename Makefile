@@ -13,7 +13,7 @@ ingest-test: ensure-token
 	-d '{"event": "demo", "status": "ok"}'
 
 ensure-token:
-@if [ -z "$${CHRONIK_TOKEN:-$${LEITSTAND_TOKEN:-}}" ]; then \
-echo "CHRONIK_TOKEN is undefined (legacy LEITSTAND_TOKEN also accepted)" >&2; \
-exit 1; \
-fi
+	@if [ -z "$${CHRONIK_TOKEN:-$${LEITSTAND_TOKEN:-}}" ]; then \
+	echo "CHRONIK_TOKEN is undefined (legacy LEITSTAND_TOKEN also accepted)" >&2; \
+	exit 1; \
+	fi
