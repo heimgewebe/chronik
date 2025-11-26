@@ -7,7 +7,7 @@ Einfacher Speicher für eingehende Events.
 
 ## Entscheidung
 - Append-only `data/{domain}.jsonl`
-- Header `x-auth` ist verpflichtend und muss mit `LEITSTAND_TOKEN` übereinstimmen
+- Header `x-auth` ist verpflichtend und muss mit `CHRONIK_TOKEN` übereinstimmen (Legacy: `LEITSTAND_TOKEN` wird weiterhin akzeptiert)
 
 ## Konsequenzen
 - Einfach zu debuggen; Logs git-ignorieren.

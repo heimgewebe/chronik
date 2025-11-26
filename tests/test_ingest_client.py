@@ -3,9 +3,10 @@ import os
 import secrets
 import string
 
-# Set a default token for when the module is first imported.
-# Tests should override this for hermeticity.
-os.environ.setdefault("LEITSTAND_TOKEN", "test-secret")
+# Set default tokens for when the module is first imported.
+# Tests should override these for hermeticity.
+default_token = os.environ.setdefault("CHRONIK_TOKEN", "test-secret")
+os.environ.setdefault("LEITSTAND_TOKEN", default_token)
 
 import httpx
 from app import app
