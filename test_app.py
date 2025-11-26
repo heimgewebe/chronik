@@ -28,7 +28,7 @@ def test_ingest_auth_ok(monkeypatch):
     response = client.post(
         "/ingest/example.com", headers={"X-Auth": secret}, json={"data": "value"}
     )
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.text == "ok"
 
 
@@ -89,7 +89,7 @@ def test_ingest_single_object(monkeypatch, tmp_path: Path):
     domain = "example.com"
     payload = {"data": "value"}
     response = client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload)
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.text == "ok"
 
     # Verify file content
@@ -109,7 +109,7 @@ def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
     domain = "example.com"
     payload = [{"data": "value1"}, {"data": "value2"}]
     response = client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload)
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.text == "ok"
 
     # Verify file content
@@ -135,7 +135,7 @@ def test_ingest_empty_array(monkeypatch, tmp_path: Path):
         json=[],
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     assert response.text == "ok"
     assert not any(tmp_path.iterdir())
 
@@ -196,7 +196,7 @@ def test_ingest_domain_normalized(monkeypatch, tmp_path: Path):
         "/ingest/example.com", headers={"X-Auth": secret}, json=payload
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
 
     target_file = next(tmp_path.glob("*.jsonl"))
     with open(target_file, "r", encoding="utf-8") as fh:
@@ -478,7 +478,7 @@ def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
         codes = list(executor.map(_one, range(20)))
 
-    assert all(code == 200 for code in codes)
+    assert all(code == 202 for code in codes)
 
     output = tmp_path / "example.com.jsonl"
     assert output.exists()

@@ -95,7 +95,7 @@ def ingest_event(
             raise IngestError(f"network/timeout after {attempt} retries") from exc
 
         # Fast path
-        if r.status_code == 200 and r.text.strip() == "ok":
+        if r.status_code in (200, 202) and r.text.strip() == "ok":
             return "ok"
 
         # Retryable statuses

@@ -310,12 +310,12 @@ async def ingest(
     items = obj if isinstance(obj, list) else [obj]
     if isinstance(obj, list) and not obj:
         logger.warning("empty payload array received", extra={"domain": dom})
-        return PlainTextResponse("ok", status_code=200)
+        return PlainTextResponse("ok", status_code=202)
 
     lines = _process_items(items, dom)
     _write_lines_to_storage(dom, lines)
 
-    return PlainTextResponse("ok", status_code=200)
+    return PlainTextResponse("ok", status_code=202)
 
 
 @app.get("/health")
