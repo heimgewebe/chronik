@@ -2,6 +2,10 @@ name: validate-aussen
 permissions:
   contents: read
 on:
+  push:
+    paths:
+      - 'export/**.jsonl'
+      - 'fixtures/**.jsonl'
   pull_request:
     paths:
       - 'export/**.jsonl'
