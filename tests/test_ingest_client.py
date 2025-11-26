@@ -8,7 +8,6 @@ import string
 os.environ.setdefault("LEITSTAND_TOKEN", "test-secret")
 
 import httpx
-import pytest
 from app import app
 from tools.hauski_ingest import ingest_event
 
