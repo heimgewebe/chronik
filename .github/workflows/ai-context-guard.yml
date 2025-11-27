@@ -7,7 +7,7 @@ on:
       - ".ai-context.yml"
       - ".github/workflows/ai-context-guard.yml"
   push:
-    branches: [ main ]
+    branches: [main]
     paths:
       - ".ai-context.yml"
       - ".github/workflows/ai-context-guard.yml"
