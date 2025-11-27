@@ -44,7 +44,7 @@ Frühere Variante, die weiterhin unterstützt wird. Die Domain wird im Pfad ange
 | Pfadparameter  | `domain` – wird in Kleinbuchstaben umgewandelt und muss den FQDN-Regeln entsprechen |
 | Header         | `Content-Type: application/json`; `X-Auth: <token>` (Pflicht). |
 | Request-Body   | JSON-Objekt oder Array aus Objekten. Jedes Objekt erhält automatisch das Feld `domain`, sofern es fehlt. Optionales Feld `summary` darf max. 500 Zeichen lang sein. |
-| Antwort        | `202 Accepted` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid json/invalid payload/domain mismatch`, falsche Authentifizierung `401 unauthorized`, fehlende Länge `411 length required`, zu große Payload `413 payload too large`, Rate-Limit `429 too many requests`, Platzmangel `507 insufficient storage`. |
+| Antwort        | `202 Accepted` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid json/invalid payload/domain mismatch`, falsche Authentifizierung `401 unauthorized`, fehlende Länge `411 length required`, zu große Payload `413 payload too large`, zu lange Summary `422 summary too long (max 500)`, Rate-Limit `429 too many requests`, Platzmangel `507 insufficient storage`. |
 
 #### Beispiel-Request
 ```bash
