@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: Chronik API
-  version: 0.1.0
+  version: 1.0.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -13,11 +13,14 @@ paths:
     post:
       summary: Universal ingest endpoint
       operationId: ingestEvent
-      description: Domain must be specified either via query parameter or as a field in the payload.
+      description: |
+        Accepts JSON payloads either as a single object, an array of objects, or newline-delimited JSON.
+        The target domain can be supplied via the `domain` query parameter or as the `domain` field on the first
+        object in the payload.
       parameters:
         - name: domain
           in: query
-          description: Target domain for the event. Can also be supplied in the payload.
+          description: Optional target domain for the event. If omitted, the first payload object must contain `domain`.
           required: false
           schema:
             type: string
@@ -28,41 +31,116 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Event'
+              oneOf:
+                - $ref: '#/components/schemas/Event'
+                - type: array
+                  items:
+                    $ref: '#/components/schemas/Event'
+          application/x-ndjson:
+            schema:
+              type: string
+              description: Newline-delimited JSON objects. Empty lines are ignored.
       responses:
         '202':
-          description: Accepted
+          description: Accepted. Body contains plain text `ok`.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
         '400':
-          description: Bad request
+          description: Bad request (invalid domain, JSON, payload, or missing domain information).
         '401':
-          description: Unauthorized
+          description: Unauthorized (missing or invalid `X-Auth` header).
+        '411':
+          description: Content-Length header missing.
+        '413':
+          description: Payload too large.
+        '415':
+          description: Unsupported content-type.
+        '422':
+          description: Semantic validation failed (e.g. summary too long).
+        '429':
+          description: Too many requests (rate limited).
+        '507':
+          description: Insufficient storage.
   /ingest/{domain}:
     post:
       deprecated: true
       summary: Deprecated ingest endpoint
       operationId: ingestEventDeprecated
-      security:
-        - XAuth: []
-      description: "Ersetzt durch **POST /v1/ingest** (Ablauf: 6 Monate nach Merge)."
+      description: Replaced by **POST /v1/ingest**.
       parameters:
         - in: path
           name: domain
           required: true
           schema:
             type: string
+      security:
+        - XAuth: []
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/Event'
+              oneOf:
+                - $ref: '#/components/schemas/Event'
+                - type: array
+                  items:
+                    $ref: '#/components/schemas/Event'
       responses:
         '202':
-          description: Accepted (deprecated)
+          description: Accepted (deprecated). Body contains plain text `ok`.
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
         '400':
-          description: Bad request
+          description: Bad request (invalid domain, JSON, or payload).
         '401':
-          description: Unauthorized
+          description: Unauthorized (missing or invalid `X-Auth` header).
+        '411':
+          description: Content-Length header missing.
+        '413':
+          description: Payload too large.
+        '429':
+          description: Too many requests (rate limited).
+        '507':
+          description: Insufficient storage.
+  /health:
+    get:
+      summary: Health check
+      description: Returns `{"status": "ok"}` when the service is ready.
+      security:
+        - XAuth: []
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '401':
+          description: Unauthorized (missing or invalid `X-Auth` header).
+  /version:
+    get:
+      summary: Service version
+      description: Returns the current Chronik version string.
+      responses:
+        '200':
+          description: Version information
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  version:
+                    type: string
 components:
   securitySchemes:
     XAuth:
@@ -72,13 +150,12 @@ components:
   schemas:
     Event:
       type: object
-      required: [ts, kind, payload]
+      description: Generic event payload. Additional fields are preserved.
       properties:
-        ts:
+        domain:
           type: string
-          format: date-time
-        kind:
+          description: Domain associated with the event. Required unless supplied via query parameter on /v1/ingest.
+        summary:
           type: string
-        payload:
-          type: object
-          additionalProperties: true
+          description: Optional summary (maximum 500 characters).
+      additionalProperties: true
