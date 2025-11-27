@@ -1,9 +1,0 @@
-*** Begin Patch
-*** Update File: .github/workflows/validate-ingest.yml
-@@
-- validate:
-- uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@main
-+ validate:
-+ # Pinned für reproduzierbare Validation
-+ uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
-*** End Patch
