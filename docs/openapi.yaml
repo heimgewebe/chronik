@@ -150,7 +150,11 @@ components:
   schemas:
     Event:
       type: object
-      description: Generic event payload. Additional fields are preserved.
+      description: |
+        Generic event payload. Additional fields are preserved.
+        No fields are unconditionally required. The `domain` field is required in the payload only
+        when not supplied via the `domain` query parameter on /v1/ingest.
+      required: []
       properties:
         domain:
           type: string
