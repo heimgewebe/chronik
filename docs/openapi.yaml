@@ -131,8 +131,6 @@ paths:
     get:
       summary: Service version
       description: Returns the current Chronik version string.
-      security:
-        - XAuth: []
       responses:
         '200':
           description: Version information
