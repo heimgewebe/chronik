@@ -5,7 +5,7 @@ Dieses Dokument beschreibt die HTTP-Schnittstelle des Chronik-Ingest-Dienstes im
 ## Übersicht
 * Basis-URL: `http://<host>:<port>` (Standard-Port 8788)
 * Authentifizierung: Verpflichtender Header `X-Auth` mit dem Wert aus `CHRONIK_TOKEN`
-* Datenformat: JSON bzw. Newline Delimited JSON (NDJSON)
+* Datenformat: JSON bzw. Newline-Delimited JSON (NDJSON)
 * OpenAPI/Swagger: Automatisch unter `/docs` (Swagger UI) bzw. `/openapi.json` verfügbar
 
 ## Endpunkte
