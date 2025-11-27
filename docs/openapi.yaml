@@ -158,4 +158,5 @@ components:
         summary:
           type: string
           description: Optional summary (maximum 500 characters).
+          maxLength: 500
       additionalProperties: true
