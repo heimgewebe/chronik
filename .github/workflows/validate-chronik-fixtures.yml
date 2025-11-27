@@ -1,3 +1,4 @@
+---
 name: validate-chronik-fixtures
 permissions:
   contents: read
@@ -7,22 +8,43 @@ on:
   pull_request:
 
 jobs:
+  check-files:
+    name: check if fixture files exist
+    runs-on: ubuntu-latest
+    outputs:
+      has_fixtures: ${{ steps.check.outputs.has_fixtures }}
+      has_demo: ${{ steps.check.outputs.has_demo }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          if [ -f "tests/fixtures/chronik.jsonl" ]; then
+            echo "has_fixtures=true" >> "$GITHUB_OUTPUT"
+          fi
+          if [ -f "demo/chronik.jsonl" ]; then
+            echo "has_demo=true" >> "$GITHUB_OUTPUT"
+          fi
+
   fixtures:
     name: fixtures (tests/fixtures/chronik.jsonl)
-    if: hashFiles('tests/fixtures/chronik.jsonl') != ''
+    needs: check-files
+    if: needs.check-files.outputs.has_fixtures == 'true'
     uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
     with:
       jsonl_path: tests/fixtures/chronik.jsonl
-      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/chronik-fixtures.schema.json
+      schema_url: >-
+        https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/chronik-fixtures.schema.json
       strict: false
       validate_formats: true
 
   demo:
     name: demo (demo/chronik.jsonl)
-    if: hashFiles('demo/chronik.jsonl') != ''
+    needs: check-files
+    if: needs.check-files.outputs.has_demo == 'true'
     uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
     with:
       jsonl_path: demo/chronik.jsonl
-      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/chronik-fixtures.schema.json
+      schema_url: >-
+        https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/chronik-fixtures.schema.json
       strict: false
       validate_formats: true
