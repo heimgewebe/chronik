@@ -1,3 +1,4 @@
+---
 name: openapi-lint
 permissions:
   contents: read

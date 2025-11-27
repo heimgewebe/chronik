@@ -1,3 +1,4 @@
+---
 name: "📊 Metrics Snapshot & Validation"
 permissions:
   contents: read          # Repo lesen, um Skripte auszuführen

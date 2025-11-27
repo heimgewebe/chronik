@@ -1,3 +1,4 @@
+---
 name: validate (aussen fixtures)
 on:
   push:
@@ -13,10 +14,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  check-fixtures:
+    name: check if fixtures exist
+    runs-on: ubuntu-latest
+    outputs:
+      has_fixtures: ${{ steps.check.outputs.has_fixtures }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          if [ -n "$(find tests/fixtures/aussen -name '*.jsonl' 2>/dev/null)" ]; then
+            echo "has_fixtures=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_fixtures=false" >> "$GITHUB_OUTPUT"
+          fi
+
   fixtures:
     name: fixtures (aussen JSONL)
-    # Nur laufen, wenn mind. eine Fixture existiert
-    if: hashFiles('tests/fixtures/aussen/*.jsonl') != ''
+    needs: check-fixtures
+    if: needs.check-fixtures.outputs.has_fixtures == 'true'
     # ⚠️ Pin auf immutablen Tag/Commit (statt main)
     uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
     with:
@@ -25,6 +41,7 @@ jobs:
       # entweder weitere Jobs anlegen oder das Reusable auf Mehrfachpfade erweitern.
       jsonl_path: tests/fixtures/aussen/sample-ok.jsonl
       # ⚠️ Schema-URL ebenfalls an den gleichen Tag pinnen
-      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/aussen.event.schema.json
+      schema_url: >-
+        https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/aussen.event.schema.json
       strict: false
       validate_formats: true
