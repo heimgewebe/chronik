@@ -20,13 +20,9 @@ jobs:
         run: |
           if [ -f "tests/fixtures/chronik.jsonl" ]; then
             echo "has_fixtures=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_fixtures=false" >> "$GITHUB_OUTPUT"
           fi
           if [ -f "demo/chronik.jsonl" ]; then
             echo "has_demo=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_demo=false" >> "$GITHUB_OUTPUT"
           fi
 
   fixtures:
