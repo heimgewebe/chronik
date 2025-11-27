@@ -32,7 +32,7 @@ curl -X POST "http://localhost:8788/v1/ingest?domain=example.com" \
 ```bash
 http POST :8788/v1/ingest \
     domain==service.internal \
-    event:=\"deploy\" status:=\"success\" X-Auth:${CHRONIK_TOKEN}
+    event=deploy status=success X-Auth:${CHRONIK_TOKEN}
 ```
 
 ### `POST /ingest/{domain}` (deprecated)
