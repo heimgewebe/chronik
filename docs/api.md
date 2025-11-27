@@ -16,7 +16,7 @@ Zentraler Ingest-Endpunkt, der JSON-Objekte, Arrays oder NDJSON entgegennimmt. D
 |----------------|--------------|
 | Methode        | `POST` |
 | Pfadparameter  | keine |
-| Query-Parameter| `domain` (optional) – Ziel-Domain; wird in Kleinbuchstaben umgewandelt und muss die FQDN-Regeln erfüllen |
+| Query-Parameter| `domain` (optional) – Ziel-Domain; wird in Kleinbuchstaben umgewandelt und muss die FQDN-Regeln erfüllen (siehe Abschnitt "Fehlerfälle" zur Domain-Validierung) |
 | Header         | `Content-Type: application/json` **oder** `Content-Type: application/x-ndjson`; `X-Auth: <token>` (Pflicht). |
 | Request-Body   | **JSON:** Objekt oder Array von Objekten. **NDJSON:** Zeilenweise JSON-Objekte (`\n`-getrennt); leere Zeilen werden ignoriert. Für jedes Objekt wird ein Feld `domain` ergänzt, falls es fehlt. Optionales Feld `summary` darf max. 500 Zeichen lang sein. |
 | Antwort        | `202 Accepted` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen u. a. `400 invalid json/invalid ndjson/invalid payload/domain must be specified ...`, falsche Authentifizierung `401 unauthorized`, fehlende Länge `411 length required`, zu große Payload `413 payload too large`, falscher Content-Type `415 unsupported content-type`, zu lange Summary `422 summary too long (max 500)`, Rate-Limit `429 too many requests`, Platzmangel `507 insufficient storage`. |
