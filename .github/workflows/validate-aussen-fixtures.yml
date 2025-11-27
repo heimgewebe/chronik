@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
       - id: check
         run: |
-          if [ -n "$(find tests/fixtures/aussen -name '*.jsonl' 2>/dev/null)" ]; then
+          if [ -d "tests/fixtures/aussen" ] && [ -n "$(find tests/fixtures/aussen -name '*.jsonl')" ]; then
             echo "has_fixtures=true" >> "$GITHUB_OUTPUT"
           else
             echo "has_fixtures=false" >> "$GITHUB_OUTPUT"
