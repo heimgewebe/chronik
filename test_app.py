@@ -266,6 +266,14 @@ def test_version_endpoint(monkeypatch):
     assert response.json() == {"version": "1.2.3"}
 
 
+def test_version_endpoint_requires_auth(monkeypatch):
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
+    response = client.get("/version")
+    assert response.status_code == 401
+    assert "unauthorized" in response.text
+
+
 def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
     long_label = "a" * 63
     domain = ".".join([long_label, long_label, long_label, "b" * 61])
