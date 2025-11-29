@@ -73,7 +73,7 @@ def target_filename(domain: str) -> str:
     base = domain
     ext = ".jsonl"
     # Reserve 1–2 Zeichen Sicherheit wegen Encoding/FS
-    if len(base) + len(ext) > (_FNAME_MAX - 1):
+    if len(base) + len(ext) > _FNAME_MAX:
         h = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:8]
         # so viel wie möglich behalten, dann '-{hash}'
         keep = max(16, (_FNAME_MAX - len(ext) - 1 - len(h)))  # 1 für '-'
