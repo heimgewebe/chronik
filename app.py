@@ -326,5 +326,6 @@ async def health(x_auth: str = Header(default="")) -> dict[str, str]:
 
 
 @app.get("/version")
-async def version() -> dict[str, Any]:
+async def version(x_auth: str = Header(default="")) -> dict[str, Any]:
+    _require_auth(x_auth)
     return {"version": VERSION}
