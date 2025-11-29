@@ -298,6 +298,30 @@ def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
     assert resolved.parent == tmp_path
 
 
+def test_target_filename_boundary_cases():
+    """Test filename generation at the 255 character boundary."""
+    # Domain of length 249 should NOT be truncated (249 + 6 = 255, exactly at limit)
+    domain_249 = "a" * 249
+    filename_249 = storage.target_filename(domain_249)
+    assert filename_249 == domain_249 + ".jsonl", "Domain of length 249 should not be truncated"
+    assert len(filename_249) == 255
+    
+    # Domain of length 248 should NOT be truncated (248 + 6 = 254, under limit)
+    domain_248 = "b" * 248
+    filename_248 = storage.target_filename(domain_248)
+    assert filename_248 == domain_248 + ".jsonl", "Domain of length 248 should not be truncated"
+    assert len(filename_248) == 254
+    
+    # Domain of length 250 SHOULD be truncated (250 + 6 = 256, over limit)
+    domain_250 = "c" * 250
+    filename_250 = storage.target_filename(domain_250)
+    assert filename_250 != domain_250 + ".jsonl", "Domain of length 250 should be truncated"
+    assert len(filename_250) == 255
+    assert filename_250.endswith(".jsonl")
+    # Should contain a hash separator
+    assert "-" in filename_250
+
+
 def test_metrics_endpoint_exposed():
     """Metrics endpoint should be accessible without auth."""
 
