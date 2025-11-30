@@ -13,5 +13,3 @@ jobs:
   dispatch:
     if: github.event.issue.pull_request != null
     uses: heimgewebe/metarepo/.github/workflows/heimgewebe-command-dispatch.yml@main
-    secrets:
-      HEIMGEWEBE_AUTOBOT_TOKEN: ${{ secrets.HEIMGEWEBE_AUTOBOT_TOKEN }}
