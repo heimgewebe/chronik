@@ -26,19 +26,19 @@ class DomainError(ValueError):
 DATA_DIR: Final[Path] = Path(os.environ.get("CHRONIK_DATA_DIR", os.environ.get("LEITSTAND_DATA_DIR", "data"))).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# RFC-nahe FQDN-Validierung: labels 1..63, a-z0-9 und '-' (kein '_' ), gesamt ≤ 253
+# RFC-like FQDN validation: labels 1..63, a-z0-9 and '-' (no '_'), total ≤ 253
 _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
     r"^(?=.{1,253}$)"
     r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)"
     r"(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$"
 )
 
-_FNAME_MAX: Final[int] = 255  # typische FS-Grenze (ext4 etc.)
+_FNAME_MAX: Final[int] = 255  # typical filesystem limit (ext4, etc.)
 
-# Zentraler, restriktiver Dateinamen-Check (nur a-z0-9._- + .jsonl)
+# Central, restrictive filename check (only a-z0-9._- + .jsonl)
 FILENAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9._-]+\.jsonl$", re.IGNORECASE)
 
-# Zusätzliche Zeichen, die wir aus Sicherheitsgründen entfernen (neben / und \0)
+# Additional characters we remove for security (besides / and \0)
 _UNSAFE_FILENAME_CHARS: Final[re.Pattern[str]] = re.compile(r"[][<>:\"|?*]")
 
 
@@ -72,11 +72,11 @@ def target_filename(domain: str) -> str:
 
     base = domain
     ext = ".jsonl"
-    # Reserve 1–2 Zeichen Sicherheit wegen Encoding/FS
+    # Reserve 1-2 characters for safety due to encoding/filesystem limits
     if len(base) + len(ext) > _FNAME_MAX:
         h = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:8]
-        # so viel wie möglich behalten, dann '-{hash}'
-        keep = max(16, (_FNAME_MAX - len(ext) - 1 - len(h)))  # 1 für '-'
+        # Keep as much as possible, then add '-{hash}'
+        keep = max(16, (_FNAME_MAX - len(ext) - 1 - len(h)))  # 1 for '-'
         base = f"{domain[:keep]}-{h}"
     filename = secure_filename(f"{base}{ext}")
     if not FILENAME_RE.fullmatch(filename):

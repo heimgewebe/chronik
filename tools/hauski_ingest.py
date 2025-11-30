@@ -71,7 +71,7 @@ def ingest_event(
     if not isinstance(data, Mapping):
         raise IngestError("payload must be a mapping")
     if "event" not in data:
-        # nicht strikt nötig, aber hilfreich für Konsistenz
+        # not strictly necessary, but helpful for consistency
         raise IngestError('payload missing required key "event"')
 
     # httpx client per call keeps things simple for small volumes
