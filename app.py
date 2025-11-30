@@ -96,9 +96,8 @@ def _sanitize_domain(domain: str) -> str:
         raise HTTPException(status_code=400, detail="invalid domain") from exc
 
 
-def _safe_target_path(domain: str, *, already_sanitized: bool = False) -> Path:
-    # Even if the caller claims the value is already sanitized, we re-run the
-    # validation to avoid trusting potentially unsafe inputs.
+def _safe_target_path(domain: str) -> Path:
+    # Always sanitize and validate domain before use
     dom = _sanitize_domain(domain)
     try:
         return safe_target_path(dom, data_dir=DATA)
@@ -172,7 +171,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
 
 
 def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
-    target_path = _safe_target_path(dom, already_sanitized=True)
+    target_path = _safe_target_path(dom)
     fname = target_path.name
 
     # Ensure fname is exactly as expected for sanitized domain
@@ -197,12 +196,14 @@ def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
                 flags |= os.O_NOFOLLOW
 
                 try:
+                    # codeql[py/uncontrolled-data-in-path-expression]: fname is validated
+                    # basename; dir_fd=trusted DATA directory
                     fd = os.open(
                         fname,
                         flags,
                         0o600,
                         dir_fd=dirfd,
-                    )  # codeql[py/uncontrolled-data-in-path-expression]: fname is validated basename; dir_fd=trusted DATA directory
+                    )
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
                         logger.error("disk full", extra={"file": str(target_path)})

@@ -63,7 +63,7 @@ def test_sanitize_domain_bad():
 def test_safe_target_path_rejects_traversal(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("app.DATA", tmp_path)
     with pytest.raises(HTTPException) as excinfo:
-        _safe_target_path("../../etc/passwd", already_sanitized=True)
+        _safe_target_path("../../etc/passwd")
     assert excinfo.value.status_code == 400
     assert excinfo.value.detail == "invalid domain"
 
@@ -305,13 +305,13 @@ def test_target_filename_boundary_cases():
     filename_249 = storage.target_filename(domain_249)
     assert filename_249 == domain_249 + ".jsonl", "Domain of length 249 should not be truncated"
     assert len(filename_249) == 255
-    
+
     # Domain of length 248 should NOT be truncated (248 + 6 = 254, under limit)
     domain_248 = "b" * 248
     filename_248 = storage.target_filename(domain_248)
     assert filename_248 == domain_248 + ".jsonl", "Domain of length 248 should not be truncated"
     assert len(filename_248) == 254
-    
+
     # Domain of length 250 SHOULD be truncated (250 + 6 = 256, over limit)
     domain_250 = "c" * 250
     filename_250 = storage.target_filename(domain_250)
