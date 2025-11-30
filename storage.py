@@ -23,7 +23,9 @@ class DomainError(ValueError):
     """Raised when a domain does not meet the validation requirements."""
 
 
-DATA_DIR: Final[Path] = Path(os.environ.get("CHRONIK_DATA_DIR", os.environ.get("LEITSTAND_DATA_DIR", "data"))).resolve()
+DATA_DIR: Final[Path] = Path(
+    os.environ.get("CHRONIK_DATA_DIR", os.environ.get("LEITSTAND_DATA_DIR", "data"))
+).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # RFC-like FQDN validation: labels 1..63, a-z0-9 and '-' (no '_'), total ≤ 253
@@ -36,7 +38,9 @@ _DOMAIN_RE: Final[re.Pattern[str]] = re.compile(
 _FNAME_MAX: Final[int] = 255  # typical filesystem limit (ext4, etc.)
 
 # Central, restrictive filename check (only a-z0-9._- + .jsonl)
-FILENAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9._-]+\.jsonl$", re.IGNORECASE)
+FILENAME_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[a-z0-9._-]+\.jsonl$", re.IGNORECASE
+)
 
 # Additional characters we remove for security (besides / and \0)
 _UNSAFE_FILENAME_CHARS: Final[re.Pattern[str]] = re.compile(r"[][<>:\"|?*]")
@@ -86,7 +90,8 @@ def target_filename(domain: str) -> str:
 
 def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     """Return an absolute, canonical path below the data directory for the domain.
-    The filename is fully sanitized; we additionally assert no path separators pass through.
+    The filename is fully sanitized; we additionally assert no path separators
+    pass through.
     """
 
     base = (DATA_DIR if data_dir is None else data_dir).resolve(strict=True)

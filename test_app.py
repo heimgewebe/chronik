@@ -88,7 +88,9 @@ def test_ingest_single_object(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("app.DATA", tmp_path)
     domain = "example.com"
     payload = {"data": "value"}
-    response = client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload)
+    response = client.post(
+        f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload
+    )
     assert response.status_code == 202
     assert response.text == "ok"
 
@@ -108,7 +110,9 @@ def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("app.DATA", tmp_path)
     domain = "example.com"
     payload = [{"data": "value1"}, {"data": "value2"}]
-    response = client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload)
+    response = client.post(
+        f"/ingest/{domain}", headers={"X-Auth": secret}, json=payload
+    )
     assert response.status_code == 202
     assert response.text == "ok"
 
@@ -303,19 +307,25 @@ def test_target_filename_boundary_cases():
     # Domain of length 249 should NOT be truncated (249 + 6 = 255, exactly at limit)
     domain_249 = "a" * 249
     filename_249 = storage.target_filename(domain_249)
-    assert filename_249 == domain_249 + ".jsonl", "Domain of length 249 should not be truncated"
+    assert (
+        filename_249 == domain_249 + ".jsonl"
+    ), "Domain of length 249 should not be truncated"
     assert len(filename_249) == 255
 
     # Domain of length 248 should NOT be truncated (248 + 6 = 254, under limit)
     domain_248 = "b" * 248
     filename_248 = storage.target_filename(domain_248)
-    assert filename_248 == domain_248 + ".jsonl", "Domain of length 248 should not be truncated"
+    assert (
+        filename_248 == domain_248 + ".jsonl"
+    ), "Domain of length 248 should not be truncated"
     assert len(filename_248) == 254
 
     # Domain of length 250 SHOULD be truncated (250 + 6 = 256, over limit)
     domain_250 = "c" * 250
     filename_250 = storage.target_filename(domain_250)
-    assert filename_250 != domain_250 + ".jsonl", "Domain of length 250 should be truncated"
+    assert (
+        filename_250 != domain_250 + ".jsonl"
+    ), "Domain of length 250 should be truncated"
     assert len(filename_250) == 255
     assert filename_250.endswith(".jsonl")
     # Should contain a hash separator

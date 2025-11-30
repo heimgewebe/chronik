@@ -8,9 +8,10 @@ import string
 default_token = os.environ.setdefault("CHRONIK_TOKEN", "test-secret")
 os.environ.setdefault("LEITSTAND_TOKEN", default_token)
 
-import httpx
-from app import app
-from tools.hauski_ingest import ingest_event
+import httpx  # noqa: E402
+
+from app import app  # noqa: E402
+from tools.hauski_ingest import ingest_event  # noqa: E402
 
 
 class SyncASGITransport(httpx.BaseTransport):
