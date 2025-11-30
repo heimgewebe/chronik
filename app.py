@@ -35,7 +35,12 @@ MAX_PAYLOAD_SIZE: Final[int] = int(os.getenv("CHRONIK_MAX_BODY", str(1024 * 1024
 LOCK_TIMEOUT: Final[int] = int(os.getenv("CHRONIK_LOCK_TIMEOUT", "30"))
 RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT", "60/minute")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-DEBUG_MODE: Final[bool] = os.getenv("CHRONIK_DEBUG", "").lower() in {"1", "true", "yes", "on"}
+DEBUG_MODE: Final[bool] = os.getenv("CHRONIK_DEBUG", "").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger("chronik")
 
@@ -47,7 +52,9 @@ VERSION: Final[str] = os.environ.get("CHRONIK_VERSION", "dev")
 
 SECRET_ENV = os.environ.get("CHRONIK_TOKEN") or os.environ.get("LEITSTAND_TOKEN")
 if not SECRET_ENV:
-    raise RuntimeError("CHRONIK_TOKEN or LEITSTAND_TOKEN not set. Auth is required for all requests.")
+    raise RuntimeError(
+        "CHRONIK_TOKEN or LEITSTAND_TOKEN not set. Auth is required for all requests."
+    )
 
 SECRET: Final[str] = SECRET_ENV
 
