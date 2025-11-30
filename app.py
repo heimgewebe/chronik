@@ -140,6 +140,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
     # Leeres Array: nichts zu tun
     if not items:
+        logger.warning("empty payload array received", extra={"domain": dom})
         return lines
 
     # Normalisieren & validieren
@@ -171,6 +172,9 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
 
 
 def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
+    # Nothing to write - return early to avoid creating empty file
+    if not lines:
+        return
     target_path = _safe_target_path(dom)
     fname = target_path.name
 
@@ -280,10 +284,6 @@ async def ingest_v1(
         dom = _sanitize_domain(first_item_domain)
 
     lines_to_write = _process_items(items, dom)
-    if not lines_to_write:
-        logger.warning("empty payload array received", extra={"domain": dom})
-        return PlainTextResponse("ok", status_code=202)
-
     _write_lines_to_storage(dom, lines_to_write)
     return PlainTextResponse("ok", status_code=202)
 
@@ -310,10 +310,6 @@ async def ingest(
 
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
     items = obj if isinstance(obj, list) else [obj]
-    if isinstance(obj, list) and not obj:
-        logger.warning("empty payload array received", extra={"domain": dom})
-        return PlainTextResponse("ok", status_code=202)
-
     lines = _process_items(items, dom)
     _write_lines_to_storage(dom, lines)
 

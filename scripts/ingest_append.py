@@ -36,7 +36,6 @@ def main(argv: list[str]) -> int:
     payload = dict(payload)
     payload["domain"] = dom
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     with target_path.open("a", encoding="utf-8") as fh:
