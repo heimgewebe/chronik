@@ -550,3 +550,53 @@ def test_disk_full_returns_507(monkeypatch, tmp_path):
 
     assert response.status_code == 507
     assert "insufficient" in response.text.lower()
+
+
+def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path):
+    """Test that file descriptors are properly closed when OSError occurs after fd is opened."""
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
+    monkeypatch.setattr("app.DATA", tmp_path)
+
+    original_open = app_module.os.open
+    original_fdopen = app_module.os.fdopen
+    opened_fds = []
+
+    def _track_open(path, flags, mode=0o777, *, dir_fd=None):
+        fd = original_open(path, flags, mode, dir_fd=dir_fd)
+        if dir_fd is not None and isinstance(path, str) and path.endswith(".jsonl"):
+            opened_fds.append(fd)
+        return fd
+
+    def _raise_on_fdopen(fd, mode, encoding=None):
+        # Simulate an error during fdopen (e.g., encoding issue)
+        # This tests the fd leak scenario
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr("app.os.open", _track_open)
+    monkeypatch.setattr("app.os.fdopen", _raise_on_fdopen)
+
+    # This should fail with an OSError, but the fd should be closed
+    try:
+        response = client.post(
+            "/ingest/example.com",
+            headers={"X-Auth": secret, "Content-Type": "application/json"},
+            json={"data": "value"},
+        )
+        # If we get here, the error was handled
+        assert response.status_code >= 500
+    except Exception:
+        # Expected to fail, but fd should be closed
+        pass
+
+    # Verify that all opened fds are now closed
+    import fcntl
+
+    for fd in opened_fds:
+        try:
+            fcntl.fcntl(fd, fcntl.F_GETFD)
+            # If we get here, the fd is still open - this is a leak!
+            assert False, f"File descriptor {fd} was not closed - leak detected!"
+        except OSError as e:
+            # fd is closed (EBADF expected)
+            assert e.errno == errno.EBADF, f"Unexpected error: {e}"

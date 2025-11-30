@@ -215,6 +215,7 @@ def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
                     )
                 flags |= os.O_NOFOLLOW
 
+                fd = None
                 try:
                     # codeql[py/uncontrolled-data-in-path-expression]:
                     # fname is validated basename; dir_fd=trusted DATA directory
@@ -224,6 +225,11 @@ def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
                         0o600,
                         dir_fd=dirfd,
                     )
+                    with os.fdopen(fd, "a", encoding="utf-8") as fh:
+                        fd = None  # fdopen takes ownership
+                        for line in lines:
+                            fh.write(line)
+                            fh.write("\n")
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
                         logger.error("disk full", extra={"file": str(target_path)})
@@ -239,11 +245,9 @@ def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
                             status_code=400, detail="invalid target"
                         ) from exc
                     raise
-
-                with os.fdopen(fd, "a", encoding="utf-8") as fh:
-                    for line in lines:
-                        fh.write(line)
-                        fh.write("\n")
+                finally:
+                    if fd is not None:
+                        os.close(fd)
             finally:
                 os.close(dirfd)
     except Timeout as exc:
