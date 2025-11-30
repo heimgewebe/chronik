@@ -39,7 +39,7 @@ class SyncASGITransport(httpx.BaseTransport):
 
 def test_ingest_event_hermetic(monkeypatch):
     # Ensure the app's secret matches the token we're sending.
-    test_token = "".join(secrets.choice(string.ascii_letters) for i in range(16))
+    test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setattr("app.SECRET", test_token)
 
     transport = SyncASGITransport(app=app)
