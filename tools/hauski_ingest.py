@@ -29,7 +29,7 @@ def _parse_env_param(
     """Parse environment parameter with legacy fallback and error handling."""
     if param_value is not None:
         return converter_func(param_value)
-    
+
     env_str = _get_env_with_legacy(env_name, legacy_env_name)
     try:
         return converter_func(env_str) if env_str else default_value
@@ -59,7 +59,8 @@ def ingest_event(
         timeout: request timeout seconds (env CHRONIK_TIMEOUT, default 5)
         retries: retry count for 429/5xx/timeout (env CHRONIK_RETRIES, default 3)
         backoff: initial backoff seconds (env CHRONIK_BACKOFF, default 0.5)
-        transport: optional httpx transport (e.g., httpx.ASGITransport) for in-process testing
+        transport: optional httpx transport (e.g., httpx.ASGITransport)
+            for in-process testing
 
     Returns:
         "ok" on success
@@ -67,14 +68,22 @@ def ingest_event(
     Raises:
         IngestError on permanent failure or invalid configuration
     """
-    base_url = (url or _get_env_with_legacy("CHRONIK_URL", "LEITSTAND_URL") or "http://localhost:8788").rstrip("/")
+    base_url = (
+        url
+        or _get_env_with_legacy("CHRONIK_URL", "LEITSTAND_URL")
+        or "http://localhost:8788"
+    ).rstrip("/")
     tok = token or _get_env_with_legacy("CHRONIK_TOKEN", "LEITSTAND_TOKEN")
     if not tok:
         raise IngestError("CHRONIK_TOKEN or LEITSTAND_TOKEN not set")
 
-    t = _parse_env_param(timeout, "CHRONIK_TIMEOUT", "LEITSTAND_TIMEOUT", 5.0, float)
+    t = _parse_env_param(
+        timeout, "CHRONIK_TIMEOUT", "LEITSTAND_TIMEOUT", 5.0, float
+    )
     n = _parse_env_param(retries, "CHRONIK_RETRIES", "LEITSTAND_RETRIES", 3, int)
-    b0 = _parse_env_param(backoff, "CHRONIK_BACKOFF", "LEITSTAND_BACKOFF", 0.5, float)
+    b0 = _parse_env_param(
+        backoff, "CHRONIK_BACKOFF", "LEITSTAND_BACKOFF", 0.5, float
+    )
 
     # Validate payload early (must be JSON-serializable mapping)
     if not isinstance(data, Mapping):
@@ -93,8 +102,11 @@ def ingest_event(
 
     for attempt in range(0, n + 1):
         try:
-            # If transport is provided (e.g., ASGITransport), no real sockets are used.
-            with httpx.Client(timeout=t, base_url=base_url, transport=transport) as client:
+            # If transport is provided (e.g., ASGITransport), no real sockets
+            # are used.
+            with httpx.Client(
+                timeout=t, base_url=base_url, transport=transport
+            ) as client:
                 r = client.post(url_full, headers=headers, json=payload)
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             if attempt < n:
@@ -111,7 +123,10 @@ def ingest_event(
             if attempt < n:
                 time.sleep(b0 * (2**attempt))
                 continue
-            raise IngestError(f"ingest failed with {r.status_code} after {attempt} retries: {r.text}")
+            raise IngestError(
+                f"ingest failed with {r.status_code} "
+                f"after {attempt} retries: {r.text}"
+            )
 
         # Non-retryable: raise immediately with details
         try:

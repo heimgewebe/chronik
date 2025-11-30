@@ -187,21 +187,30 @@ def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
         raise HTTPException(status_code=400, detail="invalid target")
     # Extra defense-in-depth: ensure resolved parent is the trusted data dir
     if target_path.parent != DATA:
-        raise HTTPException(status_code=400, detail="invalid target path: wrong parent directory")
+        raise HTTPException(
+            status_code=400, detail="invalid target path: wrong parent directory"
+        )
     lock_path = target_path.parent / (fname + ".lock")
     try:
         with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
             # Defense-in-depth: always use trusted DATA_DIR for dirfd
             dirfd = os.open(str(DATA), os.O_RDONLY)
             try:
-                flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_CLOEXEC", 0)
+                flags = (
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_APPEND
+                    | getattr(os, "O_CLOEXEC", 0)
+                )
                 if not hasattr(os, "O_NOFOLLOW"):
-                    raise HTTPException(status_code=500, detail="platform lacks O_NOFOLLOW")
+                    raise HTTPException(
+                        status_code=500, detail="platform lacks O_NOFOLLOW"
+                    )
                 flags |= os.O_NOFOLLOW
 
                 try:
-                    # codeql[py/uncontrolled-data-in-path-expression]: fname is validated
-                    # basename; dir_fd=trusted DATA directory
+                    # codeql[py/uncontrolled-data-in-path-expression]:
+                    # fname is validated basename; dir_fd=trusted DATA directory
                     fd = os.open(
                         fname,
                         flags,
@@ -211,10 +220,17 @@ def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
                 except OSError as exc:
                     if exc.errno == errno.ENOSPC:
                         logger.error("disk full", extra={"file": str(target_path)})
-                        raise HTTPException(status_code=507, detail="insufficient storage") from exc
+                        raise HTTPException(
+                            status_code=507, detail="insufficient storage"
+                        ) from exc
                     if exc.errno == errno.ELOOP:
-                        logger.warning("symlink attempt rejected", extra={"file": str(target_path)})
-                        raise HTTPException(status_code=400, detail="invalid target") from exc
+                        logger.warning(
+                            "symlink attempt rejected",
+                            extra={"file": str(target_path)},
+                        )
+                        raise HTTPException(
+                            status_code=400, detail="invalid target"
+                        ) from exc
                     raise
 
                 with os.fdopen(fd, "a", encoding="utf-8") as fh:
@@ -280,7 +296,10 @@ async def ingest_v1(
     if not dom:
         first_item_domain = items[0].get("domain")
         if not first_item_domain or not isinstance(first_item_domain, str):
-            raise HTTPException(status_code=400, detail="domain must be specified via query or payload")
+            raise HTTPException(
+                status_code=400,
+                detail="domain must be specified via query or payload",
+            )
         dom = _sanitize_domain(first_item_domain)
 
     lines_to_write = _process_items(items, dom)
