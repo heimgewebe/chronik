@@ -19,7 +19,7 @@ client = TestClient(app)
 
 
 def _test_secret() -> str:
-    return "".join(secrets.choice(string.ascii_letters) for i in range(16))
+    return "".join(secrets.choice(string.ascii_letters) for _ in range(16))
 
 
 def test_ingest_auth_ok(monkeypatch):

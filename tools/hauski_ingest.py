@@ -14,18 +14,9 @@ class IngestError(RuntimeError):
     """Raised when an ingest attempt ultimately fails."""
 
 
-def _env_float(name: str, default: float) -> float:
-    try:
-        return float(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        return int(os.getenv(name, str(default)))
-    except (TypeError, ValueError):
-        return default
+def _get_env_with_legacy(name: str, legacy_name: str) -> str | None:
+    """Get environment variable, checking legacy name as fallback."""
+    return os.getenv(name) or os.getenv(legacy_name)
 
 
 def ingest_event(
@@ -58,14 +49,37 @@ def ingest_event(
     Raises:
         IngestError on permanent failure or invalid configuration
     """
-    base_url = (url or os.getenv("CHRONIK_URL") or os.getenv("LEITSTAND_URL") or "http://localhost:8788").rstrip("/")
-    tok = token or os.getenv("CHRONIK_TOKEN") or os.getenv("LEITSTAND_TOKEN")
+    base_url = (url or _get_env_with_legacy("CHRONIK_URL", "LEITSTAND_URL") or "http://localhost:8788").rstrip("/")
+    tok = token or _get_env_with_legacy("CHRONIK_TOKEN", "LEITSTAND_TOKEN")
     if not tok:
         raise IngestError("CHRONIK_TOKEN or LEITSTAND_TOKEN not set")
 
-    t = float(timeout if timeout is not None else _env_float("CHRONIK_TIMEOUT", _env_float("LEITSTAND_TIMEOUT", 5.0)))
-    n = int(retries if retries is not None else _env_int("CHRONIK_RETRIES", _env_int("LEITSTAND_RETRIES", 3)))
-    b0 = float(backoff if backoff is not None else _env_float("CHRONIK_BACKOFF", _env_float("LEITSTAND_BACKOFF", 0.5)))
+    if timeout is not None:
+        t = float(timeout)
+    else:
+        timeout_str = _get_env_with_legacy("CHRONIK_TIMEOUT", "LEITSTAND_TIMEOUT")
+        try:
+            t = float(timeout_str) if timeout_str else 5.0
+        except (ValueError, TypeError):
+            t = 5.0
+    
+    if retries is not None:
+        n = int(retries)
+    else:
+        retries_str = _get_env_with_legacy("CHRONIK_RETRIES", "LEITSTAND_RETRIES")
+        try:
+            n = int(retries_str) if retries_str else 3
+        except (ValueError, TypeError):
+            n = 3
+    
+    if backoff is not None:
+        b0 = float(backoff)
+    else:
+        backoff_str = _get_env_with_legacy("CHRONIK_BACKOFF", "LEITSTAND_BACKOFF")
+        try:
+            b0 = float(backoff_str) if backoff_str else 0.5
+        except (ValueError, TypeError):
+            b0 = 0.5
 
     # Validate payload early (must be JSON-serializable mapping)
     if not isinstance(data, Mapping):
@@ -75,7 +89,6 @@ def ingest_event(
         raise IngestError('payload missing required key "event"')
 
     # httpx client per call keeps things simple for small volumes
-    base_url = base_url  # ensure we keep a base for ASGITransport clients
     url_full = f"{base_url}/ingest/{domain}"
     headers = {"X-Auth": tok, "Content-Type": "application/json"}
     payload: MutableMapping[str, Any] = dict(data)
