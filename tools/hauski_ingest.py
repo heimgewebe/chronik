@@ -19,6 +19,24 @@ def _get_env_with_legacy(name: str, legacy_name: str) -> str | None:
     return os.getenv(name) or os.getenv(legacy_name)
 
 
+def _parse_env_param(
+    param_value: Optional[float | int],
+    env_name: str,
+    legacy_env_name: str,
+    default_value: float | int,
+    converter_func: type[float] | type[int],
+) -> float | int:
+    """Parse environment parameter with legacy fallback and error handling."""
+    if param_value is not None:
+        return converter_func(param_value)
+    
+    env_str = _get_env_with_legacy(env_name, legacy_env_name)
+    try:
+        return converter_func(env_str) if env_str else default_value
+    except (ValueError, TypeError):
+        return default_value
+
+
 def ingest_event(
     domain: str,
     data: Mapping[str, Any],
@@ -54,32 +72,9 @@ def ingest_event(
     if not tok:
         raise IngestError("CHRONIK_TOKEN or LEITSTAND_TOKEN not set")
 
-    if timeout is not None:
-        t = float(timeout)
-    else:
-        timeout_str = _get_env_with_legacy("CHRONIK_TIMEOUT", "LEITSTAND_TIMEOUT")
-        try:
-            t = float(timeout_str) if timeout_str else 5.0
-        except (ValueError, TypeError):
-            t = 5.0
-    
-    if retries is not None:
-        n = int(retries)
-    else:
-        retries_str = _get_env_with_legacy("CHRONIK_RETRIES", "LEITSTAND_RETRIES")
-        try:
-            n = int(retries_str) if retries_str else 3
-        except (ValueError, TypeError):
-            n = 3
-    
-    if backoff is not None:
-        b0 = float(backoff)
-    else:
-        backoff_str = _get_env_with_legacy("CHRONIK_BACKOFF", "LEITSTAND_BACKOFF")
-        try:
-            b0 = float(backoff_str) if backoff_str else 0.5
-        except (ValueError, TypeError):
-            b0 = 0.5
+    t = _parse_env_param(timeout, "CHRONIK_TIMEOUT", "LEITSTAND_TIMEOUT", 5.0, float)
+    n = _parse_env_param(retries, "CHRONIK_RETRIES", "LEITSTAND_RETRIES", 3, int)
+    b0 = _parse_env_param(backoff, "CHRONIK_BACKOFF", "LEITSTAND_BACKOFF", 0.5, float)
 
     # Validate payload early (must be JSON-serializable mapping)
     if not isinstance(data, Mapping):
