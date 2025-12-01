@@ -1,4 +1,5 @@
 import errno
+import fcntl
 import json
 import os
 import secrets
@@ -562,7 +563,7 @@ def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path):
     original_fdopen = app_module.os.fdopen
     opened_fds = []
 
-    def _track_open(path, flags, mode=0o777, *, dir_fd=None):
+    def _track_open(path, flags, mode=0o600, *, dir_fd=None):
         fd = original_open(path, flags, mode, dir_fd=dir_fd)
         if dir_fd is not None and isinstance(path, str) and path.endswith(".jsonl"):
             opened_fds.append(fd)
@@ -590,8 +591,6 @@ def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path):
         pass
 
     # Verify that all opened fds are now closed
-    import fcntl
-
     for fd in opened_fds:
         try:
             fcntl.fcntl(fd, fcntl.F_GETFD)
