@@ -1,7 +1,6 @@
----
 name: PR Heimgewebe commands
 
-"on":
+on:
   issue_comment:
     types: [created]
 
@@ -13,8 +12,7 @@ permissions:
 jobs:
   dispatch:
     if: github.event.issue.pull_request != null
-    uses: heimgewebe/metarepo/.github/workflows/heimgewebe-command-dispatch.yml@main
+    uses: heimgewebe/metarepo/.github/workflows/heimgewebe-command-dispatch.yml@a34bff3883deedea243d1aca00e89f079f7d2f87
     secrets:
       HEIMGEWEBE_APP_ID: ${{ secrets.HEIMGEWEBE_APP_ID }}
       HEIMGEWEBE_APP_PRIVATE_KEY: ${{ secrets.HEIMGEWEBE_APP_PRIVATE_KEY }}
-      HEIMGEWEBE_AUTOBOT_TOKEN: ${{ secrets.HEIMGEWEBE_AUTOBOT_TOKEN }}
