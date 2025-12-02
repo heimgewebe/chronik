@@ -171,16 +171,37 @@ def _validate_body_size(req: Request) -> None:
     Must run *after* auth to avoid leaking details to unauthenticated callers.
     """
     cl_raw = req.headers.get("content-length")
-    if not cl_raw:
-        raise HTTPException(status_code=411, detail="length required")
-    try:
-        cl = int(cl_raw)
-    except (ValueError, TypeError):  # defensive
-        raise HTTPException(status_code=400, detail="invalid content-length")
-    if cl < 0:
-        raise HTTPException(status_code=400, detail="invalid content-length")
-    if cl > MAX_PAYLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="payload too large")
+    if cl_raw:
+        try:
+            cl = int(cl_raw)
+        except (ValueError, TypeError):  # defensive
+            raise HTTPException(status_code=400, detail="invalid content-length")
+        if cl < 0:
+            raise HTTPException(status_code=400, detail="invalid content-length")
+        if cl > MAX_PAYLOAD_SIZE:
+            raise HTTPException(status_code=413, detail="payload too large")
+        return
+
+    # No content-length. Check transfer-encoding.
+    te = req.headers.get("transfer-encoding", "").lower()
+    if "chunked" in te:
+        return  # Body size will be checked during read
+
+    raise HTTPException(status_code=411, detail="length required")
+
+
+async def _read_body_with_limit(request: Request, limit: int) -> bytes:
+    """
+    Reads the request body, respecting the limit.
+    Raises HTTPException(413) if limit is exceeded.
+    """
+    data = bytearray()
+    # Starlette's request.stream() yields chunks
+    async for chunk in request.stream():
+        data.extend(chunk)
+        if len(data) > limit:
+            raise HTTPException(status_code=413, detail="payload too large")
+    return bytes(data)
 
 
 def _process_items(items: list[Any], dom: str) -> list[str]:
@@ -324,7 +345,7 @@ async def ingest_v1(
     content_type = request.headers.get("content-type", "").lower()
 
     try:
-        raw = await request.body()
+        raw = await _read_body_with_limit(request, MAX_PAYLOAD_SIZE)
         body = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid encoding") from exc
@@ -382,7 +403,7 @@ async def ingest(
 
     # JSON parsen
     try:
-        raw = await request.body()
+        raw = await _read_body_with_limit(request, MAX_PAYLOAD_SIZE)
         obj = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise HTTPException(status_code=400, detail="invalid json") from exc
