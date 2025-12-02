@@ -131,7 +131,8 @@ def ingest_event(
         # Non-retryable: raise immediately with details
         try:
             detail = r.json()
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
+            # httpx.Response.json() can raise ValueError if the body isn't valid JSON
             detail = r.text
         raise IngestError(f"ingest rejected: {r.status_code} {detail}")
 
