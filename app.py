@@ -33,23 +33,16 @@ from storage import (
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
-    os.getenv("CHRONIK_MAX_BODY")
-    or os.getenv("LEITSTAND_MAX_BODY")
-    or str(1024 * 1024)
+    os.getenv("CHRONIK_MAX_BODY") or str(1024 * 1024)
 )
-LOCK_TIMEOUT: Final[int] = int(
-    os.getenv("CHRONIK_LOCK_TIMEOUT") or os.getenv("LEITSTAND_LOCK_TIMEOUT") or "30"
-)
-RATE_LIMIT: Final[str] = (
-    os.getenv("CHRONIK_RATE_LIMIT")
-    or os.getenv("LEITSTAND_RATE_LIMIT")
-    or "60/minute"
-)
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOCK_TIMEOUT: Final[int] = int(os.getenv("CHRONIK_LOCK_TIMEOUT") or "30")
+RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
 
-_debug_val = (
-    os.getenv("CHRONIK_DEBUG") or os.getenv("LEITSTAND_DEBUG") or ""
-).lower()
+LOG_LEVEL = (
+    os.getenv("CHRONIK_LOG_LEVEL") or os.getenv("LOG_LEVEL", "INFO")
+).upper()
+
+_debug_val = (os.getenv("CHRONIK_DEBUG") or "").lower()
 DEBUG_MODE: Final[bool] = _debug_val in {
     "1",
     "true",
@@ -63,14 +56,12 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE)
 
 DATA: Final = DATA_DIR
 
-VERSION: Final[str] = (
-    os.environ.get("CHRONIK_VERSION") or os.environ.get("LEITSTAND_VERSION") or "dev"
-)
+VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "dev"
 
-SECRET_ENV = os.environ.get("CHRONIK_TOKEN") or os.environ.get("LEITSTAND_TOKEN")
+SECRET_ENV = os.environ.get("CHRONIK_TOKEN")
 if not SECRET_ENV:
     raise RuntimeError(
-        "CHRONIK_TOKEN or LEITSTAND_TOKEN not set. Auth is required for all requests."
+        "CHRONIK_TOKEN not set. Auth is required for all requests."
     )
 
 SECRET: Final[str] = SECRET_ENV

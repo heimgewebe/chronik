@@ -111,6 +111,7 @@ paths:
   /health:
     get:
       summary: Health check
+      operationId: getHealth
       description: "Returns `{\"status\": \"ok\"}` when the service is ready."
       security:
         - XAuth: []
@@ -130,6 +131,7 @@ paths:
   /version:
     get:
       summary: Service version
+      operationId: getVersion
       description: Returns the current Chronik version string.
       security:
         - XAuth: []

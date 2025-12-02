@@ -59,7 +59,7 @@ curl -X POST "http://localhost:8788/ingest/example.com" \
 * **Antwort**: `{ "status": "ok" }`. Kann ohne Request-Body abgefragt werden.
 
 ### `GET /version`
-* **Header** `X-Auth`: nicht erforderlich.
+* **Header** `X-Auth`: muss dem Wert von `CHRONIK_TOKEN` entsprechen.
 * **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `CHRONIK_VERSION`.
 
 #### Fehlerfälle
