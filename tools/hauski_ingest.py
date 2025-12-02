@@ -14,23 +14,22 @@ class IngestError(RuntimeError):
     """Raised when an ingest attempt ultimately fails."""
 
 
-def _get_env_with_legacy(name: str, legacy_name: str) -> str | None:
-    """Get environment variable, checking legacy name as fallback."""
-    return os.getenv(name) or os.getenv(legacy_name)
+def _get_env(name: str) -> str | None:
+    """Get environment variable."""
+    return os.getenv(name)
 
 
 def _parse_env_param(
     param_value: Optional[float | int],
     env_name: str,
-    legacy_env_name: str,
     default_value: float | int,
     converter_func: type[float] | type[int],
 ) -> float | int:
-    """Parse environment parameter with legacy fallback and error handling."""
+    """Parse environment parameter with error handling."""
     if param_value is not None:
         return converter_func(param_value)
 
-    env_str = _get_env_with_legacy(env_name, legacy_env_name)
+    env_str = _get_env(env_name)
     try:
         return converter_func(env_str) if env_str else default_value
     except (ValueError, TypeError):
@@ -70,19 +69,19 @@ def ingest_event(
     """
     base_url = (
         url
-        or _get_env_with_legacy("CHRONIK_URL", "LEITSTAND_URL")
+        or _get_env("CHRONIK_URL")
         or "http://localhost:8788"
     ).rstrip("/")
-    tok = token or _get_env_with_legacy("CHRONIK_TOKEN", "LEITSTAND_TOKEN")
+    tok = token or _get_env("CHRONIK_TOKEN")
     if not tok:
-        raise IngestError("CHRONIK_TOKEN or LEITSTAND_TOKEN not set")
+        raise IngestError("CHRONIK_TOKEN not set")
 
     t = _parse_env_param(
-        timeout, "CHRONIK_TIMEOUT", "LEITSTAND_TIMEOUT", 5.0, float
+        timeout, "CHRONIK_TIMEOUT", 5.0, float
     )
-    n = _parse_env_param(retries, "CHRONIK_RETRIES", "LEITSTAND_RETRIES", 3, int)
+    n = _parse_env_param(retries, "CHRONIK_RETRIES", 3, int)
     b0 = _parse_env_param(
-        backoff, "CHRONIK_BACKOFF", "LEITSTAND_BACKOFF", 0.5, float
+        backoff, "CHRONIK_BACKOFF", 0.5, float
     )
 
     # Validate payload early (must be JSON-serializable mapping)

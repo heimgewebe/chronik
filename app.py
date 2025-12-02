@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import logging
 import os
@@ -51,6 +52,37 @@ DEBUG_MODE: Final[bool] = _debug_val in {
 }
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger("chronik")
+
+class ExtraFormatter(logging.Formatter):
+    """Formatter that adds 'extra' fields to the log message."""
+
+    def format(self, record):
+        s = super().format(record)
+        if hasattr(record, "request_id"):
+            extras = [
+                f'{k}="{v}"'
+                for k, v in record.__dict__.items()
+                if k
+                in {
+                    "request_id",
+                    "method",
+                    "path",
+                    "status",
+                    "duration_ms",
+                    "domain",
+                    "file",
+                }
+            ]
+            if extras:
+                s = f"{s} {' '.join(extras)}"
+        return s
+
+
+# Re-configure root logger with our custom formatter
+_handler = logging.StreamHandler()
+_handler.setFormatter(ExtraFormatter(fmt="%(levelname)s:%(name)s:%(message)s"))
+logging.getLogger().handlers = [_handler]
+logging.getLogger().setLevel(LOG_LEVEL)
 
 app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE)
 
@@ -205,7 +237,16 @@ def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
         raise HTTPException(
             status_code=400, detail="invalid target path: wrong parent directory"
         )
-    lock_path = target_path.parent / (fname + ".lock")
+
+    # Prevent "File name too long" for lock files on 255-char filenames
+    # We use a hidden file with a hash if the simple name would be too long.
+    lock_name = fname + ".lock"
+    if len(lock_name) > 255:
+        # Use a deterministic hash of the filename to keep it short and unique
+        h = hashlib.sha256(fname.encode("utf-8")).hexdigest()
+        lock_name = f".{h}.lock"
+
+    lock_path = target_path.parent / lock_name
     try:
         with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
             # Defense-in-depth: always use trusted DATA_DIR for dirfd
