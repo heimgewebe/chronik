@@ -8,7 +8,6 @@ import pytest
 # Set default tokens for when the module is first imported.
 # Tests should override these for hermeticity.
 default_token = os.environ.setdefault("CHRONIK_TOKEN", "test-secret")
-os.environ.setdefault("LEITSTAND_TOKEN", default_token)
 
 import httpx  # noqa: E402
 
