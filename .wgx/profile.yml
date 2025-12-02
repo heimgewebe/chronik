@@ -4,25 +4,21 @@ tasks:
     set -euxo pipefail
     bash scripts/setup-venv.sh
     . .venv/bin/activate
-# Neuer Name (CHRONIK_TOKEN), aber Helper erwartet derzeit noch LEITSTAND_TOKEN.
-# Wir spiegeln beide, damit Client und Server denselben Key sehen.
+    # Neuer Name (CHRONIK_TOKEN)
     export CHRONIK_TOKEN="${CHRONIK_TOKEN:-dev}"
-export LEITSTAND_TOKEN="${LEITSTAND_TOKEN:-$CHRONIK_TOKEN}"
 python3 - <<'PY'
-import httpx
+from fastapi.testclient import TestClient
 from app import app
 from tools.hauski_ingest import ingest_event
 
-# Im Testcode existiert ein SyncASGITransport, der ASGI in den sync Client adaptiert.
-try:
-    from tests.test_ingest_client import SyncASGITransport
-except ImportError as exc:
-    raise SystemExit(f"SyncASGITransport helper not found: {exc}")
-
-transport = SyncASGITransport(app=app)
+# Use TestClient's transport for hermetic testing
+client = TestClient(app)
 
 result = ingest_event(
-    "example.com", {"event": "test", "status": "ok"}, url="http://test", transport=transport
+    "example.com",
+    {"event": "test", "status": "ok"},
+    url="http://test",
+    transport=client._transport,
 )
 print(result)
 PY
