@@ -96,6 +96,8 @@ mod r#async {
     use super::{ProducerClient, ProducerError};
     use bytes::Bytes;
     use futures_util::stream::{Stream, StreamExt};
+    use http_body_util::StreamBody;
+    use http_body::Frame;
     use reqwest::Body;
     use serde::Serialize;
 
@@ -120,11 +122,19 @@ mod r#async {
             S: Stream<Item = T> + Send + Sync + 'static,
         {
             let url = format!("{}/v1/ingest", self.base_url.trim_end_matches('/'));
-            let body = Body::wrap_stream(events.map(|item| -> Result<Bytes, _> {
-                let mut line = serde_json::to_vec(&item)?;
-                line.push(b'\n');
-                Ok(line.into())
-            }));
+
+            // Map the stream of items to Frame<Bytes>
+            let stream = events.map(|item| -> Result<Frame<Bytes>, Box<dyn std::error::Error + Send + Sync>> {
+                 let mut line = match serde_json::to_vec(&item) {
+                     Ok(v) => v,
+                     Err(e) => return Err(Box::new(e)),
+                 };
+                 line.push(b'\n');
+                 Ok(Frame::data(Bytes::from(line)))
+            });
+
+            // Wrap in StreamBody, then in reqwest::Body
+            let body = Body::wrap(StreamBody::new(stream));
 
             self.async_client
                 .post(&url)
