@@ -67,9 +67,10 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 | `CHRONIK_MAX_BODY`   | nein    | `1048576`| Maximale Größe des Request-Bodys in Bytes (Standard 1&nbsp;MiB). |
 | `CHRONIK_LOCK_TIMEOUT`| nein   | `30`     | Timeout in Sekunden beim Schreiben (FileLock). |
 | `CHRONIK_RATE_LIMIT` | nein    | `60/minute` | Rate-Limit pro Quell-IP (SlowAPI-Format). |
-| `LOG_LEVEL`            | nein    | `INFO`   | Log-Level (z. B. `DEBUG`, `INFO`, `WARNING`). |
+| `CHRONIK_LOG_LEVEL`  | nein    | `INFO`   | Log-Level (z. B. `DEBUG`, `INFO`, `WARNING`). |
+| `LOG_LEVEL`            | nein    | `INFO`   | Fallback Log-Level, falls `CHRONIK_LOG_LEVEL` nicht gesetzt. |
 
-**Hinweis:** `CHRONIK_TOKEN` ist die primäre Umgebungsvariable für das Authentifizierungs-Token. Aus Kompatibilitätsgründen wird `LEITSTAND_TOKEN` weiterhin akzeptiert, falls `CHRONIK_TOKEN` nicht gesetzt ist.
+**Hinweis:** `CHRONIK_TOKEN` ist die primäre Umgebungsvariable für das Authentifizierungs-Token.
 
 ## API
 
@@ -91,7 +92,13 @@ Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml)
 ## Betrieb & Wartung
 * Logs: `uvicorn` schreibt standardmäßig auf STDOUT; bei Bedarf Output umleiten oder in eine zentrale Log-Pipeline integrieren.
 * Backups: Das Datenverzeichnis lässt sich als Ganzes sichern. Durch die reine Anhänge-Strategie eignen sich inkrementelle Backups.
-* Monitoring: Ein erfolgreicher `POST` liefert Status 200. Fehlermeldungen (`400`, `401`) sollten ausgewertet werden, um Integrationsfehler zu erkennen.
+* Monitoring: Ein erfolgreicher `POST` liefert Status 202 (oder 200). Fehlermeldungen sollten ausgewertet werden:
+    - `400`: Ungültige Domain, JSON, Domain Mismatch.
+    - `401`: Fehlendes oder falsches Token.
+    - `413`: Payload zu groß.
+    - `422`: Validierungsfehler (z. B. summary zu lang).
+    - `429`: Rate Limit oder Lock Timeout.
+    - `507`: Speicher voll.
 * Rotierendes Secret: Wird `CHRONIK_TOKEN` geändert, muss der neue Wert zeitgleich bei allen Clients hinterlegt werden.
 * Rate-Limits & Locks: Bei hohem Traffic liefert der Dienst `429` mitsamt `Retry-After` sowie `X-RateLimit-*`. Wenn ein Lock nicht rechtzeitig frei wird, antwortet die API mit `503 lock timeout`.
 
@@ -126,14 +133,21 @@ python -c 'import os; os.environ["CHRONIK_TOKEN"]="dev"; from tools.hauski_inges
 ```
 
 ### Testen ohne echte Netzwerk-Sockets
-Für hermetische Tests kann `httpx.ASGITransport` genutzt werden, sodass Requests direkt gegen die laufende FastAPI-App gehen:
+Für hermetische Tests kann `httpx` direkt gegen die laufende FastAPI-App genutzt werden. Da `hauski_ingest` einen synchronen Client verwendet, die FastAPI-App aber asynchron ist, empfiehlt sich die Nutzung von `TestClient` aus `fastapi.testclient`:
 
 ```python
 import os
 os.environ["CHRONIK_TOKEN"] = "dev"
-import httpx
+from fastapi.testclient import TestClient
 from app import app  # die FastAPI-App
 from tools.hauski_ingest import ingest_event
-transport = httpx.ASGITransport(app=app)
-print(ingest_event("example.com", {"event":"test","status":"ok"}, url="http://test", transport=transport))
+
+# TestClient stellt einen synchronen Transport bereit
+client = TestClient(app)
+print(ingest_event(
+    "example.com",
+    {"event":"test","status":"ok"},
+    url="http://test",
+    transport=client._transport
+))
 ```

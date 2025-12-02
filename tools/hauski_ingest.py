@@ -92,7 +92,8 @@ def ingest_event(
         raise IngestError('payload missing required key "event"')
 
     # httpx client per call keeps things simple for small volumes
-    url_full = f"{base_url}/ingest/{domain}"
+    url_full = f"{base_url}/v1/ingest"
+    params = {"domain": domain}
     headers = {"X-Auth": tok, "Content-Type": "application/json"}
     payload: MutableMapping[str, Any] = dict(data)
 
@@ -106,7 +107,9 @@ def ingest_event(
             with httpx.Client(
                 timeout=t, base_url=base_url, transport=transport
             ) as client:
-                r = client.post(url_full, headers=headers, json=payload)
+                r = client.post(
+                    url_full, params=params, headers=headers, json=payload
+                )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             if attempt < n:
                 time.sleep(b0 * (2**attempt))
