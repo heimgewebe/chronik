@@ -24,7 +24,7 @@ class DomainError(ValueError):
 
 
 DATA_DIR: Final[Path] = Path(
-    os.environ.get("CHRONIK_DATA_DIR", os.environ.get("LEITSTAND_DATA_DIR", "data"))
+    os.environ.get("CHRONIK_DATA_DIR", "data")
 ).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
