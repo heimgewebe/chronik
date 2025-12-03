@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Mapping, Sequence, Union, Optional
 
 import httpx
 
@@ -38,7 +38,7 @@ def _parse_env_param(
 
 def ingest_event(
     domain: str,
-    data: Mapping[str, Any],
+    data: Union[Mapping[str, Any], Sequence[Mapping[str, Any]]],
     *,
     url: Optional[str] = None,
     token: Optional[str] = None,
@@ -48,17 +48,17 @@ def ingest_event(
     transport: Optional[httpx.BaseTransport] = None,
 ) -> str:
     """
-    Send a single JSON event to Chronik.
+    Send one or more JSON events to Chronik.
 
     Args:
         domain: target domain (e.g. "example.com")
-        data: JSON-serializable mapping with at least an "event" field
+        data: JSON-serializable mapping (event) or list of mappings (batch)
         url: base URL of Chronik (env CHRONIK_URL if None)
         token: shared secret for X-Auth (env CHRONIK_TOKEN if None)
         timeout: request timeout seconds (env CHRONIK_TIMEOUT, default 5)
         retries: retry count for 429/5xx/timeout (env CHRONIK_RETRIES, default 3)
         backoff: initial backoff seconds (env CHRONIK_BACKOFF, default 0.5)
-        transport: optional httpx transport (e.g., httpx.ASGITransport)
+        transport: optional httpx transport (e.g., TestClient's transport)
             for in-process testing
 
     Returns:
@@ -84,25 +84,29 @@ def ingest_event(
         backoff, "CHRONIK_BACKOFF", 0.5, float
     )
 
-    # Validate payload early (must be JSON-serializable mapping)
-    if not isinstance(data, Mapping):
-        raise IngestError("payload must be a mapping")
-    if "event" not in data:
-        # not strictly necessary, but helpful for consistency
-        raise IngestError('payload missing required key "event"')
+    # Validate payload early
+    if isinstance(data, Mapping):
+        payload = dict(data)
+        if "event" not in payload:
+            raise IngestError('payload missing required key "event"')
+    elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+        payload = [dict(item) for item in data]
+        if not payload:
+            raise IngestError("empty batch payload")
+    else:
+        raise IngestError("payload must be a mapping or sequence of mappings")
 
     # httpx client per call keeps things simple for small volumes
     url_full = f"{base_url}/v1/ingest"
     params = {"domain": domain}
     headers = {"X-Auth": tok, "Content-Type": "application/json"}
-    payload: MutableMapping[str, Any] = dict(data)
 
     # Let server enforce "domain" field; if caller sets it, do not contradict path
     # (server already checks for mismatch and will 400 if different).
 
     for attempt in range(0, n + 1):
         try:
-            # If transport is provided (e.g., ASGITransport), no real sockets
+            # If transport is provided (e.g., TestClient transport), no real sockets
             # are used.
             with httpx.Client(
                 timeout=t, base_url=base_url, transport=transport

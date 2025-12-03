@@ -16,8 +16,8 @@ need() { command -v "$1" >/dev/null 2>&1 || {
 need jq
 need curl
 
-TOKEN="${CHRONIK_TOKEN:-${LEITSTAND_TOKEN:-}}"
-: "${TOKEN:?CHRONIK_TOKEN oder LEITSTAND_TOKEN fehlt}"
+TOKEN="${CHRONIK_TOKEN:-}"
+: "${TOKEN:?CHRONIK_TOKEN fehlt}"
 
 # 1) Kompakter JSON-Stream: Jede Zeile = ein vollständiges JSON-Objekt.
 #    jq liest robuste JSON-Streams (mehrere JSON-Werte hintereinander, auch pretty-printed).
