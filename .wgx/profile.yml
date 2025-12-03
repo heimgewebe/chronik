@@ -6,22 +6,22 @@ tasks:
     . .venv/bin/activate
     # Neuer Name (CHRONIK_TOKEN)
     export CHRONIK_TOKEN="${CHRONIK_TOKEN:-dev}"
-python3 - <<'PY'
-from fastapi.testclient import TestClient
-from app import app
-from tools.hauski_ingest import ingest_event
+    python3 - <<'PY'
+    from fastapi.testclient import TestClient
+    from app import app
+    from tools.hauski_ingest import ingest_event
 
-# Use TestClient's transport for hermetic testing
-client = TestClient(app)
+    # Use TestClient's transport for hermetic testing
+    client = TestClient(app)
 
-result = ingest_event(
-    "example.com",
-    {"event": "test", "status": "ok"},
-    url="http://test",
-    transport=client._transport,
-)
-print(result)
-PY
+    result = ingest_event(
+        "example.com",
+        {"event": "test", "status": "ok"},
+        url="http://test",
+        transport=client._transport,
+    )
+    print(result)
+    PY
   guard: |
     set -euxo pipefail
     bash scripts/setup-venv.sh

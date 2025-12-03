@@ -89,7 +89,7 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE)
 
 DATA: Final = DATA_DIR
 
-VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "dev"
+VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
 SECRET_ENV = os.environ.get("CHRONIK_TOKEN")
 if not SECRET_ENV:
