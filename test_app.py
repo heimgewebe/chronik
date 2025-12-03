@@ -63,6 +63,7 @@ def test_sanitize_domain_bad():
 
 def test_safe_target_path_rejects_traversal(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     with pytest.raises(HTTPException) as excinfo:
         _safe_target_path("../../etc/passwd")
     assert excinfo.value.status_code == 400
@@ -86,7 +87,7 @@ def test_secure_filename_rejects_nested_traversal():
 def test_ingest_single_object(monkeypatch, tmp_path: Path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     domain = "example.com"
     payload = {"data": "value"}
     response = client.post(
@@ -108,7 +109,7 @@ def test_ingest_single_object(monkeypatch, tmp_path: Path):
 def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     domain = "example.com"
     payload = [{"data": "value1"}, {"data": "value2"}]
     response = client.post(
@@ -133,7 +134,7 @@ def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
 def test_ingest_empty_array(monkeypatch, tmp_path: Path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     response = client.post(
         "/ingest/example.com",
         headers={"X-Auth": secret},
@@ -209,7 +210,7 @@ def test_ingest_domain_mismatch(monkeypatch):
 def test_ingest_domain_normalized(monkeypatch, tmp_path: Path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
     payload = {"domain": "Example.COM", "data": "value"}
     response = client.post(
@@ -312,7 +313,12 @@ def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
     assert prefix.startswith(domain[:16])
     assert storage.target_filename(dom) == filename
 
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    # app.DATA also needs to be patched because _safe_target_path uses it as default if not passed,
+    # but here we are testing storage directly mostly.
+    # Actually _safe_target_path calls safe_target_path(..., data_dir=DATA)
     monkeypatch.setattr("app.DATA", tmp_path)
+
     resolved = app_module._safe_target_path(domain)
     assert resolved.name == filename
     assert resolved.parent == tmp_path
@@ -371,7 +377,7 @@ def test_lock_timeout_returns_429(monkeypatch):
         def __exit__(self, *exc):
             return False
 
-    monkeypatch.setattr("app.FileLock", _DummyLock)
+    monkeypatch.setattr("storage.FileLock", _DummyLock)
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
     response = client.post(
@@ -406,7 +412,7 @@ def test_path_traversal_domain_is_rejected(monkeypatch):
 def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     domain = "example.com"
     payload = {"data": "value"}
     response = client.post(
@@ -427,7 +433,7 @@ def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path):
 def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     domain = "example.com"
     payload = {"domain": domain, "data": "value"}
     response = client.post(
@@ -448,7 +454,7 @@ def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path):
 def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     domain = "example.com"
     payload = [{"data": "value1"}, {"data": "value2"}]
     ndjson_payload = "\n".join(json.dumps(item) for item in payload)
@@ -502,7 +508,7 @@ def test_symlink_attack_rejected(monkeypatch, tmp_path):
 
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
     victim = tmp_path / "victim.txt"
     victim.write_text("do not touch", encoding="utf-8")
@@ -524,7 +530,7 @@ def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
 
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
     def _one(i: int) -> int:
         return client.post(
@@ -547,16 +553,16 @@ def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
 def test_disk_full_returns_507(monkeypatch, tmp_path):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
-    original_open = app_module.os.open
+    original_open = storage.os.open
 
     def _raise_enospc(path, flags, mode=0o777, *, dir_fd=None):
         if dir_fd is not None:
             raise OSError(errno.ENOSPC, "No space left on device")
         return original_open(path, flags, mode)
 
-    monkeypatch.setattr("app.os.open", _raise_enospc)
+    monkeypatch.setattr("storage.os.open", _raise_enospc)
 
     response = client.post(
         "/ingest/example.com",
@@ -572,10 +578,10 @@ def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path):
     """Test that file descriptors are properly closed when OSError occurs after fd is opened."""
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
-    monkeypatch.setattr("app.DATA", tmp_path)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
-    original_open = app_module.os.open
-    original_fdopen = app_module.os.fdopen
+    original_open = storage.os.open
+    original_fdopen = storage.os.fdopen
     opened_fds = []
 
     def _track_open(path, flags, mode=0o600, *, dir_fd=None):
@@ -589,8 +595,8 @@ def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path):
         # This tests the fd leak scenario
         raise OSError(errno.EIO, "Input/output error")
 
-    monkeypatch.setattr("app.os.open", _track_open)
-    monkeypatch.setattr("app.os.fdopen", _raise_on_fdopen)
+    monkeypatch.setattr("storage.os.open", _track_open)
+    monkeypatch.setattr("storage.os.fdopen", _raise_on_fdopen)
 
     # This should fail with an OSError, but the fd should be closed
     try:

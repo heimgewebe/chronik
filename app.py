@@ -26,17 +26,18 @@ from slowapi.util import get_remote_address
 from storage import (
     DATA_DIR,
     DomainError,
-    FILENAME_RE,
+    StorageError,
+    StorageFullError,
+    StorageBusyError,
     safe_target_path,
     sanitize_domain,
-    target_filename,
+    write_payload,
 )
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
     os.getenv("CHRONIK_MAX_BODY") or str(1024 * 1024)
 )
-LOCK_TIMEOUT: Final[int] = int(os.getenv("CHRONIK_LOCK_TIMEOUT") or "30")
 RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
 
 LOG_LEVEL = (
@@ -239,90 +240,19 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
     return lines
 
 
-def _write_lines_to_storage(dom: str, lines: list[str]) -> None:
-    # Nothing to write - return early to avoid creating empty file
-    if not lines:
-        return
-    target_path = _safe_target_path(dom)
-    fname = target_path.name
-
-    # Ensure fname is exactly as expected for sanitized domain
-    if fname != target_filename(dom):
-        raise HTTPException(status_code=400, detail="invalid target")
-    if os.path.basename(fname) != fname or ".." in fname:
-        raise HTTPException(status_code=400, detail="invalid target")
-    if FILENAME_RE is None or not FILENAME_RE.fullmatch(fname):
-        raise HTTPException(status_code=400, detail="invalid target")
-    # Extra defense-in-depth: ensure resolved parent is the trusted data dir
-    if target_path.parent != DATA:
-        raise HTTPException(
-            status_code=400, detail="invalid target path: wrong parent directory"
-        )
-
-    # Prevent "File name too long" for lock files on 255-char filenames
-    # We use a hidden file with a hash if the simple name would be too long.
-    lock_name = fname + ".lock"
-    if len(lock_name) > 255:
-        # Use a deterministic hash of the filename to keep it short and unique
-        h = hashlib.sha256(fname.encode("utf-8")).hexdigest()
-        lock_name = f".{h}.lock"
-
-    lock_path = target_path.parent / lock_name
+def _write_lines_to_storage_wrapper(dom: str, lines: list[str]) -> None:
     try:
-        with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
-            # Defense-in-depth: always use trusted DATA_DIR for dirfd
-            dirfd = os.open(str(DATA), os.O_RDONLY)
-            try:
-                flags = (
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_APPEND
-                    | getattr(os, "O_CLOEXEC", 0)
-                )
-                if not hasattr(os, "O_NOFOLLOW"):
-                    raise HTTPException(
-                        status_code=500, detail="platform lacks O_NOFOLLOW"
-                    )
-                flags |= os.O_NOFOLLOW
-
-                fd = None
-                try:
-                    # codeql[py/uncontrolled-data-in-path-expression]:
-                    # fname is validated basename; dir_fd=trusted DATA directory
-                    fd = os.open(
-                        fname,
-                        flags,
-                        0o600,
-                        dir_fd=dirfd,
-                    )
-                    with os.fdopen(fd, "a", encoding="utf-8") as fh:
-                        fd = None  # fdopen takes ownership
-                        for line in lines:
-                            fh.write(line)
-                            fh.write("\n")
-                except OSError as exc:
-                    if exc.errno == errno.ENOSPC:
-                        logger.error("disk full", extra={"file": str(target_path)})
-                        raise HTTPException(
-                            status_code=507, detail="insufficient storage"
-                        ) from exc
-                    if exc.errno == errno.ELOOP:
-                        logger.warning(
-                            "symlink attempt rejected",
-                            extra={"file": str(target_path)},
-                        )
-                        raise HTTPException(
-                            status_code=400, detail="invalid target"
-                        ) from exc
-                    raise
-                finally:
-                    if fd is not None:
-                        os.close(fd)
-            finally:
-                os.close(dirfd)
-    except Timeout as exc:
-        logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
+        write_payload(dom, lines)
+    except StorageFullError as exc:
+        raise HTTPException(status_code=507, detail="insufficient storage") from exc
+    except StorageBusyError as exc:
         raise HTTPException(status_code=429, detail="busy, try again") from exc
+    except StorageError as exc:
+        # Fallback for other storage errors (e.g. symlinks, invalid paths)
+        # We assume most are client errors (bad domain/path), but some might be internal
+        if "invalid target" in str(exc) or "invalid target path" in str(exc):
+             raise HTTPException(status_code=400, detail="invalid target") from exc
+        raise HTTPException(status_code=500, detail="storage error") from exc
 
 
 @app.post(
@@ -388,7 +318,7 @@ async def ingest_v1(
         dom = _sanitize_domain(first_item_domain)
 
     lines_to_write = _process_items(items, dom)
-    await run_in_threadpool(_write_lines_to_storage, dom, lines_to_write)
+    await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines_to_write)
     return PlainTextResponse("ok", status_code=202)
 
 
@@ -415,7 +345,7 @@ async def ingest(
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
     items = obj if isinstance(obj, list) else [obj]
     lines = _process_items(items, dom)
-    await run_in_threadpool(_write_lines_to_storage, dom, lines)
+    await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines)
 
     return PlainTextResponse("ok", status_code=202)
 
