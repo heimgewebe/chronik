@@ -179,6 +179,21 @@ def test_ingest_invalid_payload_not_dict(monkeypatch):
     assert "invalid payload" in response.text
 
 
+def test_ingest_v1_invalid_payload_list_of_ints_no_domain(monkeypatch):
+    secret = _test_secret()
+    monkeypatch.setattr("app.SECRET", secret)
+    # Sending a list of integers (valid JSON, but invalid payload structure)
+    # AND missing domain query param.
+    # This previously caused an AttributeError (500) because code tried .get("domain") on int.
+    response = client.post(
+        "/v1/ingest",
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
+        json=[1, 2, 3],
+    )
+    assert response.status_code == 400
+    assert "invalid payload" in response.text
+
+
 def test_ingest_domain_mismatch(monkeypatch):
     secret = _test_secret()
     monkeypatch.setattr("app.SECRET", secret)
