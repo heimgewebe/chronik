@@ -11,7 +11,7 @@ project:
   name: chronik
   summary: Event ingest and processing hub.
   role: central_event_store
-  primary_language: rust
+  primary_language: python
   visibility: internal
 
 dependencies:
@@ -22,24 +22,26 @@ dependencies:
         - json_schema
         - proto
   external:
-    - name: tokio
-      version: "1.x"
-    - name: serde
-    - name: serde_json
-    - name: tracing
+    - name: fastapi
+    - name: uvicorn
+    - name: filelock
+    - name: prometheus-fastapi-instrumentator
+    - name: slowapi
 
 architecture:
   entrypoints:
-    - src/main.rs
+    - app.py
   key_paths:
-    - path: src/ingest/
-      purpose: HTTP ingest + validation
-    - path: src/pipeline/
-      purpose: event processing
+    - path: app.py
+      purpose: HTTP ingest + validation + API
+    - path: storage.py
+      purpose: File I/O + domain validation + locking
+    - path: clients/rust/chronik_producer/
+      purpose: Rust client library
   data_flow:
-    input: HTTP POST /ingest/*
-    processing: JSON Schema validation + pipelines
-    output: storage + metrics
+    input: HTTP POST /v1/ingest
+    processing: JSON validation + domain sanitization
+    output: local JSONL files (append-only)
 
 conventions:
   branching: "main, feature/*, hotfix/*"
@@ -49,10 +51,13 @@ conventions:
 documentation:
   adr: docs/adr/
   runbook: docs/runbook.md
+  openapi: docs/openapi.yaml
 
 ai_guidance:
   do:
-    - pull validation rules from contracts and reject non-conforming events
-    - prefer structured logs via tracing; avoid println! in hot paths
+    - validate payloads against contracts (if applicable)
+    - use structured logging via ExtraFormatter
+    - ensure safe file operations (no path traversal)
   dont:
-    - accept payloads without schema validation
+    - modify generated JSONL files manually
+    - bypass sanitize_domain validation
