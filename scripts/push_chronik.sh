@@ -25,12 +25,12 @@ TOKEN="${CHRONIK_TOKEN:-}"
 jq -c . "$FILE" | tail -n "$N" | while IFS= read -r line; do
   # Skip leere Zeilen (sollte mit jq -c nicht vorkommen, aber sicher ist sicher)
   [ -z "$line" ] && continue
-  # 2) POST an /ingest/<domain>
+  # 2) POST an /v1/ingest?domain=<domain>
   curl -fsS \
     -H 'content-type: application/json' \
     -H "x-auth: ${TOKEN}" \
     --data-binary "$line" \
-    "${URL%/}/ingest/$DOMAIN"
+    "${URL%/}/v1/ingest?domain=$DOMAIN"
 done
 
-echo "✓ Gesendet: letzte ${N} Events aus $(basename "$FILE") → ${URL%/}/ingest/$DOMAIN" >&2
+echo "✓ Gesendet: letzte ${N} Events aus $(basename "$FILE") → ${URL%/}/v1/ingest?domain=$DOMAIN" >&2
