@@ -375,7 +375,11 @@ async def ingest_v1(
 
     # If domain was not in query, try to get it from the first item.
     if not dom:
-        first_item_domain = items[0].get("domain")
+        first_item = items[0]
+        if not isinstance(first_item, dict):
+            raise HTTPException(status_code=400, detail="invalid payload")
+
+        first_item_domain = first_item.get("domain")
         if not first_item_domain or not isinstance(first_item_domain, str):
             raise HTTPException(
                 status_code=400,
