@@ -7,6 +7,8 @@ pub enum ProducerError {
     Http(#[from] reqwest::Error),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("request failed with status {0}: {1}")]
+    RequestFailed(reqwest::StatusCode, String),
 }
 
 #[derive(Clone)]
@@ -32,6 +34,16 @@ impl ProducerClient {
     }
 }
 
+// Manually implement Debug to redact the token
+impl std::fmt::Debug for ProducerClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProducerClient")
+            .field("base_url", &self.base_url)
+            .field("token", &"***")
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,17 +52,8 @@ mod tests {
     fn test_debug_redacts_token() {
         let client = ProducerClient::new("http://localhost:8788", "my-secret-token");
         let debug_output = format!("{:?}", client);
-        assert!(debug_output.contains("token: \"[redacted]\""));
+        assert!(debug_output.contains("token: \"***\""));
         assert!(!debug_output.contains("my-secret-token"));
-    }
-}
-
-impl std::fmt::Debug for ProducerClient {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ProducerClient")
-            .field("base_url", &self.base_url)
-            .field("token", &"[redacted]")
-            .finish()
     }
 }
 
@@ -59,13 +62,18 @@ impl ProducerClient {
     pub fn send_one<T: Serialize>(&self, event: &T) -> Result<(), ProducerError> {
         let line = serde_json::to_string(event)? + "\n";
         let url = format!("{}/v1/ingest", self.base_url.trim_end_matches('/'));
-        self.client
+        let res = self.client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
             .header("X-Auth", &self.token)
             .body(line)
-            .send()?
-            .error_for_status()?;
+            .send()?;
+
+        if !res.status().is_success() {
+             let status = res.status();
+             let text = res.text().unwrap_or_default();
+             return Err(ProducerError::RequestFailed(status, text));
+        }
         Ok(())
     }
 
@@ -80,13 +88,18 @@ impl ProducerClient {
             ndjson.push('\n');
         }
         let url = format!("{}/v1/ingest", self.base_url.trim_end_matches('/'));
-        self.client
+        let res = self.client
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
             .header("X-Auth", &self.token)
             .body(ndjson)
-            .send()?
-            .error_for_status()?;
+            .send()?;
+
+        if !res.status().is_success() {
+             let status = res.status();
+             let text = res.text().unwrap_or_default();
+             return Err(ProducerError::RequestFailed(status, text));
+        }
         Ok(())
     }
 }
@@ -105,14 +118,19 @@ mod r#async {
         pub async fn send_one_async<T: Serialize>(&self, event: &T) -> Result<(), ProducerError> {
             let line = serde_json::to_string(event)? + "\n";
             let url = format!("{}/v1/ingest", self.base_url.trim_end_matches('/'));
-            self.async_client
+            let res = self.async_client
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
                 .header("X-Auth", &self.token)
                 .body(line)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await?;
+
+            if !res.status().is_success() {
+                 let status = res.status();
+                 let text = res.text().await.unwrap_or_default();
+                 return Err(ProducerError::RequestFailed(status, text));
+            }
             Ok(())
         }
 
@@ -136,14 +154,19 @@ mod r#async {
             // Wrap in StreamBody, then in reqwest::Body
             let body = Body::wrap(StreamBody::new(stream));
 
-            self.async_client
+            let res = self.async_client
                 .post(&url)
                 .header(reqwest::header::CONTENT_TYPE, "application/x-ndjson")
                 .header("X-Auth", &self.token)
                 .body(body)
                 .send()
-                .await?
-                .error_for_status()?;
+                .await?;
+
+            if !res.status().is_success() {
+                 let status = res.status();
+                 let text = res.text().await.unwrap_or_default();
+                 return Err(ProducerError::RequestFailed(status, text));
+            }
             Ok(())
         }
     }
