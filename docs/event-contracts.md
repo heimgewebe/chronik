@@ -1,7 +1,19 @@
-# Event-Contracts
+# Event Contracts
 
-Eingehende Events werden als JSON Lines (NDJSON) in `CHRONIK_DATA_DIR` gespeichert, wobei jede Datei einer Domain entspricht.
-Dieses Dokument beschreibt das empfohlene Schema für Events der Domain `aussen`.
+Dieses Dokument beschreibt die Event-Felder, die **chronik** akzeptiert und speichert.
+
+## 🔗 Beziehung zu den zentralen Heimgewebe-Contracts
+
+chronik ist Teil des systemweiten Event-Backbones.
+Die **kanonischen Contracts** (Draft 2020-12) liegen im **metarepo** unter:
+
+  • `contracts/aussen.event.schema.json`
+  • `contracts/event.line.schema.json`
+  • `contracts/chronik-fixtures.schema.json`
+
+→ chronik validiert seine Fixtures bereits gegen diese Schemata (siehe `.github/workflows/validate-*.yml`).
+
+Dieses Dokument beschreibt die chronik-spezifischen Details und kontextualisiert, wie die zentralen Contracts angewendet werden.
 
 ## Schema: `aussen.event.schema.json`
 
