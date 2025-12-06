@@ -14,7 +14,7 @@ chronik folgt dem systemweiten Contract-Set aus dem **metarepo**:
 **Event-Backbone**
   - `contracts/aussen.event.schema.json`
   - `contracts/event.line.schema.json`
-  - `contracts/chronik-fixtures.schema.json`
+  - `contracts/fixtures.schema.json`
 
 Diese Schemata definieren die formale Struktur für ingestbare Events,
 FIXTURES sowie interne JSONL-Zeilen. Die CI validiert chronik-Daten bereits dagegen.
