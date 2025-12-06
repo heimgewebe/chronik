@@ -9,7 +9,7 @@ Die **kanonischen Contracts** (Draft 2020-12) liegen im **metarepo** unter:
 
   • `contracts/aussen.event.schema.json`
   • `contracts/event.line.schema.json`
-  • `contracts/chronik-fixtures.schema.json`
+  • `contracts/fixtures.schema.json`
 
 → chronik validiert seine Fixtures bereits gegen diese Schemata (siehe `.github/workflows/validate-*.yml`).
 
