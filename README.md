@@ -7,6 +7,18 @@ FastAPI implementiert und lässt sich lokal oder in Codespaces betreiben.
 - **API-Spezifikation:** siehe `docs/openapi.yaml`.
  Alte Pfade `POST /ingest/{domain}` sind **deprecated** (Ablauf 6 Monate nach Merge) und werden durch `POST /v1/ingest` ersetzt.
 
+## 🔗 Contracts (kanonische Definitionen)
+
+chronik folgt dem systemweiten Contract-Set aus dem **metarepo**:
+
+**Event-Backbone**
+  - `contracts/aussen.event.schema.json`
+  - `contracts/event.line.schema.json`
+  - `contracts/fixtures.schema.json`
+
+Diese Schemata definieren die formale Struktur für ingestbare Events,
+FIXTURES sowie interne JSONL-Zeilen. Die CI validiert chronik-Daten bereits dagegen.
+
 ## Quickstart
 ```bash
 git clone <repository-url>
