@@ -14,10 +14,16 @@ chronik folgt dem systemweiten Contract-Set aus dem **metarepo**:
 **Event-Backbone**
   - `contracts/aussen.event.schema.json`
   - `contracts/event.line.schema.json`
-  - `contracts/fixtures.schema.json`
+  - `contracts/chronik-fixtures.schema.json`
 
 Diese Schemata definieren die formale Struktur für ingestbare Events,
 FIXTURES sowie interne JSONL-Zeilen. Die CI validiert chronik-Daten bereits dagegen.
+
+chronik definiert selbst **keine** abweichenden Event-Schemata; die Contracts im
+**metarepo** sind die einzige Quelle der Wahrheit für ingestbare Events und FIXTURES.
+Die Trias aus `aussen.event`, `event.line` und `chronik-fixtures` bildet den
+Event-Backbone: Außenwelt → Normalform → chronik-FIXTURES. Änderungen an der
+Event-Struktur erfolgen immer über diese zentralen Contracts im metarepo.
 
 ## Quickstart
 ```bash
