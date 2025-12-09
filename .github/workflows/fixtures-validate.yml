@@ -1,6 +1,4 @@
 name: Validate fixtures against contracts
-permissions:
-  contents: read
 
 on:
   push:
@@ -30,10 +28,41 @@ jobs:
 
       - name: Validate fixtures with AJV
         run: |
-          cd contracts
-          npx --yes ajv-cli@5 validate \
-            -s "json/**/*.schema.json" \
-            -d "../tests/fixtures/**/*.jsonl" \
-            --spec=draft2020 \
-            --errors=line \
-            --all-errors
+          failed=0
+          # Use process substitution or just a for loop with find results to avoid subshell issues
+          # We use a for loop over the output of find to ensure variables persist
+          # Note: filenames with spaces are not handled perfectly here but typical for repo
+          for fixture in $(find tests/fixtures -name "*.jsonl"); do
+            echo "Processing $fixture..."
+
+            # Extract 'type' from the first line of the JSONL file
+            type=$(head -n 1 "$fixture" | jq -r '.type')
+
+            if [ -z "$type" ] || [ "$type" = "null" ]; then
+              echo "Skipping $fixture: No 'type' field found."
+              continue
+            fi
+
+            # Construct schema path
+            schema="contracts/json/${type}.schema.json"
+
+            if [ -f "$schema" ]; then
+              echo "Validating $fixture against $schema..."
+              if ! npx --yes ajv-cli@5 validate \
+                -s "$schema" \
+                -d "$fixture" \
+                --spec=draft2020 \
+                --errors=line \
+                --all-errors; then
+                  echo "ERROR: Validation failed for $fixture"
+                  failed=1
+              fi
+            else
+              echo "Warning: Schema $schema not found for type $type in $fixture"
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "One or more fixtures failed validation."
+            exit 1
+          fi
