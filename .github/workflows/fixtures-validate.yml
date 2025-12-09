@@ -1,0 +1,92 @@
+name: Validate fixtures against contracts
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  ajv-validate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout chronik
+        uses: actions/checkout@v4
+
+      - name: Checkout contracts schemas
+        uses: actions/checkout@v4
+        with:
+          repository: heimgewebe/contracts
+          path: contracts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Validate fixtures with AJV
+        run: |
+          failed=0
+          # Use process substitution or just a for loop with find results to avoid subshell issues
+          # We use a for loop over the output of find to ensure variables persist
+          # Note: filenames with spaces are not handled perfectly here but typical for repo
+          for fixture in $(find tests/fixtures -name "*.jsonl"); do
+            echo "Processing $fixture..."
+
+            # Extract directory name from fixture path (e.g., "aussen" from "tests/fixtures/aussen/sample.jsonl")
+            dir_name=$(dirname "$fixture" | xargs basename)
+            
+            # Try to extract 'type' from the first line of the JSONL file as fallback
+            type=$(head -n 1 "$fixture" | jq -r '.type // empty' 2>/dev/null || echo "")
+
+            # Use type from data if available, otherwise use directory name + ".event"
+            if [ -n "$type" ] && [ "$type" != "null" ]; then
+              schema_type="$type"
+            else
+              schema_type="${dir_name}.event"
+            fi
+
+            # Construct schema path
+            schema="contracts/json/${schema_type}.schema.json"
+
+            if [ -f "$schema" ]; then
+              echo "Validating $fixture against $schema..."
+              
+              # JSONL files need to be validated line by line
+              # Create a temp file for each line
+              line_num=0
+              while IFS= read -r line; do
+                line_num=$((line_num + 1))
+                # Skip empty lines
+                if [ -z "$line" ]; then
+                  continue
+                fi
+                
+                # Write line to temp file
+                echo "$line" > "/tmp/temp_line_${line_num}.json"
+                
+                # Validate the line
+                if ! npx --yes ajv-cli@5 validate \
+                  -s "$schema" \
+                  -d "/tmp/temp_line_${line_num}.json" \
+                  --spec=draft2020 \
+                  --errors=line \
+                  --all-errors; then
+                    echo "ERROR: Validation failed for $fixture at line $line_num"
+                    failed=1
+                fi
+                
+                # Clean up temp file
+                rm -f "/tmp/temp_line_${line_num}.json"
+              done < "$fixture"
+            else
+              echo "Warning: Schema $schema not found for type $schema_type in $fixture"
+            fi
+          done
+
+          if [ "$failed" -ne 0 ]; then
+            echo "One or more fixtures failed validation."
+            exit 1
+          fi

@@ -1,1 +1,1 @@
-{"type":"aussen.event","source":"demo","domain":"example.com","status":"ok","ingested_at":"2025-10-18T18:00:00Z"}
+{"id":"test-event-001","event_type":"example.event","occurred_at":"2025-10-18T18:00:00Z","payload":{"description":"Sample test event"}}
