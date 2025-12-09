@@ -31,9 +31,15 @@ jobs:
       - name: Validate fixtures with AJV
         run: |
           cd contracts
-          npx --yes ajv-cli@5 validate \
-            -s "json/**/*.schema.json" \
-            -d "../tests/fixtures/**/*.jsonl" \
-            --spec=draft2020 \
-            --errors=line \
-            --all-errors
+          for schema in json/**/*.schema.json; do
+            if [ -f "$schema" ]; then
+              echo "Validating against schema: $schema"
+              npx --yes ajv-cli@5 validate \
+                -s "$schema" \
+                -d "../tests/fixtures/**/*.jsonl" \
+                --spec=draft2020 \
+                --errors=line \
+                --all-errors
+            fi
+          done
+        shell: bash
