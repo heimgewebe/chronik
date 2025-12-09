@@ -56,17 +56,36 @@ jobs:
 
             if [ -f "$schema" ]; then
               echo "Validating $fixture against $schema..."
-              if ! npx --yes ajv-cli@5 validate \
-                -s "$schema" \
-                -d "$fixture" \
-                --spec=draft2020 \
-                --errors=line \
-                --all-errors; then
-                  echo "ERROR: Validation failed for $fixture"
-                  failed=1
-              fi
+              
+              # JSONL files need to be validated line by line
+              # Create a temp file for each line
+              line_num=0
+              while IFS= read -r line; do
+                line_num=$((line_num + 1))
+                # Skip empty lines
+                if [ -z "$line" ]; then
+                  continue
+                fi
+                
+                # Write line to temp file
+                echo "$line" > "/tmp/temp_line_${line_num}.json"
+                
+                # Validate the line
+                if ! npx --yes ajv-cli@5 validate \
+                  -s "$schema" \
+                  -d "/tmp/temp_line_${line_num}.json" \
+                  --spec=draft2020 \
+                  --errors=line \
+                  --all-errors; then
+                    echo "ERROR: Validation failed for $fixture at line $line_num"
+                    failed=1
+                fi
+                
+                # Clean up temp file
+                rm -f "/tmp/temp_line_${line_num}.json"
+              done < "$fixture"
             else
-              echo "Warning: Schema $schema not found for type $type in $fixture"
+              echo "Warning: Schema $schema not found for type $schema_type in $fixture"
             fi
           done
 
