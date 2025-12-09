@@ -38,16 +38,21 @@ jobs:
           for fixture in $(find tests/fixtures -name "*.jsonl"); do
             echo "Processing $fixture..."
 
-            # Extract 'type' from the first line of the JSONL file
-            type=$(head -n 1 "$fixture" | jq -r '.type')
+            # Extract directory name from fixture path (e.g., "aussen" from "tests/fixtures/aussen/sample.jsonl")
+            dir_name=$(dirname "$fixture" | xargs basename)
+            
+            # Try to extract 'type' from the first line of the JSONL file as fallback
+            type=$(head -n 1 "$fixture" | jq -r '.type // empty' 2>/dev/null || echo "")
 
-            if [ -z "$type" ] || [ "$type" = "null" ]; then
-              echo "Skipping $fixture: No 'type' field found."
-              continue
+            # Use type from data if available, otherwise use directory name + ".event"
+            if [ -n "$type" ] && [ "$type" != "null" ]; then
+              schema_type="$type"
+            else
+              schema_type="${dir_name}.event"
             fi
 
             # Construct schema path
-            schema="contracts/json/${type}.schema.json"
+            schema="contracts/json/${schema_type}.schema.json"
 
             if [ -f "$schema" ]; then
               echo "Validating $fixture against $schema..."
