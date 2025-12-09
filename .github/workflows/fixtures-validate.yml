@@ -7,9 +7,6 @@ on:
       - master
   pull_request:
 
-permissions:
-  contents: read
-
 jobs:
   ajv-validate:
     runs-on: ubuntu-latest
