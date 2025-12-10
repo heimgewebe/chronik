@@ -1,14 +1,15 @@
 ---
 name: wgx-smoke
 
-permissions:
-  contents: read
-
-on:
+"on":
+  workflow_dispatch:
   push:
-    branches:
-      - main
+    paths:
+      - ".wgx/**"
+      - "docs/wgx-konzept.md"
 
 jobs:
   smoke:
+    # auch hier: statt eigener CI-Logik nur noch Forwarder auf das
+    # kanonische wgx-Workflow-Repo.
     uses: heimgewebe/wgx/.github/workflows/wgx-smoke.yml@main
