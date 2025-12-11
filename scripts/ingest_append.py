@@ -6,7 +6,14 @@ from __future__ import annotations
 import json
 import sys
 
-from storage import DATA_DIR, DomainError, safe_target_path, sanitize_domain
+from storage import (
+    DATA_DIR,
+    DomainError,
+    StorageError,
+    safe_target_path,
+    sanitize_domain,
+    write_payload,
+)
 
 
 def main(argv: list[str]) -> int:
@@ -24,6 +31,8 @@ def main(argv: list[str]) -> int:
 
     try:
         dom = sanitize_domain(domain)
+        # Check target path availability/validity before we proceed,
+        # also needed for printing the path at the end.
         target_path = safe_target_path(dom, data_dir=DATA_DIR)
     except DomainError:
         print("invalid domain", file=sys.stderr)
@@ -36,10 +45,15 @@ def main(argv: list[str]) -> int:
     payload = dict(payload)
     payload["domain"] = dom
 
-    target_path.parent.mkdir(parents=True, exist_ok=True)
+    # Create the JSON line (compact)
+    line = json.dumps(payload, ensure_ascii=False)
 
-    with target_path.open("a", encoding="utf-8") as fh:
-        fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    try:
+        # Use write_payload to handle file locking and safe writing
+        write_payload(dom, [line])
+    except StorageError as exc:
+        print(f"storage error: {exc}", file=sys.stderr)
+        return 1
 
     print(str(target_path))
     return 0
