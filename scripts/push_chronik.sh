@@ -26,11 +26,18 @@ jq -c . "$FILE" | tail -n "$N" | while IFS= read -r line; do
   # Skip leere Zeilen (sollte mit jq -c nicht vorkommen, aber sicher ist sicher)
   [ -z "$line" ] && continue
   # 2) POST an /v1/ingest?domain=<domain>
-  curl -fsS \
+  # Wir nutzen curl -sS, um Fehler zu sehen, aber kein -f, damit wir den Body bei Fehlern sehen.
+  # Wir prüfen den HTTP-Code separat.
+  http_code=$(curl -sS -o /dev/stderr -w "%{http_code}" \
     -H 'content-type: application/json' \
     -H "x-auth: ${TOKEN}" \
     --data-binary "$line" \
-    "${URL%/}/v1/ingest?domain=$DOMAIN"
+    "${URL%/}/v1/ingest?domain=$DOMAIN")
+
+  if [[ "$http_code" != "200" && "$http_code" != "202" ]]; then
+      echo "Fehler: Server antwortete mit Status $http_code" >&2
+      exit 1
+  fi
 done
 
 echo "✓ Gesendet: letzte ${N} Events aus $(basename "$FILE") → ${URL%/}/v1/ingest?domain=$DOMAIN" >&2

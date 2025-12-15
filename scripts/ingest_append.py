@@ -5,6 +5,12 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
+
+# Ensure root directory is in sys.path so we can import storage
+root_dir = Path(__file__).resolve().parent.parent
+if str(root_dir) not in sys.path:
+    sys.path.insert(0, str(root_dir))
 
 from storage import (
     DATA_DIR,
@@ -38,19 +44,28 @@ def main(argv: list[str]) -> int:
         print("invalid domain", file=sys.stderr)
         return 1
 
-    if not isinstance(payload, dict):
-        print("payload must be a JSON object", file=sys.stderr)
+    lines = []
+    if isinstance(payload, dict):
+        # Single object
+        item = dict(payload)
+        item["domain"] = dom
+        lines.append(json.dumps(item, ensure_ascii=False))
+    elif isinstance(payload, list):
+        # Batch of objects
+        for item in payload:
+            if not isinstance(item, dict):
+                print("payload list must contain only JSON objects", file=sys.stderr)
+                return 1
+            item = dict(item)
+            item["domain"] = dom
+            lines.append(json.dumps(item, ensure_ascii=False))
+    else:
+        print("payload must be a JSON object or array of objects", file=sys.stderr)
         return 1
-
-    payload = dict(payload)
-    payload["domain"] = dom
-
-    # Create the JSON line (compact)
-    line = json.dumps(payload, ensure_ascii=False)
 
     try:
         # Use write_payload to handle file locking and safe writing
-        write_payload(dom, [line])
+        write_payload(dom, lines)
     except StorageError as exc:
         print(f"storage error: {exc}", file=sys.stderr)
         return 1
