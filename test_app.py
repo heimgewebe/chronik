@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import app as app_module
-from app import _safe_target_path, _sanitize_domain, app
+from app import _sanitize_domain, app
 import storage
 
 client = TestClient(app)
@@ -61,13 +61,12 @@ def test_sanitize_domain_bad():
         _sanitize_domain("example.com_")
 
 
-def test_safe_target_path_rejects_traversal(monkeypatch, tmp_path: Path):
-    monkeypatch.setattr("app.DATA", tmp_path)
+def test_safe_target_path_neutralizes_traversal(monkeypatch, tmp_path: Path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
-    with pytest.raises(HTTPException) as excinfo:
-        _safe_target_path("../../etc/passwd")
-    assert excinfo.value.status_code == 400
-    assert excinfo.value.detail == "invalid domain"
+    # "../../etc/passwd" becomes ".etcpasswd.jsonl"
+    resolved = storage.safe_target_path("../../etc/passwd", data_dir=tmp_path)
+    assert resolved.parent == tmp_path.resolve()
+    assert resolved.name == ".etcpasswd.jsonl"
 
 
 def test_secure_filename_rejects_nested_traversal():
@@ -314,12 +313,8 @@ def test_target_filename_truncates_long_domain(monkeypatch, tmp_path: Path):
     assert storage.target_filename(dom) == filename
 
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
-    # app.DATA also needs to be patched because _safe_target_path uses it as default if not passed,
-    # but here we are testing storage directly mostly.
-    # Actually _safe_target_path calls safe_target_path(..., data_dir=DATA)
-    monkeypatch.setattr("app.DATA", tmp_path)
 
-    resolved = app_module._safe_target_path(domain)
+    resolved = storage.safe_target_path(domain, data_dir=tmp_path)
     assert resolved.name == filename
     assert resolved.parent == tmp_path
 

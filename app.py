@@ -24,12 +24,10 @@ from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
 from storage import (
-    DATA_DIR,
     DomainError,
     StorageError,
     StorageFullError,
     StorageBusyError,
-    safe_target_path,
     sanitize_domain,
     write_payload,
 )
@@ -87,8 +85,6 @@ logging.getLogger().setLevel(LOG_LEVEL)
 
 app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE)
 
-DATA: Final = DATA_DIR
-
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
 SECRET_ENV = os.environ.get("CHRONIK_TOKEN")
@@ -140,15 +136,6 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 def _sanitize_domain(domain: str) -> str:
     try:
         return sanitize_domain(domain)
-    except DomainError as exc:
-        raise HTTPException(status_code=400, detail="invalid domain") from exc
-
-
-def _safe_target_path(domain: str) -> Path:
-    # Always sanitize and validate domain before use
-    dom = _sanitize_domain(domain)
-    try:
-        return safe_target_path(dom, data_dir=DATA)
     except DomainError as exc:
         raise HTTPException(status_code=400, detail="invalid domain") from exc
 
