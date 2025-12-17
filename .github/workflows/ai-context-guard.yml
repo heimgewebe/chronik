@@ -1,25 +1,62 @@
----
-name: ai-context-guard
-permissions:
-  contents: read
+name: ai-context guard
+
 on:
   pull_request:
-    paths:
-      - ".ai-context.yml"
-      - ".github/workflows/ai-context-guard.yml"
   push:
-    branches: [main]
-    paths:
-      - ".ai-context.yml"
-      - ".github/workflows/ai-context-guard.yml"
+    branches: [ main ]
+
 jobs:
-  check:
+  repo-root:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Ensure AI context exists and is non-empty
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install validator deps
         run: |
-          if [ ! -s .ai-context.yml ]; then
-            echo "::error file=.ai-context.yml::.ai-context.yml is missing or empty"
-            exit 1
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Validate repo .ai-context.yml (if present)
+        run: |
+          # Rollout-Regel (wichtig, wenn dieser Patch in alle Repos eingespeist wird):
+          # - In NON-metarepo Repos muss nur /.ai-context.yml sinnvoll befüllt sein.
+          # - ai-contexts/ (Templates) ist dort optional und wird hier NICHT verlangt.
+          # - In metarepo wird zusätzlich ein Template-Job aktiv (siehe unten).
+          if [ -f ".ai-context.yml" ]; then
+            python scripts/ai_context/validate_ai_context.py --file ".ai-context.yml"
+          else
+            echo "INFO: .ai-context.yml missing (allowed during rollout, but should be added)."
+          fi
+
+  templates:
+    # Template-Validierung ist NUR für metarepo gedacht.
+    # In allen anderen Repos wird dieser Job automatisch übersprungen,
+    # weil ai-contexts/ dort typischerweise nicht existiert.
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install validator deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml
+
+      - name: Validate templates (metarepo only)
+        run: |
+          if [ -d "ai-contexts" ]; then
+            python scripts/ai_context/validate_ai_context.py --templates-dir "ai-contexts"
+          else
+            echo "INFO: ai-contexts/ not present -> skipping template validation."
           fi

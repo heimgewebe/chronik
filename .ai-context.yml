@@ -1,11 +1,5 @@
-ai_context_version: 1.0
-
-# Dieses Repo ist Teil des Heimgewebes.
-# Systemweiter Kontext durch Heimgeist:
-#   metarepo/ai-contexts/heimgeist.ai-context.yml
-
-system_context:
-  heimgeist: "../metarepo/ai-contexts/heimgeist.ai-context.yml"
+---
+ai_context_version: 1.1
 
 project:
   name: chronik
@@ -13,6 +7,31 @@ project:
   role: central_event_store
   primary_language: python
   visibility: internal
+
+heimgewebe:
+  axis:
+    - Events
+    - Contracts
+  fleet:
+    enabled: true
+  wgx:
+    profile_expected: true
+    guard_smoke_expected: true
+
+interfaces:
+  consumes:
+    - "HTTP POST /v1/ingest payload"
+  produces:
+    - "local JSONL files (append-only)"
+
+contracts:
+  schemas:
+    - path: "contracts/aussen.event.schema.json"
+      note: "Primary event schema from metarepo"
+    - path: "contracts/event.line.schema.json"
+      note: "Line-delimited format from metarepo"
+    - path: "contracts/chronik-fixtures.schema.json"
+      note: "Fixture format from metarepo"
 
 dependencies:
   internal:
@@ -42,6 +61,14 @@ architecture:
     input: HTTP POST /v1/ingest
     processing: JSON validation + domain sanitization
     output: local JSONL files (append-only)
+
+boundaries:
+  not_responsible_for:
+    - "UI/dashboard (that is leitstand)"
+    - "Defining event schemas (contracts repo does that)"
+  dangerous_assumptions:
+    - "Assume files are always small"
+    - "Assume network is always reliable"
 
 conventions:
   branching: "main, feature/*, hotfix/*"
