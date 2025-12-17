@@ -49,7 +49,7 @@ def main(argv: list[str]) -> int:
         # Single object
         item = dict(payload)
         item["domain"] = dom
-        lines.append(json.dumps(item, ensure_ascii=False))
+        lines.append(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
     elif isinstance(payload, list):
         # Batch of objects
         for item in payload:
@@ -58,7 +58,7 @@ def main(argv: list[str]) -> int:
                 return 1
             item = dict(item)
             item["domain"] = dom
-            lines.append(json.dumps(item, ensure_ascii=False))
+            lines.append(json.dumps(item, ensure_ascii=False, separators=(",", ":")))
     else:
         print("payload must be a JSON object or array of objects", file=sys.stderr)
         return 1
