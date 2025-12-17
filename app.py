@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import errno
-import hashlib
 import json
 import logging
 import os
@@ -99,7 +97,7 @@ SECRET: Final[str] = SECRET_ENV
 @app.middleware("http")
 async def request_id_logging(request: Request, call_next):
     rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
-    start = time.time()
+    start = time.perf_counter()
     # Falls im Handler ein Fehler hochgeht, loggen wir konservativ 500
     status = 500
     try:
@@ -107,7 +105,7 @@ async def request_id_logging(request: Request, call_next):
         status = response.status_code
         return response
     finally:
-        dur_ms = int((time.time() - start) * 1000)
+        dur_ms = int((time.perf_counter() - start) * 1000)
         logger.info(
             "access",
             extra={
