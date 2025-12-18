@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timezone
 from pathlib import Path
 
 from tools import wgx_metrics_export
@@ -92,3 +93,39 @@ def test_load_metrics_snapshots_accepts_direct_snapshot_shape(tmp_path):
 
     snapshots = wgx_metrics_export.load_metrics_snapshots(data_dir)
     assert len(snapshots) == 1
+
+
+def test_load_metrics_snapshots_normalizes_naive_timestamps(tmp_path):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    f = data_dir / "metrics.snapshot.jsonl"
+
+    entries = [
+        {
+            "timestamp": "2025-12-06T08:00:00",
+            "repoCount": 1,
+            "status": {"ok": 1, "warn": 0, "fail": 0},
+            "metadata": {"label": "naive"},
+        },
+        {
+            "timestamp": "2025-12-06T08:00:01Z",
+            "repoCount": 2,
+            "status": {"ok": 1, "warn": 0, "fail": 1},
+            "metadata": {"label": "aware"},
+        },
+    ]
+    f.write_text("\n".join(json.dumps(e) for e in entries), encoding="utf-8")
+
+    snapshots = wgx_metrics_export.load_metrics_snapshots(data_dir)
+    assert all(s.timestamp.tzinfo == timezone.utc for s in snapshots)
+
+    latest = wgx_metrics_export.select_latest_snapshot(snapshots)
+    assert latest is not None
+    assert latest.payload["metadata"]["label"] == "aware"
+
+
+def test_parse_timestamp_warns_on_naive(caplog):
+    with caplog.at_level("WARNING"):
+        ts = wgx_metrics_export._parse_timestamp("2025-12-06T08:00:00")
+    assert ts.tzinfo == timezone.utc
+    assert any("naiver Timestamp wird als UTC interpretiert" in r.message for r in caplog.records)

@@ -21,7 +21,8 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +30,8 @@ from typing import Any, Dict, List, Optional
 METRICS_DOMAIN = "metrics.snapshot"
 DATA_ENV_VAR = "CHRONIK_DATA_DIR"
 VAULT_ENV_VAR = "VAULT_ROOT"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -42,7 +45,14 @@ def _parse_timestamp(value: str) -> datetime:
     v = value
     if v.endswith("Z"):
         v = v[:-1] + "+00:00"
-    return datetime.fromisoformat(v)
+    ts = datetime.fromisoformat(v)
+    if ts.tzinfo is None:
+        logger.warning(
+            "naiver Timestamp wird als UTC interpretiert",
+            extra={"timestamp": value},
+        )
+        ts = ts.replace(tzinfo=timezone.utc)
+    return ts
 
 
 def _get_data_dir() -> Path:
