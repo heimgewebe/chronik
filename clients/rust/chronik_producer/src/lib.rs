@@ -5,6 +5,7 @@ use thiserror::Error;
 pub enum ProducerError {
     #[error("http error: {0}")]
     Http(#[from] reqwest::Error),
+    #[cfg(feature = "serde_json")]
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("request failed with status {0}: {1}")]

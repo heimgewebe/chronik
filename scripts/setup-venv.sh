@@ -9,6 +9,10 @@ if [ ! -d ".venv" ]; then
   . .venv/bin/activate
   python3 -m pip install --upgrade pip setuptools wheel || true
   pip install -r requirements.txt
+  if [ -f "requirements-dev.txt" ]; then
+    echo "INFO: Installiere zusätzliche Entwicklungsabhängigkeiten..."
+    pip install -r requirements-dev.txt
+  fi
 else
   echo "INFO: .venv-Verzeichnis bereits vorhanden. Überspringe die Erstellung."
 fi
