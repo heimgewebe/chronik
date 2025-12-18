@@ -11,7 +11,6 @@ project:
 heimgewebe:
   axis:
     - Events
-    - Contracts
   fleet:
     enabled: true
   wgx:
@@ -26,16 +25,12 @@ interfaces:
 
 contracts:
   schemas:
-    - path: "contracts/aussen.event.schema.json"
+    - path: "docs/aussen.event.schema.json"
       note: "Primary event schema from metarepo"
-    - path: "contracts/event.line.schema.json"
-      note: "Line-delimited format from metarepo"
-    - path: "contracts/chronik-fixtures.schema.json"
-      note: "Fixture format from metarepo"
 
 dependencies:
   internal:
-    - name: contracts
+    - name: contracts-mirror
       relationship: uses
       interface:
         - json_schema
