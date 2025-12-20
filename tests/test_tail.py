@@ -13,15 +13,16 @@ import storage
 def mock_storage(monkeypatch, tmp_path):
     # Isolate DATA_DIR for all tests
     monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
+    # Ensure app import does not depend on external shell/CI env.
+    # app.py requires CHRONIK_TOKEN at import time (per existing test comment).
+    # Set a deterministic value here so tests are hermetic.
+    monkeypatch.setenv("CHRONIK_TOKEN", "test-token")
     return tmp_path
 
 @pytest.fixture
 def client():
     # Import app only after DATA_DIR isolation is active (autouse fixture)
     import app as app_module
-    # Note: CHRONIK_TOKEN is required by app import, so it must be set in env or mocked before import.
-    # We assume env is set for the process or we rely on app_module's default check.
-    # The tests run with CHRONIK_TOKEN set in bash session usually.
     with TestClient(app_module.app) as c:
         yield c
 
