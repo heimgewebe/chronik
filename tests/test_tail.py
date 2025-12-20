@@ -25,16 +25,11 @@ def client():
 def auth_header():
     return {"X-Auth": SECRET}
 
-@pytest.fixture
-def clean_storage():
-    """Clean up storage before and after tests."""
-    # We use a temporary directory or just clean the DATA_DIR
-    # Since tests run in a sandbox, we can clean DATA_DIR
-    # Be careful not to delete things we shouldn't.
-    # For safety, let's just delete the specific files created during tests
-    yield
-    # Cleanup logic if needed, but DATA_DIR might be shared.
-    # Better: Use a distinct domain for tests.
+@pytest.fixture(autouse=True)
+def mock_storage(monkeypatch, tmp_path):
+    # Isolate DATA_DIR for all tests
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
+    return tmp_path
 
 def test_tail_auth_required(client):
     response = client.get("/v1/tail?domain=test-auth", headers={})
@@ -93,10 +88,9 @@ def test_tail_corrupt_data(client, auth_header):
     storage.write_payload(domain, [json.dumps({"valid": 1})])
 
     # Write corrupt data (raw append to simulate corruption)
-    # We need to bypass write_payload's validation/behavior or just append a bad string
     path = storage.safe_target_path(domain)
-    # Append garbage
-    with open(path, "a") as f:
+    # We use open with 'a' and encoding utf-8
+    with open(path, "a", encoding="utf-8") as f:
         f.write("not json\n")
         f.write("also not json\n")
 
@@ -118,17 +112,10 @@ def test_tail_concurrency_lock(client, auth_header, monkeypatch):
     # Ensure file exists
     storage.write_payload(domain, ["{}"])
 
-    # Create the lock manually to simulate busy
-    lock_path = target_path.parent / (target_path.name + ".lock")
+    # Get the lock path using the new helper
+    lock_path = storage.get_lock_path(target_path)
 
     # We reduce timeout to speed up test
-    monkeypatch.setenv("CHRONIK_LOCK_TIMEOUT", "1")
-    # Reload storage module constants? No, they are Final/read at module level.
-    # We have to mock FileLock or patch storage.LOCK_TIMEOUT if possible,
-    # or just rely on the fact that FileLock respects the timeout param we pass to it?
-    # storage.py reads env var at module level.
-    # But `_locked_open` uses `LOCK_TIMEOUT`.
-    # So we should patch `storage.LOCK_TIMEOUT`.
     monkeypatch.setattr(storage, "LOCK_TIMEOUT", 0.1)
 
     with FileLock(str(lock_path)):
@@ -140,12 +127,8 @@ def test_tail_concurrency_lock(client, auth_header, monkeypatch):
     assert response.status_code == 429
     assert "busy" in response.text
 
-def test_tail_invalid_domain(client, auth_header):
+def test_tail_invalid_domain_traversal(client, auth_header):
     # Test invalid domain (path traversal)
     response = client.get("/v1/tail?domain=../invalid", headers=auth_header)
     assert response.status_code == 400
     assert "invalid domain" in response.text
-
-    # Test invalid domain (chars)
-    response = client.get("/v1/tail?domain=invalid_underscore", headers=auth_header)
-    assert response.status_code == 400

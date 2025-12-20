@@ -26,6 +26,7 @@ __all__ = [
     "safe_target_path",
     "write_payload",
     "read_tail",
+    "get_lock_path",
     "FILENAME_RE",
 ]
 
@@ -147,6 +148,16 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     return candidate
 
 
+def get_lock_path(target_path: Path) -> Path:
+    """Return the lock file path for a given target file path."""
+    fname = target_path.name
+    lock_name = fname + ".lock"
+    if len(lock_name) > 255:
+        h = hashlib.sha256(fname.encode("utf-8")).hexdigest()
+        lock_name = f".{h}.lock"
+    return target_path.parent / lock_name
+
+
 @contextmanager
 def _locked_open(target_path: Path, mode: str) -> Iterator:
     """Context manager to securely open a file with locking.
@@ -157,12 +168,7 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
     if target_path.parent != DATA_DIR:
         raise StorageError("invalid target path: wrong parent directory")
 
-    # Lock file logic
-    lock_name = fname + ".lock"
-    if len(lock_name) > 255:
-        h = hashlib.sha256(fname.encode("utf-8")).hexdigest()
-        lock_name = f".{h}.lock"
-    lock_path = target_path.parent / lock_name
+    lock_path = get_lock_path(target_path)
 
     # Determine open flags and Python mode
     if mode == "r":
