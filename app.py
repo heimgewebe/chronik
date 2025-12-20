@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.concurrency import run_in_threadpool
@@ -26,6 +26,7 @@ from storage import (
     StorageError,
     StorageFullError,
     StorageBusyError,
+    read_tail,
     sanitize_domain,
     write_payload,
 )
@@ -333,6 +334,43 @@ async def ingest(
     await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines)
 
     return PlainTextResponse("ok", status_code=202)
+
+
+@app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)])
+async def tail_v1(domain: str, limit: int = 200):
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if limit > 2000:
+        raise HTTPException(status_code=400, detail="limit must be <= 2000")
+
+    try:
+        dom = _sanitize_domain(domain)
+    except HTTPException:
+        # If domain invalid, _sanitize_domain raises 400
+        raise
+
+    try:
+        lines = await run_in_threadpool(read_tail, dom, limit)
+    except StorageBusyError as exc:
+        raise HTTPException(status_code=429, detail="busy, try again") from exc
+    except StorageError as exc:
+        # read_tail returns [] on ENOENT, so StorageError means something else
+        raise HTTPException(status_code=500, detail="storage error") from exc
+
+    results = []
+    dropped = 0
+    for line in lines:
+        try:
+            results.append(json.loads(line))
+        except json.JSONDecodeError:
+            dropped += 1
+            logger.warning("dropped corrupt line", extra={"domain": dom})
+
+    headers = {
+        "X-Chronik-Lines-Returned": str(len(results)),
+        "X-Chronik-Lines-Dropped": str(dropped),
+    }
+    return JSONResponse(content=results, headers=headers)
 
 
 @app.get("/health")
