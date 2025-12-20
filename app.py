@@ -348,11 +348,21 @@ async def ingest(
 
 
 @app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)])
-async def tail_v1(domain: str, limit: int = 200):
+async def tail_v1(
+    domain: str,
+    limit: int = 200,
+    since: str | None = None,
+):
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be >= 1")
     if limit > 2000:
         raise HTTPException(status_code=400, detail="limit must be <= 2000")
+
+    since_dt: datetime | None = None
+    if since:
+        since_dt = _parse_iso_ts(since)
+        if since_dt is None:
+            raise HTTPException(status_code=400, detail="invalid since format")
 
     try:
         dom = _sanitize_domain(domain)
@@ -380,11 +390,17 @@ async def tail_v1(domain: str, limit: int = 200):
             ts_str = None
             if isinstance(item, dict):
                 ts_str = item.get("ts") or item.get("timestamp")
+
+            dt = None
             if isinstance(ts_str, str):
                 dt = _parse_iso_ts(ts_str)
-                if dt is not None:
-                    if last_seen_dt is None or dt > last_seen_dt:
-                        last_seen_dt = dt
+
+            if since_dt and (dt is None or dt <= since_dt):
+                continue
+
+            if dt is not None:
+                if last_seen_dt is None or dt > last_seen_dt:
+                    last_seen_dt = dt
         except json.JSONDecodeError:
             dropped += 1
             logger.warning("dropped corrupt line", extra={"domain": dom})

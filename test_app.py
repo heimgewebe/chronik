@@ -16,14 +16,21 @@ import app as app_module
 from app import _sanitize_domain, app
 import storage
 
-client = TestClient(app)
+@pytest.fixture
+def client(monkeypatch):
+    # Ensure a token is set so the app can start (though we patch per test)
+    # Actually, we should probably set the env before TestClient if we want to be safe,
+    # but the app.py reads env at runtime now in _get_secret.
+    # However, to avoid global state issues, we use a fixture.
+    with TestClient(app) as c:
+        yield c
 
 
 def _test_secret() -> str:
     return "".join(secrets.choice(string.ascii_letters) for _ in range(16))
 
 
-def test_ingest_auth_ok(monkeypatch):
+def test_ingest_auth_ok(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post(
@@ -33,7 +40,7 @@ def test_ingest_auth_ok(monkeypatch):
     assert response.text == "ok"
 
 
-def test_ingest_auth_fail(monkeypatch):
+def test_ingest_auth_fail(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post(
@@ -42,7 +49,7 @@ def test_ingest_auth_fail(monkeypatch):
     assert response.status_code == 401
 
 
-def test_ingest_auth_missing(monkeypatch):
+def test_ingest_auth_missing(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post("/ingest/example.com", json={"data": "value"})
@@ -83,7 +90,7 @@ def test_secure_filename_rejects_nested_traversal():
     assert ".." not in storage.secure_filename("a/../b")
 
 
-def test_ingest_single_object(monkeypatch, tmp_path: Path):
+def test_ingest_single_object(monkeypatch, tmp_path: Path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -105,7 +112,7 @@ def test_ingest_single_object(monkeypatch, tmp_path: Path):
         assert data == {**payload, "domain": domain}
 
 
-def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
+def test_ingest_array_of_objects(monkeypatch, tmp_path: Path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -130,7 +137,7 @@ def test_ingest_array_of_objects(monkeypatch, tmp_path: Path):
         assert data2 == {**payload[1], "domain": domain}
 
 
-def test_ingest_empty_array(monkeypatch, tmp_path: Path):
+def test_ingest_empty_array(monkeypatch, tmp_path: Path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -145,7 +152,7 @@ def test_ingest_empty_array(monkeypatch, tmp_path: Path):
     assert not any(tmp_path.iterdir())
 
 
-def test_ingest_invalid_json(monkeypatch):
+def test_ingest_invalid_json(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post(
@@ -157,7 +164,7 @@ def test_ingest_invalid_json(monkeypatch):
     assert "invalid json" in response.text
 
 
-def test_ingest_payload_too_large(monkeypatch):
+def test_ingest_payload_too_large(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     # Limit is 1 MiB
@@ -169,7 +176,7 @@ def test_ingest_payload_too_large(monkeypatch):
     assert "payload too large" in response.text
 
 
-def test_ingest_invalid_payload_not_dict(monkeypatch):
+def test_ingest_invalid_payload_not_dict(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post(
@@ -179,7 +186,7 @@ def test_ingest_invalid_payload_not_dict(monkeypatch):
     assert "invalid payload" in response.text
 
 
-def test_ingest_v1_invalid_payload_list_of_ints_no_domain(monkeypatch):
+def test_ingest_v1_invalid_payload_list_of_ints_no_domain(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     # Sending a list of integers (valid JSON, but invalid payload structure)
@@ -194,7 +201,7 @@ def test_ingest_v1_invalid_payload_list_of_ints_no_domain(monkeypatch):
     assert "invalid payload" in response.text
 
 
-def test_ingest_domain_mismatch(monkeypatch):
+def test_ingest_domain_mismatch(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post(
@@ -206,7 +213,7 @@ def test_ingest_domain_mismatch(monkeypatch):
     assert "domain mismatch" in response.text
 
 
-def test_ingest_domain_normalized(monkeypatch, tmp_path: Path):
+def test_ingest_domain_normalized(monkeypatch, tmp_path: Path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -225,7 +232,7 @@ def test_ingest_domain_normalized(monkeypatch, tmp_path: Path):
     assert stored["data"] == "value"
 
 
-def test_ingest_no_content_length(monkeypatch):
+def test_ingest_no_content_length(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     request = client.build_request(
@@ -241,7 +248,7 @@ def test_ingest_no_content_length(monkeypatch):
     assert "length required" in response.text
 
 
-def test_ingest_no_content_length_unauthorized(monkeypatch):
+def test_ingest_no_content_length_unauthorized(monkeypatch, client):
     """Missing auth should fail before we validate content length."""
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
@@ -257,7 +264,7 @@ def test_ingest_no_content_length_unauthorized(monkeypatch):
     assert "unauthorized" in response.text
 
 
-def test_ingest_negative_content_length(monkeypatch):
+def test_ingest_negative_content_length(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post(
@@ -269,7 +276,7 @@ def test_ingest_negative_content_length(monkeypatch):
     assert "invalid content-length" in response.text
 
 
-def test_health_endpoint(monkeypatch):
+def test_health_endpoint(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.get("/health", headers={"X-Auth": secret})
@@ -277,7 +284,7 @@ def test_health_endpoint(monkeypatch):
     assert response.json() == {"status": "ok"}
 
 
-def test_version_endpoint(monkeypatch):
+def test_version_endpoint(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("app.VERSION", "1.2.3")
@@ -286,7 +293,7 @@ def test_version_endpoint(monkeypatch):
     assert response.json() == {"version": "1.2.3"}
 
 
-def test_version_endpoint_requires_auth(monkeypatch):
+def test_version_endpoint_requires_auth(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.get("/version")
@@ -349,7 +356,7 @@ def test_target_filename_boundary_cases():
     assert "-" in filename_250
 
 
-def test_metrics_endpoint_exposed():
+def test_metrics_endpoint_exposed(client):
     """Metrics endpoint should be accessible without auth."""
 
     response = client.get("/metrics")
@@ -357,7 +364,7 @@ def test_metrics_endpoint_exposed():
     assert "http_requests" in response.text
 
 
-def test_lock_timeout_returns_429(monkeypatch):
+def test_lock_timeout_returns_429(monkeypatch, client):
     """Lock acquisition timeout should map to 429."""
 
     class _DummyLock:
@@ -388,7 +395,7 @@ def test_lock_timeout_returns_429(monkeypatch):
     assert "busy" in response.text
 
 
-def test_path_traversal_domain_is_rejected(monkeypatch):
+def test_path_traversal_domain_is_rejected(monkeypatch, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     response = client.post(
@@ -404,7 +411,7 @@ def test_path_traversal_domain_is_rejected(monkeypatch):
     assert "invalid domain" in response.text
 
 
-def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path):
+def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -425,7 +432,7 @@ def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path):
         assert data == {**payload, "domain": domain}
 
 
-def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path):
+def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -446,7 +453,7 @@ def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path):
         assert data == payload
 
 
-def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path):
+def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -495,7 +502,7 @@ def test_symlink_attack_rejected_after_resolve(monkeypatch, tmp_path):
         storage.safe_target_path("example.com", data_dir=tmp_path)
 
 
-def test_symlink_attack_rejected(monkeypatch, tmp_path):
+def test_symlink_attack_rejected(monkeypatch, tmp_path, client):
     import os
 
     if not hasattr(os, "symlink") or getattr(os, "O_NOFOLLOW", 0) == 0:
@@ -520,7 +527,7 @@ def test_symlink_attack_rejected(monkeypatch, tmp_path):
     assert victim.read_text(encoding="utf-8") == "do not touch"
 
 
-def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
+def test_concurrent_writes_are_serialized(monkeypatch, tmp_path, client):
     import concurrent.futures
 
     secret = _test_secret()
@@ -545,7 +552,7 @@ def test_concurrent_writes_are_serialized(monkeypatch, tmp_path):
     assert len(lines) == 20
 
 
-def test_disk_full_returns_507(monkeypatch, tmp_path):
+def test_disk_full_returns_507(monkeypatch, tmp_path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -569,7 +576,7 @@ def test_disk_full_returns_507(monkeypatch, tmp_path):
     assert "insufficient" in response.text.lower()
 
 
-def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path):
+def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path, client):
     """Test that file descriptors are properly closed when OSError occurs after fd is opened."""
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)

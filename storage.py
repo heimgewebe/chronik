@@ -232,7 +232,7 @@ def read_tail(domain: str, limit: int) -> list[str]:
 
     try:
         with _locked_open(target_path, "r") as fh:
-            return list(deque(fh, maxlen=limit))
+            return [line.rstrip("\n") for line in deque(fh, maxlen=limit)]
     except OSError as exc:
         if exc.errno == errno.ENOENT:
             return []
