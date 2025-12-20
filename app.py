@@ -11,8 +11,8 @@ from typing import TYPE_CHECKING, Any, Final
 if TYPE_CHECKING:
     from pathlib import Path
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.concurrency import run_in_threadpool
@@ -257,13 +257,20 @@ async def tail_v1(domain: str, limit: int = 200):
         raise HTTPException(status_code=500, detail="storage error")
 
     results = []
+    dropped = 0
     for line in lines:
         try:
             results.append(json.loads(line))
         except json.JSONDecodeError:
+            dropped += 1
             logger.error("corrupt line in storage", extra={"domain": dom})
             continue
-    return results
+
+    headers = {
+        "X-Chronik-Lines-Returned": str(len(results)),
+        "X-Chronik-Lines-Dropped": str(dropped),
+    }
+    return JSONResponse(content=results, headers=headers)
 
 
 @app.post(
