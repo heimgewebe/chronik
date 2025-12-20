@@ -2,6 +2,7 @@
 import json
 import secrets
 import time
+import os
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,8 +29,7 @@ def client():
 
 @pytest.fixture
 def auth_header():
-    import app as app_module
-    return {"X-Auth": app_module.SECRET}
+    return {"X-Auth": os.environ["CHRONIK_TOKEN"]}
 
 def test_tail_auth_required(client):
     response = client.get("/v1/tail?domain=test-auth", headers={})
@@ -56,6 +56,7 @@ def test_tail_non_existent_domain(client, auth_header):
     assert response.json() == []
     assert response.headers["X-Chronik-Lines-Returned"] == "0"
     assert response.headers["X-Chronik-Lines-Dropped"] == "0"
+    assert "X-Chronik-Last-Seen-TS" in response.headers
 
 def test_tail_valid_data(client, auth_header):
     domain = f"test-valid-{secrets.token_hex(4)}"
@@ -72,6 +73,8 @@ def test_tail_valid_data(client, auth_header):
     assert results == data
     assert response.headers["X-Chronik-Lines-Returned"] == "10"
     assert response.headers["X-Chronik-Lines-Dropped"] == "0"
+    # last seen should be empty (no ts fields in this dataset)
+    assert response.headers["X-Chronik-Last-Seen-TS"] == ""
 
     # Read back limited
     response = client.get(f"/v1/tail?domain={domain}&limit=5", headers=auth_header)
@@ -80,6 +83,7 @@ def test_tail_valid_data(client, auth_header):
     assert len(results) == 5
     assert results == data[5:]  # Last 5 items
     assert response.headers["X-Chronik-Lines-Returned"] == "5"
+    assert "X-Chronik-Last-Seen-TS" in response.headers
 
 def test_tail_corrupt_data(client, auth_header):
     domain = f"test-corrupt-{secrets.token_hex(4)}"
@@ -104,6 +108,26 @@ def test_tail_corrupt_data(client, auth_header):
     assert results == [{"valid": 1}, {"valid": 2}]
     assert response.headers["X-Chronik-Lines-Returned"] == "2"
     assert response.headers["X-Chronik-Lines-Dropped"] == "2"
+    assert "X-Chronik-Last-Seen-TS" in response.headers
+
+def test_tail_last_seen_ts_header(client, auth_header):
+    domain = f"test-ts-{secrets.token_hex(4)}"
+    # Mix ts + timestamp; header should reflect the max
+    storage.write_payload(
+        domain,
+        [
+            json.dumps({"event": "a", "status": "ok", "ts": "2023-01-01T00:00:00Z"}),
+            json.dumps({"event": "b", "status": "ok", "timestamp": "2023-01-03T12:00:00Z"}),
+            json.dumps({"event": "c", "status": "ok", "ts": "2023-01-02T00:00:00+00:00"}),
+        ],
+    )
+    response = client.get(f"/v1/tail?domain={domain}&limit=50", headers=auth_header)
+    assert response.status_code == 200
+    # We only check that it's non-empty and contains the newest day "2023-01-03"
+    # (exact formatting includes +00:00 due to fromisoformat normalization)
+    last_seen = response.headers["X-Chronik-Last-Seen-TS"]
+    assert last_seen != ""
+    assert "2023-01-03" in last_seen
 
 def test_tail_concurrency_lock(client, auth_header, monkeypatch):
     domain = f"test-lock-{secrets.token_hex(4)}"

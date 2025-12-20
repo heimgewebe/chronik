@@ -18,7 +18,7 @@ from tools.hauski_ingest import IngestError, ingest_event  # noqa: E402
 def test_ingest_event_hermetic(monkeypatch):
     # Ensure the app's secret matches the token we're sending.
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
-    monkeypatch.setattr("app.SECRET", test_token)
+    monkeypatch.setenv("CHRONIK_TOKEN", test_token)
 
     # Use TestClient's transport for hermetic testing
     client = TestClient(app)

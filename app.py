@@ -6,6 +6,7 @@ import os
 import secrets
 import time
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
@@ -86,13 +87,18 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE)
 
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
-SECRET_ENV = os.environ.get("CHRONIK_TOKEN")
-if not SECRET_ENV:
-    raise RuntimeError(
-        "CHRONIK_TOKEN not set. Auth is required for all requests."
-    )
 
-SECRET: Final[str] = SECRET_ENV
+def _get_secret() -> str | None:
+    # Runtime lookup (no import-time hard dependency)
+    return os.environ.get("CHRONIK_TOKEN")
+
+
+def _parse_iso_ts(value: str) -> datetime | None:
+    # Minimal ISO parsing: supports trailing 'Z'
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 @app.middleware("http")
@@ -140,7 +146,12 @@ def _sanitize_domain(domain: str) -> str:
 
 
 def _require_auth(x_auth: str) -> None:
-    if not x_auth or not secrets.compare_digest(x_auth, SECRET):
+    secret = _get_secret()
+    if not secret:
+        # Misconfigured server: auth is required but no secret is configured.
+        # Use 500 to avoid leaking auth behavior details.
+        raise HTTPException(status_code=500, detail="server misconfigured")
+    if not x_auth or not secrets.compare_digest(x_auth, secret):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -359,9 +370,21 @@ async def tail_v1(domain: str, limit: int = 200):
 
     results = []
     dropped = 0
+    last_seen_dt: datetime | None = None
+
     for line in lines:
         try:
-            results.append(json.loads(line))
+            item = json.loads(line)
+            results.append(item)
+
+            ts_str = None
+            if isinstance(item, dict):
+                ts_str = item.get("ts") or item.get("timestamp")
+            if isinstance(ts_str, str):
+                dt = _parse_iso_ts(ts_str)
+                if dt is not None:
+                    if last_seen_dt is None or dt > last_seen_dt:
+                        last_seen_dt = dt
         except json.JSONDecodeError:
             dropped += 1
             logger.warning("dropped corrupt line", extra={"domain": dom})
@@ -369,6 +392,7 @@ async def tail_v1(domain: str, limit: int = 200):
     headers = {
         "X-Chronik-Lines-Returned": str(len(results)),
         "X-Chronik-Lines-Dropped": str(dropped),
+        "X-Chronik-Last-Seen-TS": last_seen_dt.isoformat() if last_seen_dt else "",
     }
     return JSONResponse(content=results, headers=headers)
 
