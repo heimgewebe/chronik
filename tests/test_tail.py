@@ -1,35 +1,34 @@
 
 import json
-import os
 import secrets
-import shutil
 import time
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 from filelock import FileLock
 
 import storage
-from app import app, SECRET
-
-# Setup for testing
-@pytest.fixture(scope="module")
-def client():
-    # Ensure CHRONIK_TOKEN is set for app import (already done if app is imported)
-    # We use TestClient which makes requests to the app
-    with TestClient(app) as c:
-        yield c
-
-@pytest.fixture
-def auth_header():
-    return {"X-Auth": SECRET}
 
 @pytest.fixture(autouse=True)
 def mock_storage(monkeypatch, tmp_path):
     # Isolate DATA_DIR for all tests
     monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
     return tmp_path
+
+@pytest.fixture
+def client():
+    # Import app only after DATA_DIR isolation is active (autouse fixture)
+    import app as app_module
+    # Note: CHRONIK_TOKEN is required by app import, so it must be set in env or mocked before import.
+    # We assume env is set for the process or we rely on app_module's default check.
+    # The tests run with CHRONIK_TOKEN set in bash session usually.
+    with TestClient(app_module.app) as c:
+        yield c
+
+@pytest.fixture
+def auth_header():
+    import app as app_module
+    return {"X-Auth": app_module.SECRET}
 
 def test_tail_auth_required(client):
     response = client.get("/v1/tail?domain=test-auth", headers={})
