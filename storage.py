@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import hashlib
 import logging
 import os
 import re
 from pathlib import Path
+from collections import deque
 from typing import Final, Iterable
 
 from filelock import FileLock, Timeout
@@ -22,6 +24,7 @@ __all__ = [
     "secure_filename",
     "target_filename",
     "safe_target_path",
+    "read_tail",
     "write_payload",
     "FILENAME_RE",
 ]
@@ -144,81 +147,45 @@ def safe_target_path(domain: str, *, data_dir: Path | None = None) -> Path:
     return candidate
 
 
-def write_payload(domain: str, lines: Iterable[str]) -> None:
-    """Write lines to the domain-specific storage file.
-    Handles file locking, safe path resolution, and error mapping.
+@contextlib.contextmanager
+def _locked_open(target_path: Path, mode: str):
+    """Context manager to securely open a file with a lock and O_NOFOLLOW.
+    Yields the file object.
     """
-    # Nothing to write - return early
-    if not lines:
-        return
-
-    # safe_target_path calls sanitize_domain internally if we passed just domain,
-    # but here we usually pass a domain string.
-    # Note: safe_target_path expects a domain string and uses DATA_DIR by default.
-    # It might raise DomainError.
-    try:
-        target_path = safe_target_path(domain)
-    except DomainError as exc:
-        raise StorageError("invalid target path") from exc
-
     fname = target_path.name
-
-    # Extra validation (paranoia check duplicating some logic but keeping it safe)
-    if target_path.parent != DATA_DIR:
-        raise StorageError("invalid target path: wrong parent directory")
-
-    # Prevent "File name too long" for lock files on 255-char filenames
-    # We use a hidden file with a hash if the simple name would be too long.
     lock_name = fname + ".lock"
     if len(lock_name) > 255:
-        # Use a deterministic hash of the filename to keep it short and unique
         h = hashlib.sha256(fname.encode("utf-8")).hexdigest()
         lock_name = f".{h}.lock"
-
     lock_path = target_path.parent / lock_name
+
+    # Flags setup
+    flags = getattr(os, "O_CLOEXEC", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise StorageError("platform lacks O_NOFOLLOW")
+    flags |= os.O_NOFOLLOW
+
+    if mode == "r":
+        flags |= os.O_RDONLY
+        os_mode = 0o666 # ignored for read
+        fopen_mode = "r"
+    elif mode == "a":
+        flags |= os.O_WRONLY | os.O_CREAT | os.O_APPEND
+        os_mode = 0o600
+        fopen_mode = "a"
+    else:
+        raise ValueError(f"unsupported mode: {mode}")
 
     try:
         with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
-            # Defense-in-depth: always use trusted DATA_DIR for dirfd
             dirfd = os.open(str(DATA_DIR), os.O_RDONLY)
             try:
-                flags = (
-                    os.O_WRONLY
-                    | os.O_CREAT
-                    | os.O_APPEND
-                    | getattr(os, "O_CLOEXEC", 0)
-                )
-                if not hasattr(os, "O_NOFOLLOW"):
-                    # This should ideally be checked at startup
-                    raise StorageError("platform lacks O_NOFOLLOW")
-                flags |= os.O_NOFOLLOW
-
                 fd = None
                 try:
-                    # codeql[py/uncontrolled-data-in-path-expression]:
-                    # fname is validated basename; dir_fd=trusted DATA directory
-                    fd = os.open(
-                        fname,
-                        flags,
-                        0o600,
-                        dir_fd=dirfd,
-                    )
-                    with os.fdopen(fd, "a", encoding="utf-8") as fh:
-                        fd = None  # fdopen takes ownership
-                        for line in lines:
-                            fh.write(line)
-                            fh.write("\n")
-                except OSError as exc:
-                    if exc.errno == errno.ENOSPC:
-                        logger.error("disk full", extra={"file": str(target_path)})
-                        raise StorageFullError("insufficient storage") from exc
-                    if exc.errno == errno.ELOOP:
-                        logger.warning(
-                            "symlink attempt rejected",
-                            extra={"file": str(target_path)},
-                        )
-                        raise StorageError("invalid target (symlink)") from exc
-                    raise
+                    fd = os.open(fname, flags, os_mode, dir_fd=dirfd)
+                    with os.fdopen(fd, fopen_mode, encoding="utf-8") as fh:
+                        fd = None
+                        yield fh
                 finally:
                     if fd is not None:
                         os.close(fd)
@@ -227,3 +194,50 @@ def write_payload(domain: str, lines: Iterable[str]) -> None:
     except Timeout as exc:
         logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
         raise StorageBusyError("busy, try again") from exc
+
+
+def read_tail(domain: str, limit: int) -> list[str]:
+    """Read the last N lines from the domain's storage file."""
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    if not target_path.exists():
+        return []
+
+    try:
+        with _locked_open(target_path, "r") as fh:
+            return list(deque(fh, maxlen=limit))
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return []
+        raise StorageError("read error") from exc
+
+
+def write_payload(domain: str, lines: Iterable[str]) -> None:
+    """Write lines to the domain-specific storage file."""
+    if not lines:
+        return
+
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    if target_path.parent != DATA_DIR:
+        raise StorageError("invalid target path: wrong parent directory")
+
+    try:
+        with _locked_open(target_path, "a") as fh:
+            for line in lines:
+                fh.write(line)
+                fh.write("\n")
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            logger.error("disk full", extra={"file": str(target_path)})
+            raise StorageFullError("insufficient storage") from exc
+        if exc.errno == errno.ELOOP:
+            logger.warning("symlink attempt rejected", extra={"file": str(target_path)})
+            raise StorageError("invalid target (symlink)") from exc
+        raise

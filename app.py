@@ -27,6 +27,7 @@ from storage import (
     StorageFullError,
     StorageBusyError,
     sanitize_domain,
+    read_tail,
     write_payload,
 )
 
@@ -238,6 +239,31 @@ def _write_lines_to_storage_wrapper(dom: str, lines: list[str]) -> None:
         if "invalid target" in str(exc) or "invalid target path" in str(exc):
              raise HTTPException(status_code=400, detail="invalid target") from exc
         raise HTTPException(status_code=500, detail="storage error") from exc
+
+
+@app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)])
+async def tail_v1(domain: str, limit: int = 200):
+    dom = _sanitize_domain(domain)
+    if limit > 2000:
+        raise HTTPException(status_code=400, detail="limit too high (max 2000)")
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+
+    try:
+        lines = await run_in_threadpool(read_tail, dom, limit)
+    except StorageBusyError:
+        raise HTTPException(status_code=429, detail="busy, try again")
+    except StorageError:
+        raise HTTPException(status_code=500, detail="storage error")
+
+    results = []
+    for line in lines:
+        try:
+            results.append(json.loads(line))
+        except json.JSONDecodeError:
+            logger.error("corrupt line in storage", extra={"domain": dom})
+            continue
+    return results
 
 
 @app.post(
