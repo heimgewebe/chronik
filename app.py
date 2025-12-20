@@ -6,13 +6,14 @@ import os
 import secrets
 import time
 import uuid
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 if TYPE_CHECKING:
     from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.concurrency import run_in_threadpool
@@ -26,6 +27,7 @@ from storage import (
     StorageError,
     StorageFullError,
     StorageBusyError,
+    read_tail,
     sanitize_domain,
     write_payload,
 )
@@ -85,13 +87,18 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE)
 
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
-SECRET_ENV = os.environ.get("CHRONIK_TOKEN")
-if not SECRET_ENV:
-    raise RuntimeError(
-        "CHRONIK_TOKEN not set. Auth is required for all requests."
-    )
 
-SECRET: Final[str] = SECRET_ENV
+def _get_secret() -> str | None:
+    # Runtime lookup (no import-time hard dependency)
+    return os.environ.get("CHRONIK_TOKEN")
+
+
+def _parse_iso_ts(value: str) -> datetime | None:
+    # Minimal ISO parsing: supports trailing 'Z'
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except Exception:
+        return None
 
 
 @app.middleware("http")
@@ -139,7 +146,12 @@ def _sanitize_domain(domain: str) -> str:
 
 
 def _require_auth(x_auth: str) -> None:
-    if not x_auth or not secrets.compare_digest(x_auth, SECRET):
+    secret = _get_secret()
+    if not secret:
+        # Misconfigured server: auth is required but no secret is configured.
+        # Use 500 to avoid leaking auth behavior details.
+        raise HTTPException(status_code=500, detail="server misconfigured")
+    if not x_auth or not secrets.compare_digest(x_auth, secret):
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
@@ -333,6 +345,73 @@ async def ingest(
     await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines)
 
     return PlainTextResponse("ok", status_code=202)
+
+
+@app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)])
+async def tail_v1(
+    domain: str,
+    limit: int = 200,
+    since: str | None = None,
+):
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if limit > 2000:
+        raise HTTPException(status_code=400, detail="limit must be <= 2000")
+
+    since_dt: datetime | None = None
+    if since:
+        since_dt = _parse_iso_ts(since)
+        if since_dt is None:
+            raise HTTPException(status_code=400, detail="invalid since format")
+
+    try:
+        dom = _sanitize_domain(domain)
+    except HTTPException:
+        # If domain invalid, _sanitize_domain raises 400
+        raise
+
+    try:
+        lines = await run_in_threadpool(read_tail, dom, limit)
+    except StorageBusyError as exc:
+        raise HTTPException(status_code=429, detail="busy, try again") from exc
+    except StorageError as exc:
+        # read_tail returns [] on ENOENT, so StorageError means something else
+        raise HTTPException(status_code=500, detail="storage error") from exc
+
+    results = []
+    dropped = 0
+    last_seen_dt: datetime | None = None
+
+    for line in lines:
+        try:
+            item = json.loads(line)
+
+            ts_str = None
+            if isinstance(item, dict):
+                ts_str = item.get("ts") or item.get("timestamp")
+
+            dt = None
+            if isinstance(ts_str, str):
+                dt = _parse_iso_ts(ts_str)
+
+            if since_dt and (dt is None or dt <= since_dt):
+                continue
+
+            results.append(item)
+
+            if dt is not None:
+                if last_seen_dt is None or dt > last_seen_dt:
+                    last_seen_dt = dt
+        except json.JSONDecodeError:
+            dropped += 1
+            logger.warning("dropped corrupt line", extra={"domain": dom})
+
+    headers = {
+        "X-Chronik-Lines-Returned": str(len(results)),
+        "X-Chronik-Lines-Dropped": str(dropped),
+        "X-Chronik-Last-Seen-TS": last_seen_dt.isoformat() if last_seen_dt else "",
+    }
+    return JSONResponse(content=results, headers=headers)
 
 
 @app.get("/health")
