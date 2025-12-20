@@ -385,7 +385,6 @@ async def tail_v1(
     for line in lines:
         try:
             item = json.loads(line)
-            results.append(item)
 
             ts_str = None
             if isinstance(item, dict):
@@ -397,6 +396,8 @@ async def tail_v1(
 
             if since_dt and (dt is None or dt <= since_dt):
                 continue
+
+            results.append(item)
 
             if dt is not None:
                 if last_seen_dt is None or dt > last_seen_dt:

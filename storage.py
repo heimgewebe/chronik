@@ -253,6 +253,12 @@ def write_payload(domain: str, lines: Iterable[str]) -> None:
         raise StorageError("invalid target path") from exc
 
     with _locked_open(target_path, "a") as fh:
-        for line in lines:
-            fh.write(line)
-            fh.write("\n")
+        try:
+            for line in lines:
+                fh.write(line)
+                fh.write("\n")
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                logger.error("disk full", extra={"file": str(target_path)})
+                raise StorageFullError("insufficient storage") from exc
+            raise

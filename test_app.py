@@ -576,6 +576,34 @@ def test_disk_full_returns_507(monkeypatch, tmp_path, client):
     assert "insufficient" in response.text.lower()
 
 
+def test_disk_full_during_write_returns_507(monkeypatch, tmp_path, client):
+    """Test ENOSPC during the write call itself (not just open)."""
+    from contextlib import contextmanager
+
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    # Mock _locked_open to return a file-like object that fails on write
+    @contextmanager
+    def _mock_locked_open(*args, **kwargs):
+        class MockFile:
+            def write(self, data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+        yield MockFile()
+
+    monkeypatch.setattr("storage._locked_open", _mock_locked_open)
+
+    response = client.post(
+        "/ingest/example.com",
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
+        json={"data": "foo"},
+    )
+
+    assert response.status_code == 507
+    assert "insufficient" in response.text.lower()
+
+
 def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path, client):
     """Test that file descriptors are properly closed when OSError occurs after fd is opened."""
     secret = _test_secret()
