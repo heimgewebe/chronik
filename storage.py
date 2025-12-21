@@ -278,7 +278,7 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
         # Optimization: verify we have enough newlines before decoding fully?
         # But decoding partial UTF-8 is risky.
         # However, newlines (0x0A) are safe in UTF-8.
-        if buffer.count(b'\n') > limit:
+        if buffer.count(b'\n') >= limit:
              break
 
     # Decode everything we have collected
@@ -287,7 +287,7 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
     except UnicodeDecodeError:
         # Fallback: try to decode with replacement or ignore errors
         # for the very start of the buffer which might be split char
-        text = buffer.decode("utf-8", errors="ignore")
+        text = buffer.decode("utf-8", errors="replace")
 
     all_lines = text.splitlines()
 
