@@ -174,9 +174,15 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
     if mode == "r":
         flags = os.O_RDONLY
         py_mode = "r"
+        encoding = "utf-8"
+    elif mode == "rb":
+        flags = os.O_RDONLY
+        py_mode = "rb"
+        encoding = None
     elif mode == "a":
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         py_mode = "a"
+        encoding = "utf-8"
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
@@ -197,7 +203,7 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
                     dir_fd=dirfd,
                 )
                 try:
-                    fh = os.fdopen(fd, py_mode, encoding="utf-8")
+                    fh = os.fdopen(fd, py_mode, encoding=encoding)
                 except Exception:
                     os.close(fd)
                     raise
@@ -231,12 +237,67 @@ def read_tail(domain: str, limit: int) -> list[str]:
         raise StorageError("invalid target path") from exc
 
     try:
-        with _locked_open(target_path, "r") as fh:
-            return [line.rstrip("\n") for line in deque(fh, maxlen=limit)]
+        with _locked_open(target_path, "rb") as fh:
+            return _tail_impl(fh, limit)
     except OSError as exc:
         if exc.errno == errno.ENOENT:
             return []
         raise StorageError("read error") from exc
+
+
+def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
+    """Efficiently read the last `limit` lines from a binary file handle."""
+    fh.seek(0, 2)
+    file_size = fh.tell()
+
+    if file_size == 0:
+        return []
+
+    lines: list[str] = []
+    # If the file has data, the last byte might be a newline or not.
+    # We want to collect 'limit' logical lines.
+
+    # We'll build up a buffer of bytes from the end.
+    buffer = bytearray()
+    pointer = file_size
+
+    while len(lines) < limit and pointer > 0:
+        read_size = min(chunk_size, pointer)
+        pointer -= read_size
+        fh.seek(pointer)
+        chunk = fh.read(read_size)
+
+        # Prepend chunk to buffer
+        buffer[0:0] = chunk
+
+        # Count newlines in buffer to see if we have enough
+        # We need (limit) newlines to ensure we have (limit) lines,
+        # plus maybe one more if the last line doesn't end in newline?
+        # Standard approach: split lines, check count.
+
+        # Optimization: verify we have enough newlines before decoding fully?
+        # But decoding partial UTF-8 is risky.
+        # However, newlines (0x0A) are safe in UTF-8.
+        if buffer.count(b'\n') > limit:
+             break
+
+    # Decode everything we have collected
+    try:
+        text = buffer.decode("utf-8")
+    except UnicodeDecodeError:
+        # Fallback: try to decode with replacement or ignore errors
+        # for the very start of the buffer which might be split char
+        text = buffer.decode("utf-8", errors="ignore")
+
+    all_lines = text.splitlines()
+
+    # If the file ends with newline, splitlines() behavior matches what we want
+    # (it discards the final empty string that split('\n') would produce).
+    # But wait, read_tail contract:
+    #   [line.rstrip("\n") for line in deque(fh, maxlen=limit)]
+    # deque iterates lines. 'line' includes \n. rstrip removes it.
+
+    return all_lines[-limit:]
 
 
 def write_payload(domain: str, lines: Iterable[str]) -> None:
