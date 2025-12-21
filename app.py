@@ -196,9 +196,9 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
     data = bytearray()
     # Starlette's request.stream() yields chunks
     async for chunk in request.stream():
-        data.extend(chunk)
-        if len(data) > limit:
+        if len(data) + len(chunk) > limit:
             raise HTTPException(status_code=413, detail="payload too large")
+        data.extend(chunk)
     return bytes(data)
 
 
