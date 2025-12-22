@@ -278,9 +278,11 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
         # Optimization: verify we have enough newlines before decoding fully?
         # But decoding partial UTF-8 is risky.
         # However, newlines (0x0A) are safe in UTF-8.
-        # We need strictly more than 'limit' newlines (or be at start of file)
-        # to ensure the oldest line we captured is complete and not a partial
-        # cut-off (which could have corrupt multi-byte chars at the start).
+        # We need strictly more than 'limit' newlines to ensure the oldest line
+        # we captured is complete and not a partial cut-off (which could have
+        # corrupt multi-byte chars at the start).
+        # Note: If we reach the start of the file (pointer == 0), the loop
+        # terminates naturally, which is also a safe state (no partial prefix).
         if buffer.count(b'\n') > limit:
             break
 
