@@ -127,3 +127,29 @@ def test_retry_after_header_logic(client):
 
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "60"
+
+def test_heimgeist_invalid_version_type(monkeypatch, client):
+    monkeypatch.setenv("CHRONIK_TOKEN", "secret")
+    payload = {
+        "kind": "heimgeist.insight",
+        "version": "1", # String instead of int
+        "id": "evt-1",
+        "meta": {"occurred_at": "2023-10-27T10:00:00Z", "role": "test"},
+        "data": {}
+    }
+    response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
+    assert response.status_code == 400
+    assert "version must be an integer" in response.text
+
+def test_heimgeist_invalid_timestamp_format(monkeypatch, client):
+    monkeypatch.setenv("CHRONIK_TOKEN", "secret")
+    payload = {
+        "kind": "heimgeist.insight",
+        "version": 1,
+        "id": "evt-1",
+        "meta": {"occurred_at": "invalid-ts", "role": "test"},
+        "data": {}
+    }
+    response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
+    assert response.status_code == 400
+    assert "valid ISO8601" in response.text

@@ -207,6 +207,10 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
 
 
 def _validate_heimgeist_payload(item: dict) -> None:
+    """
+    Validate payload against the heimgeist.insight contract.
+    Source of Truth: metarepo/heimgeist schema.
+    """
     # Root fields
     required_root = {"kind", "version", "id", "meta", "data"}
     missing = required_root - item.keys()
@@ -215,13 +219,21 @@ def _validate_heimgeist_payload(item: dict) -> None:
             status_code=400, detail=f"missing fields: {', '.join(sorted(missing))}"
         )
 
-    if item.get("kind") != "heimgeist.insight":
+    # Structure & Type strictness
+    if not isinstance(item["kind"], str):
+        raise HTTPException(status_code=400, detail="kind must be a string")
+    if item["kind"] != "heimgeist.insight":
         raise HTTPException(
             status_code=400, detail="invalid kind: expected 'heimgeist.insight'"
         )
 
-    if item.get("version") != 1:
+    if not isinstance(item["version"], int):
+        raise HTTPException(status_code=400, detail="version must be an integer")
+    if item["version"] != 1:
         raise HTTPException(status_code=400, detail="invalid version: expected 1")
+
+    if not isinstance(item["id"], str):
+        raise HTTPException(status_code=400, detail="id must be a string")
 
     # Meta fields
     meta = item["meta"]
@@ -230,6 +242,10 @@ def _validate_heimgeist_payload(item: dict) -> None:
 
     if "occurred_at" not in meta:
         raise HTTPException(status_code=400, detail="missing meta.occurred_at")
+    if not isinstance(meta["occurred_at"], str):
+        raise HTTPException(status_code=400, detail="meta.occurred_at must be a string")
+    if _parse_iso_ts(meta["occurred_at"]) is None:
+        raise HTTPException(status_code=400, detail="meta.occurred_at must be valid ISO8601")
 
     if "role" not in meta:
         raise HTTPException(status_code=400, detail="missing meta.role")
