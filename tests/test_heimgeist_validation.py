@@ -24,6 +24,7 @@ def test_heimgeist_valid_payload(monkeypatch, tmp_path: Path, client):
         },
         "data": {"foo": "bar"}
     }
+    # Canonical path
     response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
     assert response.status_code == 202
     assert response.text == "ok"
@@ -103,3 +104,26 @@ def test_heimgeist_legacy_path(monkeypatch, tmp_path: Path, client):
     }
     response = client.post("/ingest/heimgeist", json=payload, headers={"X-Auth": "secret"})
     assert response.status_code == 202
+
+def test_retry_after_header_logic(client):
+    from app import _on_rate_limited
+    from slowapi.errors import RateLimitExceeded
+    from fastapi import Request
+    import asyncio
+
+    class MockLimit:
+        error_message = None
+        limit = "60/minute"
+        def __str__(self): return self.limit
+
+    scope = {"type": "http", "headers": []}
+    req = Request(scope)
+    exc = RateLimitExceeded(MockLimit())
+
+    # Run the handler
+    loop = asyncio.new_event_loop()
+    response = loop.run_until_complete(_on_rate_limited(req, exc))
+    loop.close()
+
+    assert response.status_code == 429
+    assert response.headers["Retry-After"] == "60"

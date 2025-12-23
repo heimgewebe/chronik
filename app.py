@@ -132,7 +132,11 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def _on_rate_limited(request: Request, exc: RateLimitExceeded):
-    return PlainTextResponse("too many requests", status_code=429)
+    response = PlainTextResponse("too many requests", status_code=429)
+    # Defaulting to 60s which matches our window size.
+    # A more precise calculation would require querying the limiter storage.
+    response.headers["Retry-After"] = "60"
+    return response
 
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")

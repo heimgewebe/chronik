@@ -15,8 +15,11 @@ paths:
       operationId: ingestEvent
       description: |
         Accepts JSON payloads either as a single object, an array of objects, or newline-delimited JSON.
-        The target domain can be supplied via the `domain` query parameter or as the `domain` field on the first
-        object in the payload.
+        The target domain can be supplied via the `domain` query parameter (canonical) or as the `domain` field on the first
+        object in the payload (legacy behavior, normalized by Chronik).
+
+        **Canonical Endpoint**: `POST /v1/ingest?domain=heimgeist`
+        **Legacy Alias**: `POST /ingest/heimgeist`
 
         **Limits**:
         - Max payload size: 1MB (configurable via `CHRONIK_MAX_BODY`).
@@ -47,7 +50,6 @@ paths:
               kind: "heimgeist.insight"
               version: 1
               id: "evt-12345678"
-              domain: "heimgeist"
               meta:
                 occurred_at: "2023-10-27T10:00:00Z"
                 role: "agent"
