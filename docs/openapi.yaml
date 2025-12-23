@@ -26,7 +26,8 @@ paths:
         - Rate limit: 60 requests per minute (configurable via `CHRONIK_RATE_LIMIT`).
 
         **Validation**:
-        - For domain `heimgeist`, validation mirrors the `heimgeist.insight` contract (Source of Truth: metarepo).
+        - For domain `heimgeist`, Chronik enforces transport & wrapper integrity (Source of Truth: metarepo wrapper definition).
+        - Deep schema validation of `data` is the responsibility of the producer.
         - Required wrapper fields: `kind`, `version`, `id`, `meta` (with `occurred_at`, `role`), `data`.
       parameters:
         - name: domain

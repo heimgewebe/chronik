@@ -208,8 +208,8 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
 
 def _validate_heimgeist_payload(item: dict) -> None:
     """
-    Validate payload against the heimgeist.insight contract.
-    Source of Truth: metarepo/heimgeist schema.
+    Validate payload wrapper integrity (kind, version, id, meta).
+    Chronik enforces transport & wrapper integrity; deep schema validation (data) is producer/guard responsibility.
     """
     # Root fields
     required_root = {"kind", "version", "id", "meta", "data"}
