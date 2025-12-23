@@ -1,11 +1,13 @@
-# Heimgeist Event Specification (Sync-Punkt A)
+# Heimgeist Event Specification
 
-Domain: heimgeist
+Source of Truth: `metarepo/contracts/heimgeist.insight.v1.schema.json`
 
-Wrapper: { kind: "heimgeist.insight", version: 1, id, meta: { occurred_at, role }, data }
+This file is a derived explanation of the metarepo contract.
+
+Wrapper: { kind: "heimgeist.insight", version: 1, id, meta: { occurred_at }, data }
 
 ID: evt-${insight.id}
 
 Timestamp: meta.occurred_at (ISO8601)
 
-Transport: POST /ingest/heimgeist (+ Header X-Auth)
+Transport: POST /v1/ingest?domain=heimgeist (Canonical)

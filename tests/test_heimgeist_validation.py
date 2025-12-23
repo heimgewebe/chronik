@@ -19,8 +19,8 @@ def test_heimgeist_valid_payload(monkeypatch, tmp_path: Path, client):
         "version": 1,
         "id": "evt-1",
         "meta": {
-            "occurred_at": "2023-10-27T10:00:00Z",
-            "role": "test"
+            "occurred_at": "2023-10-27T10:00:00Z"
+            # role is optional in minimal wrapper check
         },
         "data": {"foo": "bar"}
     }
@@ -79,6 +79,19 @@ def test_heimgeist_missing_meta_fields(monkeypatch, client):
     response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
     assert response.status_code == 400
     assert "missing meta" in response.text
+
+def test_heimgeist_invalid_data_type(monkeypatch, client):
+    monkeypatch.setenv("CHRONIK_TOKEN", "secret")
+    payload = {
+        "kind": "heimgeist.insight",
+        "version": 1,
+        "id": "evt-1",
+        "meta": {"occurred_at": "2023-10-27T10:00:00Z"},
+        "data": "not-a-dict"
+    }
+    response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
+    assert response.status_code == 400
+    assert "data must be a dict" in response.text
 
 def test_other_domain_loose_validation(monkeypatch, tmp_path, client):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
