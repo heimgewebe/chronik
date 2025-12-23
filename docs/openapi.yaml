@@ -23,7 +23,7 @@ paths:
         - Rate limit: 60 requests per minute (configurable via `CHRONIK_RATE_LIMIT`).
 
         **Validation**:
-        - For domain `heimgeist`, strict validation applies. Required fields: `id`, `source`, `timestamp` (or `occurred_at`), `payload` (or `object`).
+        - For domain `heimgeist`, strict validation applies. Required fields: `kind`, `version`, `id`, `meta` (with `occurred_at`, `role`), `data`.
       parameters:
         - name: domain
           in: query
@@ -44,12 +44,14 @@ paths:
                   items:
                     $ref: '#/components/schemas/Event'
             example:
-              id: "00000000-0000-0000-0000-000000000000"
+              kind: "heimgeist.insight"
+              version: 1
+              id: "evt-12345678"
               domain: "heimgeist"
-              source: "heimgeist.producer"
-              timestamp: "2023-10-27T10:00:00Z"
-              type: "heimgeist.insight.v1"
-              payload:
+              meta:
+                occurred_at: "2023-10-27T10:00:00Z"
+                role: "agent"
+              data:
                 key: "value"
           application/x-ndjson:
             schema:
@@ -76,7 +78,7 @@ paths:
         '422':
           description: Semantic validation failed (e.g. summary too long).
         '429':
-          description: Too many requests (rate limited).
+          description: Too many requests (rate limited). Clients should respect the `Retry-After` header.
         '507':
           description: Insufficient storage.
   /ingest/{domain}:
@@ -120,7 +122,7 @@ paths:
         '413':
           description: Payload too large.
         '429':
-          description: Too many requests (rate limited).
+          description: Too many requests (rate limited). Clients should respect the `Retry-After` header.
         '507':
           description: Insufficient storage.
   /health:

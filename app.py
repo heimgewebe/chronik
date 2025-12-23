@@ -203,17 +203,32 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
 
 
 def _validate_heimgeist_payload(item: dict) -> None:
-    if "id" not in item:
-        raise HTTPException(status_code=400, detail="missing id")
+    # Root fields
+    required_root = {"kind", "version", "id", "meta", "data"}
+    missing = required_root - item.keys()
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"missing fields: {', '.join(sorted(missing))}"
+        )
 
-    if "source" not in item:
-        raise HTTPException(status_code=400, detail="missing source")
+    if item.get("kind") != "heimgeist.insight":
+        raise HTTPException(
+            status_code=400, detail="invalid kind: expected 'heimgeist.insight'"
+        )
 
-    if "timestamp" not in item and "occurred_at" not in item:
-        raise HTTPException(status_code=400, detail="missing timestamp/occurred_at")
+    if item.get("version") != 1:
+        raise HTTPException(status_code=400, detail="invalid version: expected 1")
 
-    if "payload" not in item and "object" not in item:
-        raise HTTPException(status_code=400, detail="missing payload/object")
+    # Meta fields
+    meta = item["meta"]
+    if not isinstance(meta, dict):
+        raise HTTPException(status_code=400, detail="meta must be a dict")
+
+    if "occurred_at" not in meta:
+        raise HTTPException(status_code=400, detail="missing meta.occurred_at")
+
+    if "role" not in meta:
+        raise HTTPException(status_code=400, detail="missing meta.role")
 
 
 def _process_items(items: list[Any], dom: str) -> list[str]:
