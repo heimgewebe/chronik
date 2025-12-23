@@ -17,6 +17,13 @@ paths:
         Accepts JSON payloads either as a single object, an array of objects, or newline-delimited JSON.
         The target domain can be supplied via the `domain` query parameter or as the `domain` field on the first
         object in the payload.
+
+        **Limits**:
+        - Max payload size: 1MB (configurable via `CHRONIK_MAX_BODY`).
+        - Rate limit: 60 requests per minute (configurable via `CHRONIK_RATE_LIMIT`).
+
+        **Validation**:
+        - For domain `heimgeist`, strict validation applies. Required fields: `id`, `source`, `timestamp` (or `occurred_at`), `payload` (or `object`).
       parameters:
         - name: domain
           in: query
@@ -36,6 +43,14 @@ paths:
                 - type: array
                   items:
                     $ref: '#/components/schemas/Event'
+            example:
+              id: "00000000-0000-0000-0000-000000000000"
+              domain: "heimgeist"
+              source: "heimgeist.producer"
+              timestamp: "2023-10-27T10:00:00Z"
+              type: "heimgeist.insight.v1"
+              payload:
+                key: "value"
           application/x-ndjson:
             schema:
               type: string

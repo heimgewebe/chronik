@@ -202,6 +202,20 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
     return bytes(data)
 
 
+def _validate_heimgeist_payload(item: dict) -> None:
+    if "id" not in item:
+        raise HTTPException(status_code=400, detail="missing id")
+
+    if "source" not in item:
+        raise HTTPException(status_code=400, detail="missing source")
+
+    if "timestamp" not in item and "occurred_at" not in item:
+        raise HTTPException(status_code=400, detail="missing timestamp/occurred_at")
+
+    if "payload" not in item and "object" not in item:
+        raise HTTPException(status_code=400, detail="missing payload/object")
+
+
 def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
     # Leeres Array: nichts zu tun
@@ -215,6 +229,9 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             raise HTTPException(status_code=400, detail="invalid payload")
 
         normalized = dict(entry)
+
+        if dom == "heimgeist":
+            _validate_heimgeist_payload(normalized)
 
         summary_val = normalized.get("summary")
         if isinstance(summary_val, str) and len(summary_val) > 500:
