@@ -252,6 +252,53 @@ def _validate_heimgeist_payload(item: dict) -> None:
         raise HTTPException(status_code=400, detail="meta.occurred_at must be valid ISO8601")
 
 
+def _normalize_heimgeist_item(item: dict) -> dict:
+    """
+    Normalize legacy payloads to the canonical wrapper.
+    Legacy inputs: {id, source, timestamp, payload}
+    Canonical wrapper: {kind, version, id, meta, data}
+    """
+    # 1. Check if it's already a valid Wrapper
+    required_wrapper = {"kind", "version", "id", "meta", "data"}
+    if required_wrapper.issubset(item.keys()):
+        _validate_heimgeist_payload(item)
+        return item
+
+    # 2. Legacy Adapter
+    legacy_required = {"id", "source", "timestamp", "payload"}
+    if legacy_required.issubset(item.keys()):
+        legacy_payload = item["payload"]
+        if not isinstance(legacy_payload, dict):
+             raise HTTPException(status_code=400, detail="legacy payload must be a dict")
+
+        # kind/version must be present in the nested payload
+        kind = legacy_payload.get("kind")
+        version = legacy_payload.get("version")
+
+        if not kind or not version:
+             raise HTTPException(status_code=400, detail="legacy payload missing kind/version")
+
+        # Prefer inner 'data', else treat stripped payload as data
+        data = legacy_payload.get("data")
+        if data is None:
+             data = {k: v for k, v in legacy_payload.items() if k not in ("kind", "version")}
+
+        new_item = {
+            "kind": kind,
+            "version": version,
+            "id": item["id"],
+            "meta": {
+                "occurred_at": item["timestamp"],
+                "producer": item["source"],
+            },
+            "data": data
+        }
+        _validate_heimgeist_payload(new_item)
+        return new_item
+
+    raise HTTPException(status_code=400, detail="invalid payload structure (neither wrapper nor valid legacy)")
+
+
 def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
     # Leeres Array: nichts zu tun
@@ -267,7 +314,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         normalized = dict(entry)
 
         if dom == "heimgeist":
-            _validate_heimgeist_payload(normalized)
+            normalized = _normalize_heimgeist_item(normalized)
 
         summary_val = normalized.get("summary")
         if isinstance(summary_val, str) and len(summary_val) > 500:

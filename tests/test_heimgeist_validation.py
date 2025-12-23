@@ -31,15 +31,13 @@ def test_heimgeist_valid_payload(monkeypatch, tmp_path: Path, client):
 
 def test_heimgeist_missing_fields(monkeypatch, client):
     monkeypatch.setenv("CHRONIK_TOKEN", "secret")
-    # Missing kind, version, meta, data
+    # Missing kind, version, meta, data -> and not legacy structure
     payload = {
         "id": "evt-1"
     }
     response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
     assert response.status_code == 400
-    assert "missing fields" in response.text
-    assert "kind" in response.text
-    assert "version" in response.text
+    assert "invalid payload structure" in response.text
 
 def test_heimgeist_invalid_kind(monkeypatch, client):
     monkeypatch.setenv("CHRONIK_TOKEN", "secret")
@@ -166,3 +164,34 @@ def test_heimgeist_invalid_timestamp_format(monkeypatch, client):
     response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
     assert response.status_code == 400
     assert "valid ISO8601" in response.text
+
+def test_heimgeist_legacy_adapter_success(monkeypatch, client):
+    monkeypatch.setenv("CHRONIK_TOKEN", "secret")
+    payload = {
+        "id": "legacy-1",
+        "source": "src",
+        "timestamp": "2023-10-27T10:00:00Z",
+        "payload": {
+            "kind": "heimgeist.insight",
+            "version": 1,
+            "data": {"foo": "bar"}
+        }
+    }
+    response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
+    assert response.status_code == 202
+    assert response.text == "ok"
+
+def test_heimgeist_legacy_adapter_missing_kind(monkeypatch, client):
+    monkeypatch.setenv("CHRONIK_TOKEN", "secret")
+    payload = {
+        "id": "legacy-2",
+        "source": "src",
+        "timestamp": "2023-10-27T10:00:00Z",
+        "payload": {
+            "version": 1,
+            "data": {"foo": "bar"}
+        }
+    }
+    response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
+    assert response.status_code == 400
+    assert "legacy payload missing kind/version" in response.text
