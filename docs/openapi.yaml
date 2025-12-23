@@ -15,8 +15,19 @@ paths:
       operationId: ingestEvent
       description: |
         Accepts JSON payloads either as a single object, an array of objects, or newline-delimited JSON.
-        The target domain can be supplied via the `domain` query parameter or as the `domain` field on the first
-        object in the payload.
+        The target domain can be supplied via the `domain` query parameter (canonical) or as the `domain` field on the first
+        object in the payload (legacy behavior, normalized by Chronik).
+
+        **Canonical Endpoint**: `POST /v1/ingest?domain=heimgeist`
+        **Legacy Alias**: `POST /ingest/heimgeist`
+
+        **Transport Policy**:
+        - Max payload size: 1MB (configurable via `CHRONIK_MAX_BODY`).
+        - Rate limit: 60 requests per minute (configurable via `CHRONIK_RATE_LIMIT`).
+
+        **Validation**:
+        - For domain `heimgeist`, Schema is defined in metarepo. Chronik enforces, not defines.
+        - Required wrapper fields: `kind`, `version`, `id`, `meta` (with `occurred_at`), `data`.
       parameters:
         - name: domain
           in: query
@@ -36,6 +47,15 @@ paths:
                 - type: array
                   items:
                     $ref: '#/components/schemas/Event'
+            example:
+              kind: "heimgeist.insight"
+              version: 1
+              id: "evt-12345678"
+              meta:
+                occurred_at: "2023-10-27T10:00:00Z"
+                role: "agent"
+              data:
+                key: "value"
           application/x-ndjson:
             schema:
               type: string
@@ -61,7 +81,7 @@ paths:
         '422':
           description: Semantic validation failed (e.g. summary too long).
         '429':
-          description: Too many requests (rate limited).
+          description: Too many requests (rate limited). Clients should respect the `Retry-After` header.
         '507':
           description: Insufficient storage.
   /ingest/{domain}:
@@ -105,7 +125,7 @@ paths:
         '413':
           description: Payload too large.
         '429':
-          description: Too many requests (rate limited).
+          description: Too many requests (rate limited). Clients should respect the `Retry-After` header.
         '507':
           description: Insufficient storage.
   /health:

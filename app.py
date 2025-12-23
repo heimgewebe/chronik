@@ -132,7 +132,11 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def _on_rate_limited(request: Request, exc: RateLimitExceeded):
-    return PlainTextResponse("too many requests", status_code=429)
+    response = PlainTextResponse("too many requests", status_code=429)
+    # Defaulting to 60s which matches our window size.
+    # A more precise calculation would require querying the limiter storage.
+    response.headers["Retry-After"] = "60"
+    return response
 
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
@@ -202,6 +206,99 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
     return bytes(data)
 
 
+def _validate_heimgeist_payload(item: dict) -> None:
+    """
+    Validate payload wrapper integrity.
+    Mirror of metarepo/contracts/heimgeist.insight.v1.schema.json.
+    """
+    # Root fields
+    required_root = {"kind", "version", "id", "meta", "data"}
+    missing = required_root - item.keys()
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"missing fields: {', '.join(sorted(missing))}"
+        )
+
+    # Structure & Type strictness
+    if not isinstance(item["kind"], str):
+        raise HTTPException(status_code=400, detail="kind must be a string")
+    if item["kind"] != "heimgeist.insight":
+        raise HTTPException(
+            status_code=400, detail="invalid kind: expected 'heimgeist.insight'"
+        )
+
+    if not isinstance(item["version"], int):
+        raise HTTPException(status_code=400, detail="version must be an integer")
+    if item["version"] != 1:
+        raise HTTPException(status_code=400, detail="invalid version: expected 1")
+
+    if not isinstance(item["id"], str):
+        raise HTTPException(status_code=400, detail="id must be a string")
+
+    # Data field must be an object
+    if not isinstance(item["data"], dict):
+        raise HTTPException(status_code=400, detail="data must be a dict")
+
+    # Meta fields
+    meta = item["meta"]
+    if not isinstance(meta, dict):
+        raise HTTPException(status_code=400, detail="meta must be a dict")
+
+    if "occurred_at" not in meta:
+        raise HTTPException(status_code=400, detail="missing meta.occurred_at")
+    if not isinstance(meta["occurred_at"], str):
+        raise HTTPException(status_code=400, detail="meta.occurred_at must be a string")
+    if _parse_iso_ts(meta["occurred_at"]) is None:
+        raise HTTPException(status_code=400, detail="meta.occurred_at must be valid ISO8601")
+
+
+def _normalize_heimgeist_item(item: dict) -> dict:
+    """
+    Normalize legacy payloads to the canonical wrapper.
+    Legacy inputs: {id, source, timestamp, payload}
+    Canonical wrapper: {kind, version, id, meta, data}
+    """
+    # 1. Check if it's already a valid Wrapper
+    required_wrapper = {"kind", "version", "id", "meta", "data"}
+    if required_wrapper.issubset(item.keys()):
+        _validate_heimgeist_payload(item)
+        return item
+
+    # 2. Legacy Adapter
+    legacy_required = {"id", "source", "timestamp", "payload"}
+    if legacy_required.issubset(item.keys()):
+        legacy_payload = item["payload"]
+        if not isinstance(legacy_payload, dict):
+             raise HTTPException(status_code=400, detail="legacy payload must be a dict")
+
+        # kind/version must be present in the nested payload
+        kind = legacy_payload.get("kind")
+        version = legacy_payload.get("version")
+
+        if not kind or not version:
+             raise HTTPException(status_code=400, detail="legacy payload missing kind/version")
+
+        # Prefer inner 'data', else treat stripped payload as data
+        data = legacy_payload.get("data")
+        if data is None:
+             data = {k: v for k, v in legacy_payload.items() if k not in ("kind", "version")}
+
+        new_item = {
+            "kind": kind,
+            "version": version,
+            "id": item["id"],
+            "meta": {
+                "occurred_at": item["timestamp"],
+                "producer": item["source"],
+            },
+            "data": data
+        }
+        _validate_heimgeist_payload(new_item)
+        return new_item
+
+    raise HTTPException(status_code=400, detail="invalid payload structure (neither wrapper nor valid legacy)")
+
+
 def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
     # Leeres Array: nichts zu tun
@@ -215,6 +312,9 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             raise HTTPException(status_code=400, detail="invalid payload")
 
         normalized = dict(entry)
+
+        if dom == "heimgeist":
+            normalized = _normalize_heimgeist_item(normalized)
 
         summary_val = normalized.get("summary")
         if isinstance(summary_val, str) and len(summary_val) > 500:
