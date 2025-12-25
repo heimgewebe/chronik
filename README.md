@@ -123,6 +123,7 @@ Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml)
 ## Entwicklung & Tests
 * Formatierung: Standard Python Code-Formatierung (z. B. `black`) kann verwendet werden.
 * Tests: Für die API können `pytest`-basierte Tests oder Integrationstests mit `httpx` genutzt werden.
+* **API /v1/latest:** Der Endpoint `/v1/latest` gibt den letzten Log-Eintrag zurück (standardmäßig als Wrapper mit `domain`, `received_at`, `payload`). Mit `?unwrap=1` kann direkt das innere Payload-Objekt angefordert werden.
 * FastAPI generiert automatisch eine OpenAPI-Spezifikation unter `http://localhost:8788/docs`, sobald der Server läuft.
 * `/metrics` ist für Prometheus vorgesehen; im lokalen Development bleibt der Endpunkt bewusst ohne Authentifizierung erreichbar.
 

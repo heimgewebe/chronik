@@ -26,6 +26,7 @@ __all__ = [
     "safe_target_path",
     "write_payload",
     "read_tail",
+    "read_last_line",
     "get_lock_path",
     "FILENAME_RE",
 ]
@@ -243,6 +244,14 @@ def read_tail(domain: str, limit: int) -> list[str]:
         if exc.errno == errno.ENOENT:
             return []
         raise StorageError("read error") from exc
+
+
+def read_last_line(domain: str) -> str | None:
+    """Read the very last line from the domain's storage file.
+    Returns None if the file does not exist or is empty.
+    """
+    lines = read_tail(domain, 1)
+    return lines[0] if lines else None
 
 
 def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
