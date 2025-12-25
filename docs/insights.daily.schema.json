@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://heimgewebe.de/contracts/insights.daily.schema.json",
+  "$id": "https://schemas.heimgewebe.org/contracts/insights.daily.schema.json",
   "$comment": "Canonical source lives in metarepo/contracts/insights.daily.schema.json; this file is a mirror.",
   "title": "Insights Daily Artifact",
   "type": "object",
