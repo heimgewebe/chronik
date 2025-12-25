@@ -27,6 +27,7 @@ from storage import (
     StorageFullError,
     StorageBusyError,
     read_tail,
+    read_last_line,
     sanitize_domain,
     write_payload,
 )
@@ -498,6 +499,32 @@ async def ingest(
     await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines)
 
     return PlainTextResponse("ok", status_code=202)
+
+
+@app.get("/v1/latest", dependencies=[Depends(_require_auth_dep)])
+async def latest_v1(domain: str):
+    try:
+        dom = _sanitize_domain(domain)
+    except HTTPException:
+        raise
+
+    try:
+        # Use storage.read_last_line to get exactly one line efficiently
+        line = await run_in_threadpool(read_last_line, dom)
+    except StorageBusyError as exc:
+        raise HTTPException(status_code=429, detail="busy, try again") from exc
+    except StorageError as exc:
+        raise HTTPException(status_code=500, detail="storage error") from exc
+
+    if line is None:
+        raise HTTPException(status_code=404, detail="no data")
+
+    try:
+        item = json.loads(line)
+        return item
+    except json.JSONDecodeError as exc:
+        logger.error("corrupt line encountered in latest", extra={"domain": dom})
+        raise HTTPException(status_code=500, detail="data corruption") from exc
 
 
 @app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)])
