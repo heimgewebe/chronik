@@ -4,3 +4,4 @@ filelock>=3.13
 prometheus-fastapi-instrumentator>=6.1,<7
 slowapi>=0.1.8,<0.2
 httpx>=0.27
+jsonschema>=4.0
