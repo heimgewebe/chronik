@@ -7,6 +7,13 @@ name: wgx-smoke
     paths:
       - ".wgx/**"
       - "docs/wgx-konzept.md"
+      - ".github/workflows/wgx-smoke.yml"
+      - "pyproject.toml"
+      - "Cargo.toml"
+      - "**/*.py"
+      - "**/*.rs"
+      - "requirements.txt"
+      - "requirements-dev.txt"
 
 jobs:
   smoke:
