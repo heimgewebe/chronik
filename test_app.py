@@ -109,7 +109,10 @@ def test_ingest_single_object(monkeypatch, tmp_path: Path, client):
     with open(target_file, "r") as f:
         line = f.readline()
         data = json.loads(line)
-        assert data == {**payload, "domain": domain}
+        # Canonical storage: always wrapped
+        assert "received_at" in data
+        assert data["domain"] == domain
+        assert data["payload"] == payload
 
 
 def test_ingest_array_of_objects(monkeypatch, tmp_path: Path, client):
@@ -132,9 +135,13 @@ def test_ingest_array_of_objects(monkeypatch, tmp_path: Path, client):
         lines = f.readlines()
         assert len(lines) == 2
         data1 = json.loads(lines[0])
-        assert data1 == {**payload[0], "domain": domain}
+        assert "received_at" in data1
+        assert data1["domain"] == domain
+        assert data1["payload"] == payload[0]
         data2 = json.loads(lines[1])
-        assert data2 == {**payload[1], "domain": domain}
+        assert "received_at" in data2
+        assert data2["domain"] == domain
+        assert data2["payload"] == payload[1]
 
 
 def test_ingest_empty_array(monkeypatch, tmp_path: Path, client):
@@ -229,7 +236,7 @@ def test_ingest_domain_normalized(monkeypatch, tmp_path: Path, client):
     with open(target_file, "r", encoding="utf-8") as fh:
         stored = json.loads(fh.readline())
     assert stored["domain"] == "example.com"
-    assert stored["data"] == "value"
+    assert stored["payload"]["data"] == "value"
 
 
 def test_ingest_no_content_length(monkeypatch, client):
@@ -429,7 +436,9 @@ def test_ingest_v1_json_domain_from_query(monkeypatch, tmp_path: Path, client):
     assert len(files) == 1
     with open(files[0], "r") as f:
         data = json.loads(f.readline())
-        assert data == {**payload, "domain": domain}
+        assert "received_at" in data
+        assert data["domain"] == domain
+        assert data["payload"] == payload
 
 
 def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path, client):
@@ -450,7 +459,12 @@ def test_ingest_v1_json_domain_from_payload(monkeypatch, tmp_path: Path, client)
     assert len(files) == 1
     with open(files[0], "r") as f:
         data = json.loads(f.readline())
-        assert data == payload
+        # Input has domain in payload, output stores it in wrapper domain field
+        # and also inside the payload? No, normalize copies input.
+        # But our test payload HAS domain inside.
+        assert "received_at" in data
+        assert data["domain"] == domain
+        assert data["payload"] == payload
 
 
 def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path, client):
@@ -474,9 +488,13 @@ def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path, client):
         lines = f.readlines()
         assert len(lines) == 2
         data1 = json.loads(lines[0])
-        assert data1 == {**payload[0], "domain": domain}
+        assert "received_at" in data1
+        assert data1["domain"] == domain
+        assert data1["payload"] == payload[0]
         data2 = json.loads(lines[1])
-        assert data2 == {**payload[1], "domain": domain}
+        assert "received_at" in data2
+        assert data2["domain"] == domain
+        assert data2["payload"] == payload[1]
 
 
 def test_symlink_attack_rejected_after_resolve(monkeypatch, tmp_path):

@@ -356,38 +356,37 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
 
         normalized = dict(entry)
 
+        # 1. Validation & Normalization logic per domain
         if dom == "insights.daily":
             _validate_insights_daily_payload(normalized)
-            # Wrap payload 1:1 with received_at
-            wrapper = {
-                "domain": dom,
-                "received_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                "payload": normalized
-            }
-            lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
-            continue
-
-        if dom == "heimgeist":
+        elif dom == "heimgeist":
             normalized = _normalize_heimgeist_item(normalized)
+        else:
+            # Generic domain checks
+            summary_val = normalized.get("summary")
+            if isinstance(summary_val, str) and len(summary_val) > 500:
+                raise HTTPException(status_code=422, detail="summary too long (max 500)")
 
-        summary_val = normalized.get("summary")
-        if isinstance(summary_val, str) and len(summary_val) > 500:
-            raise HTTPException(status_code=422, detail="summary too long (max 500)")
+            if "domain" in normalized:
+                entry_domain = normalized["domain"]
+                if not isinstance(entry_domain, str):
+                    raise HTTPException(status_code=400, detail="invalid payload")
 
-        if "domain" in normalized:
-            entry_domain = normalized["domain"]
-            if not isinstance(entry_domain, str):
-                raise HTTPException(status_code=400, detail="invalid payload")
+                try:
+                    sanitized_entry_domain = sanitize_domain(entry_domain)
+                except DomainError as exc:
+                    raise HTTPException(status_code=400, detail="invalid payload") from exc
+                if sanitized_entry_domain != dom:
+                    raise HTTPException(status_code=400, detail="domain mismatch")
 
-            try:
-                sanitized_entry_domain = sanitize_domain(entry_domain)
-            except DomainError as exc:
-                raise HTTPException(status_code=400, detail="invalid payload") from exc
-            if sanitized_entry_domain != dom:
-                raise HTTPException(status_code=400, detail="domain mismatch")
-
-        normalized["domain"] = dom
-        lines.append(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
+        # 2. Canonical Wrapping (All domains)
+        # We always wrap to ensure consistent {domain, received_at, payload} structure.
+        wrapper = {
+            "domain": dom,
+            "received_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "payload": normalized
+        }
+        lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
     return lines
 
 
