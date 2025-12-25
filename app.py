@@ -299,6 +299,35 @@ def _normalize_heimgeist_item(item: dict) -> dict:
     raise HTTPException(status_code=400, detail="invalid payload structure (neither wrapper nor valid legacy)")
 
 
+def _validate_insights_daily_payload(item: dict) -> None:
+    """
+    Validate insights.daily payload.
+    Schema: docs/insights.daily.schema.json
+    Required: timestamp (ISO8601), content
+    Optional: type (const "daily.insight")
+    """
+    required = {"timestamp", "content"}
+    missing = required - item.keys()
+    if missing:
+        raise HTTPException(
+            status_code=400, detail=f"missing fields: {', '.join(sorted(missing))}"
+        )
+
+    if not isinstance(item["timestamp"], str):
+        raise HTTPException(status_code=400, detail="timestamp must be a string")
+    if _parse_iso_ts(item["timestamp"]) is None:
+        raise HTTPException(status_code=400, detail="timestamp must be valid ISO8601")
+
+    if not isinstance(item["content"], str):
+        raise HTTPException(status_code=400, detail="content must be a string")
+
+    if "type" in item:
+        if item["type"] != "daily.insight":
+            raise HTTPException(
+                status_code=400, detail="invalid type: expected 'daily.insight'"
+            )
+
+
 def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
     # Leeres Array: nichts zu tun
@@ -315,6 +344,8 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
 
         if dom == "heimgeist":
             normalized = _normalize_heimgeist_item(normalized)
+        elif dom == "insights.daily":
+            _validate_insights_daily_payload(normalized)
 
         summary_val = normalized.get("summary")
         if isinstance(summary_val, str) and len(summary_val) > 500:
