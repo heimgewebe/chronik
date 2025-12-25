@@ -6,12 +6,11 @@ import os
 import secrets
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final
+from pathlib import Path
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
+import jsonschema
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
@@ -299,33 +298,44 @@ def _normalize_heimgeist_item(item: dict) -> dict:
     raise HTTPException(status_code=400, detail="invalid payload structure (neither wrapper nor valid legacy)")
 
 
+# Global cache for the loaded schema
+_INSIGHTS_DAILY_SCHEMA = None
+
+
+def _get_insights_daily_schema() -> dict:
+    global _INSIGHTS_DAILY_SCHEMA
+    if _INSIGHTS_DAILY_SCHEMA is not None:
+        return _INSIGHTS_DAILY_SCHEMA
+
+    # Attempt to load the schema from docs/ (mirror)
+    path = Path(__file__).parent / "docs" / "insights.daily.schema.json"
+    if not path.exists():
+        # Fallback or error?
+        # In a real environment we might try to fetch from metarepo here or fail.
+        # For now, if the file is missing, we can't validate.
+        logger.error("missing schema file: docs/insights.daily.schema.json")
+        raise HTTPException(status_code=500, detail="server configuration error: schema missing")
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            _INSIGHTS_DAILY_SCHEMA = json.load(f)
+    except Exception as exc:
+        logger.error(f"failed to load schema: {exc}")
+        raise HTTPException(status_code=500, detail="server configuration error: schema invalid")
+
+    return _INSIGHTS_DAILY_SCHEMA
+
+
 def _validate_insights_daily_payload(item: dict) -> None:
     """
-    Validate insights.daily payload.
-    Schema: docs/insights.daily.schema.json
-    Required: timestamp (ISO8601), content
-    Optional: type (const "daily.insight")
+    Validate insights.daily payload against the JSON Schema.
     """
-    required = {"timestamp", "content"}
-    missing = required - item.keys()
-    if missing:
-        raise HTTPException(
-            status_code=400, detail=f"missing fields: {', '.join(sorted(missing))}"
-        )
-
-    if not isinstance(item["timestamp"], str):
-        raise HTTPException(status_code=400, detail="timestamp must be a string")
-    if _parse_iso_ts(item["timestamp"]) is None:
-        raise HTTPException(status_code=400, detail="timestamp must be valid ISO8601")
-
-    if not isinstance(item["content"], str):
-        raise HTTPException(status_code=400, detail="content must be a string")
-
-    if "type" in item:
-        if item["type"] != "daily.insight":
-            raise HTTPException(
-                status_code=400, detail="invalid type: expected 'daily.insight'"
-            )
+    schema = _get_insights_daily_schema()
+    try:
+        jsonschema.validate(instance=item, schema=schema)
+    except jsonschema.ValidationError as exc:
+        # Provide a helpful error message
+        raise HTTPException(status_code=400, detail=f"schema validation failed: {exc.message}")
 
 
 def _process_items(items: list[Any], dom: str) -> list[str]:
@@ -342,10 +352,19 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
 
         normalized = dict(entry)
 
+        if dom == "insights.daily":
+            _validate_insights_daily_payload(normalized)
+            # Wrap payload 1:1 with received_at
+            wrapper = {
+                "domain": dom,
+                "received_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "payload": normalized
+            }
+            lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
+            continue
+
         if dom == "heimgeist":
             normalized = _normalize_heimgeist_item(normalized)
-        elif dom == "insights.daily":
-            _validate_insights_daily_payload(normalized)
 
         summary_val = normalized.get("summary")
         if isinstance(summary_val, str) and len(summary_val) > 500:
