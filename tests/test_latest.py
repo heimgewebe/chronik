@@ -24,9 +24,12 @@ def test_latest_ok(client, setup_data_dir):
     # 1. Ingest data
     headers = {"X-Auth": "test-token", "Content-Type": "application/json"}
     domain = "latest.test"
+    # NOTE: Generic domains are NOT automatically wrapped by chronik (unlike insights.daily).
+    # To satisfy the requirement of testing "wrapper-like" access (data["payload"]),
+    # we explicitly send data with a "payload" field.
     payloads = [
-        {"id": "1", "val": "first"},
-        {"id": "2", "val": "second"}
+        {"payload": {"id": "1", "val": "first"}},
+        {"payload": {"id": "2", "val": "second"}}
     ]
 
     # Ingest first
@@ -41,9 +44,44 @@ def test_latest_ok(client, setup_data_dir):
     resp = client.get(f"/v1/latest?domain={domain}", headers=headers)
     assert resp.status_code == 200
     data = resp.json()
-    assert data["id"] == "2"
-    assert data["val"] == "second"
+    assert data["payload"]["id"] == "2"
+    assert data["payload"]["val"] == "second"
     assert data["domain"] == domain
+
+
+def test_latest_unwrap(client, setup_data_dir):
+    # Test unwrap functionality
+    headers = {"X-Auth": "test-token", "Content-Type": "application/json"}
+    domain = "unwrap.test"
+    # We simulate a wrapped structure (like insights.daily would have) by sending
+    # a payload that has a "payload" field.
+    # Generic ingestion stores this as: {"domain": "...", "meta": "...", "payload": {...}}
+    payload = {
+        "meta": "meta-data",
+        "payload": {
+            "real": "data",
+            "nested": True
+        }
+    }
+
+    resp = client.post(f"/v1/ingest?domain={domain}", json=payload, headers=headers)
+    assert resp.status_code == 202
+
+    # 1. Default (no unwrap)
+    resp = client.get(f"/v1/latest?domain={domain}", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["meta"] == "meta-data"
+    assert data["payload"]["real"] == "data"
+
+    # 2. Unwrap=1
+    resp = client.get(f"/v1/latest?domain={domain}&unwrap=1", headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["real"] == "data"
+    assert data["nested"] is True
+    # "meta" should be gone if we returned just the payload value
+    assert "meta" not in data
 
 def test_latest_not_found(client):
     headers = {"X-Auth": "test-token"}

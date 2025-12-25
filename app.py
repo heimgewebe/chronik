@@ -502,7 +502,7 @@ async def ingest(
 
 
 @app.get("/v1/latest", dependencies=[Depends(_require_auth_dep)])
-async def latest_v1(domain: str):
+async def latest_v1(domain: str, unwrap: int = 0):
     try:
         dom = _sanitize_domain(domain)
     except HTTPException:
@@ -521,6 +521,8 @@ async def latest_v1(domain: str):
 
     try:
         item = json.loads(line)
+        if unwrap == 1:
+            return item.get("payload", item)
         return item
     except json.JSONDecodeError as exc:
         logger.error("corrupt line encountered in latest", extra={"domain": dom})
