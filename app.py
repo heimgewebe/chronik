@@ -329,10 +329,13 @@ def _get_insights_daily_schema() -> dict:
 def _validate_insights_daily_payload(item: dict) -> None:
     """
     Validate insights.daily payload against the JSON Schema.
+    Uses Draft 2020-12 and FormatChecker.
     """
     schema = _get_insights_daily_schema()
     try:
-        jsonschema.validate(instance=item, schema=schema)
+        jsonschema.Draft202012Validator(
+            schema, format_checker=jsonschema.FormatChecker()
+        ).validate(item)
     except jsonschema.ValidationError as exc:
         # Provide a helpful error message
         raise HTTPException(status_code=400, detail=f"schema validation failed: {exc.message}")
