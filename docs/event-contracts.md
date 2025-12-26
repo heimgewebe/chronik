@@ -20,6 +20,17 @@ Contract-Drift zwischen Repos vermieden und der Event-Backbone stabil gehalten.
 
 Dieses Dokument beschreibt die chronik-spezifischen Details und kontextualisiert, wie die zentralen Contracts angewendet werden.
 
+## Storage Contract (JSONL)
+
+Das Speicherformat ist **strict JSON Lines**:
+
+1.  **Zeilentrenner ist ausschließlich LF (`\n`, U+000A).**
+2.  Andere Unicode-Line-Separators (wie U+2028 oder U+2029) werden nicht als Trenner interpretiert, sondern sind Teil des JSON-Payloads.
+3.  Jede Zeile muss ein vollständiges, valides JSON-Objekt enthalten.
+4.  Dateien sind UTF-8-kodiert.
+
+Diese strenge Trennung garantiert, dass Payloads mit eingebetteten Sonderzeichen nicht korrumpiert werden.
+
 ## Schema: `aussen.event.schema.json`
 
 Das folgende JSON-Schema definiert die Struktur für `aussen`-Events. Eine lokale Kopie befindet sich [hier](aussen.event.schema.json).
