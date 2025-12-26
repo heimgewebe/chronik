@@ -298,9 +298,13 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
     # Decode everything we have collected
     try:
         text = buffer.decode("utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as exc:
         # Fallback: try to decode with replacement or ignore errors
         # for the very start of the buffer which might be split char
+        logger.warning(
+            "utf-8 decode error during read_tail (using fallback)",
+            extra={"error": str(exc)},
+        )
         text = buffer.decode("utf-8", errors="replace")
 
     # Use split('\n') to avoid splitting on other characters like \u2028 (Line Separator)

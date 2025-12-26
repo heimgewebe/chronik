@@ -3,7 +3,6 @@ import json
 import os
 import storage
 import pytest
-from filelock import FileLock
 
 def test_tail_splitlines_utf8_char(monkeypatch, tmp_path):
     """
