@@ -303,13 +303,14 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
         # for the very start of the buffer which might be split char
         text = buffer.decode("utf-8", errors="replace")
 
-    all_lines = text.splitlines()
+    # Use split('\n') to avoid splitting on other characters like \u2028 (Line Separator)
+    # which are valid in JSON strings but treated as newlines by splitlines().
+    all_lines = text.split('\n')
 
-    # If the file ends with newline, splitlines() behavior matches what we want
-    # (it discards the final empty string that split('\n') would produce).
-    # But wait, read_tail contract:
-    #   [line.rstrip("\n") for line in deque(fh, maxlen=limit)]
-    # deque iterates lines. 'line' includes \n. rstrip removes it.
+    # If the file ends with newline (standard for write_payload), split('\n') produces
+    # a trailing empty string. We remove it to match the expectation of "lines".
+    if all_lines and all_lines[-1] == "":
+        all_lines.pop()
 
     return all_lines[-limit:]
 
