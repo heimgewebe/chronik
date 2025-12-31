@@ -9,6 +9,9 @@ import httpx
 
 __all__ = ["ingest_event", "ingest_json", "IngestError"]
 
+# Required fields for strict mode validation
+STRICT_MODE_REQUIRED_FIELDS = {"kind", "ts", "source"}
+
 
 class IngestError(RuntimeError):
     """Raised when an ingest attempt ultimately fails."""
@@ -55,8 +58,7 @@ def _validate_strict_payload(data: Any) -> None:
         IngestError if required fields are missing
     """
     if isinstance(data, Mapping):
-        required_fields = {"kind", "ts", "source"}
-        missing = required_fields - data.keys()
+        missing = STRICT_MODE_REQUIRED_FIELDS - data.keys()
         if missing:
             raise IngestError(
                 f"strict mode: missing required fields {sorted(missing)}. "
@@ -69,8 +71,7 @@ def _validate_strict_payload(data: Any) -> None:
                 raise IngestError(
                     f"strict mode: batch item {idx} must be a mapping"
                 )
-            required_fields = {"kind", "ts", "source"}
-            missing = required_fields - item.keys()
+            missing = STRICT_MODE_REQUIRED_FIELDS - item.keys()
             if missing:
                 raise IngestError(
                     f"strict mode: batch item {idx} missing required fields {sorted(missing)}. "
