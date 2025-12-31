@@ -87,8 +87,6 @@ def ingest_event(
     # Validate payload early
     if isinstance(data, Mapping):
         payload = dict(data)
-        if "event" not in payload:
-            raise IngestError('payload missing required key "event"')
     elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
         payload = [dict(item) for item in data]
         if not payload:

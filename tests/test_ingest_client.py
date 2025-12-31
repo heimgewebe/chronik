@@ -62,3 +62,37 @@ def test_ingest_event_handles_non_json_error(monkeypatch):
     msg = str(excinfo.value)
     assert "400" in msg
     assert "oops" in msg
+
+
+def test_ingest_event_without_event_field(monkeypatch):
+    """ingest_event should accept payloads without an 'event' field."""
+    test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
+    monkeypatch.setenv("CHRONIK_TOKEN", test_token)
+
+    client = TestClient(app)
+    # Payload without 'event' field should be accepted
+    response = ingest_event(
+        "example.com",
+        {"status": "ok", "message": "hello"},
+        url="http://test",
+        token=test_token,
+        transport=client._transport,
+    )
+    assert response == "ok"
+
+
+def test_ingest_event_arbitrary_fields(monkeypatch):
+    """ingest_event should accept payloads with arbitrary fields."""
+    test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
+    monkeypatch.setenv("CHRONIK_TOKEN", test_token)
+
+    client = TestClient(app)
+    # Payload with completely different fields
+    response = ingest_event(
+        "example.com",
+        {"foo": "bar", "baz": 123, "nested": {"key": "value"}},
+        url="http://test",
+        token=test_token,
+        transport=client._transport,
+    )
+    assert response == "ok"
