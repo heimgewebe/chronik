@@ -7,7 +7,10 @@ from typing import Any, Mapping, Sequence, Union, Optional
 
 import httpx
 
-__all__ = ["ingest_event", "IngestError"]
+__all__ = ["ingest_event", "ingest_json", "IngestError"]
+
+# Required fields for strict mode validation
+STRICT_MODE_REQUIRED_FIELDS = {"kind", "ts", "source"}
 
 
 class IngestError(RuntimeError):
@@ -36,6 +39,46 @@ def _parse_env_param(
         return default_value
 
 
+def _parse_strict_mode(strict: Optional[bool]) -> bool:
+    """Parse strict mode from parameter or environment variable."""
+    if strict is not None:
+        return strict
+    
+    env_val = (_get_env("HAUSKI_INGEST_STRICT") or "").lower()
+    return env_val in {"1", "true", "yes"}
+
+
+def _validate_strict_payload(data: Any) -> None:
+    """Validate payload in strict mode.
+    
+    Requires minimal event fields: kind, ts, source.
+    These fields ensure traceability and semantic clarity.
+    
+    Raises:
+        IngestError if required fields are missing
+    """
+    if isinstance(data, Mapping):
+        missing = STRICT_MODE_REQUIRED_FIELDS - data.keys()
+        if missing:
+            raise IngestError(
+                f"strict mode: missing required fields {sorted(missing)}. "
+                f"Set strict=False or HAUSKI_INGEST_STRICT=0 to disable."
+            )
+    elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
+        # Validate each item in batch
+        for idx, item in enumerate(data):
+            if not isinstance(item, Mapping):
+                raise IngestError(
+                    f"strict mode: batch item {idx} must be a mapping"
+                )
+            missing = STRICT_MODE_REQUIRED_FIELDS - item.keys()
+            if missing:
+                raise IngestError(
+                    f"strict mode: batch item {idx} missing required fields {sorted(missing)}. "
+                    f"Set strict=False or HAUSKI_INGEST_STRICT=0 to disable."
+                )
+
+
 def ingest_event(
     domain: str,
     data: Union[Mapping[str, Any], Sequence[Mapping[str, Any]]],
@@ -46,9 +89,14 @@ def ingest_event(
     retries: Optional[int] = None,
     backoff: Optional[float] = None,
     transport: Optional[httpx.BaseTransport] = None,
+    strict: Optional[bool] = None,
 ) -> str:
     """
     Send one or more JSON events to Chronik.
+    
+    By default, accepts arbitrary JSON objects. Enable strict mode via the
+    strict parameter or HAUSKI_INGEST_STRICT environment variable to enforce
+    canonical event shape with required fields: kind, ts, source.
 
     Args:
         domain: target domain (e.g. "example.com")
@@ -60,6 +108,8 @@ def ingest_event(
         backoff: initial backoff seconds (env CHRONIK_BACKOFF, default 0.5)
         transport: optional httpx transport (e.g., TestClient's transport)
             for in-process testing
+        strict: enforce canonical event fields (kind, ts, source) if True.
+            Defaults to HAUSKI_INGEST_STRICT env var, or False if unset.
 
     Returns:
         "ok" on success
@@ -84,11 +134,16 @@ def ingest_event(
         backoff, "CHRONIK_BACKOFF", 0.5, float
     )
 
+    # Parse strict mode
+    strict_mode = _parse_strict_mode(strict)
+    
+    # Validate in strict mode
+    if strict_mode:
+        _validate_strict_payload(data)
+
     # Validate payload early
     if isinstance(data, Mapping):
         payload = dict(data)
-        if "event" not in payload:
-            raise IngestError('payload missing required key "event"')
     elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
         payload = [dict(item) for item in data]
         if not payload:
@@ -144,3 +199,7 @@ def ingest_event(
 
     # Should not get here
     raise IngestError("ingest failed unexpectedly")
+
+
+# Alias for semantic clarity when sending arbitrary JSON
+ingest_json = ingest_event
