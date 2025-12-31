@@ -143,8 +143,40 @@ ingest_event("example.com", {"event": "heartbeat", "status": "ok"})
 | `CHRONIK_TIMEOUT`    | `5`                     | HTTP-Timeout in Sekunden |
 | `CHRONIK_RETRIES`    | `3`                     | Anzahl Retries bei 429/5xx/Timeout |
 | `CHRONIK_BACKOFF`    | `0.5`                   | Start-Backoff (Sek.) für exponentielles Backoff |
+| `HAUSKI_INGEST_STRICT` | `0` (permissiv)       | Strict Mode: `1` erzwingt kanonische Event-Felder (`kind`, `ts`, `source`) |
 
 Die Library gibt bei Erfolg `"ok"` zurück oder wirft eine Exception (z. B. bei 4xx/5xx nach Retries).
+
+### Permissiv vs. Strict Mode
+
+**Default (permissiv):** `ingest_event` akzeptiert beliebige JSON-Objekte. Dies ist nützlich für Debug-Daten, Telemetrie oder Raw-Payloads.
+
+```python
+from tools.hauski_ingest import ingest_event
+# Beliebige JSON-Struktur
+ingest_event("metrics.daily", {"value": 42, "timestamp": "2025-12-31T10:00:00Z"})
+```
+
+**Strict Mode:** Erzwingt kanonische Event-Struktur mit Pflichtfeldern `kind`, `ts`, `source` für bessere Traceability und semantische Klarheit.
+
+```python
+import os
+os.environ["HAUSKI_INGEST_STRICT"] = "1"
+
+from tools.hauski_ingest import ingest_event
+# Erfordert kind, ts, source
+ingest_event("example.com", {
+    "kind": "deploy.success",
+    "ts": "2025-12-31T10:00:00Z",
+    "source": "ci-pipeline",
+    "data": {"version": "1.2.3"}
+})
+
+# Oder per Parameter (überschreibt ENV):
+ingest_event("example.com", {"foo": "bar"}, strict=False)
+```
+
+**Alias für semantische Klarheit:** `ingest_json` ist ein Alias zu `ingest_event` für Code, der explizit beliebiges JSON sendet.
 
 ### Mini-Test
 ```bash
