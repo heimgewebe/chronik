@@ -614,7 +614,9 @@ async def integrity_view():
             line = await run_in_threadpool(read_last_line, dom)
             if line:
                 item = json.loads(line)
-                
+                # The generic ingest wrapper structure is:
+                # { "domain": ..., "received_at": ..., "payload": ... }
+
                 # Filter by kind/type to avoid "integrity junk"
                 payload = item.get("payload", {}) or {}
                 kind = payload.get("kind") or payload.get("type") or item.get("type")
