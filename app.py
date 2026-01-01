@@ -616,9 +616,15 @@ async def integrity_view():
                 item = json.loads(line)
                 # The generic ingest wrapper structure is:
                 # { "domain": ..., "received_at": ..., "payload": ... }
-                # We use the domain stored in the event if possible, else the filename key.
-                real_domain = item.get("domain", dom)
-                results[real_domain] = item
+
+                # Filter by kind/type to avoid "integrity junk"
+                payload = item.get("payload", {})
+                kind = payload.get("kind") or payload.get("type")
+
+                if kind == "integrity.summary.published.v1":
+                    # We use the domain stored in the event if possible, else the filename key.
+                    real_domain = item.get("domain", dom)
+                    results[real_domain] = item
         except (StorageError, json.JSONDecodeError):
             # Ignore errors for individual files in the aggregate view
             continue

@@ -41,7 +41,17 @@ def test_integrity_ingest_and_view(client):
     resp = client.post("/v1/ingest", json=repo_b_payload, headers=headers)
     assert resp.status_code == 202
 
-    # 3. Verify they are stored in separate domains (index by repo)
+    # 3. Ingest junk event (wrong kind) -> should be ignored in view
+    junk_payload = {
+        "domain": "integrity.junk",
+        "kind": "some.other.event",
+        "repo": "junk-repo",
+        "status": "FAIL"
+    }
+    resp = client.post("/v1/ingest", json=junk_payload, headers=headers)
+    assert resp.status_code == 202
+
+    # 4. Verify they are stored in separate domains (index by repo)
     # We can check via /v1/latest
     resp = client.get("/v1/latest?domain=integrity.repo-a", headers=headers)
     assert resp.status_code == 200
@@ -54,18 +64,19 @@ def test_integrity_ingest_and_view(client):
     data_b = resp.json()
     assert data_b["payload"]["repo"] == "repo-b"
 
-    # 4. Check the aggregate view
+    # 5. Check the aggregate view
     resp = client.get("/v1/integrity", headers=headers)
     assert resp.status_code == 200
     view = resp.json()
 
     assert "integrity.repo-a" in view
     assert "integrity.repo-b" in view
+    assert "integrity.junk" not in view  # Should be filtered out
 
     assert view["integrity.repo-a"]["payload"]["status"] == "OK"
     assert view["integrity.repo-b"]["payload"]["status"] == "MISSING"
 
-    # 5. Update repo A
+    # 6. Update repo A
     repo_a_update = {
         "domain": "integrity.repo-a",
         "kind": "integrity.summary.published.v1",
