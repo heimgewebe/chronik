@@ -614,6 +614,16 @@ async def integrity_view():
             line = await run_in_threadpool(read_last_line, dom)
             if line:
                 item = json.loads(line)
+                
+                # 3. Filter to only integrity.summary.published.v1 events
+                # Check both payload.kind and payload.type to support different ingest patterns
+                payload = item.get("payload", {})
+                event_type = payload.get("kind") or payload.get("type")
+                
+                if event_type != "integrity.summary.published.v1":
+                    # Skip non-integrity-summary events
+                    continue
+                
                 # The generic ingest wrapper structure is:
                 # { "domain": ..., "received_at": ..., "payload": ... }
 
