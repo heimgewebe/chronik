@@ -28,6 +28,7 @@ from storage import (
     StorageBusyError,
     read_tail,
     read_last_line,
+    list_domains,
     sanitize_domain,
     write_payload,
 )
@@ -593,6 +594,44 @@ async def tail_v1(
         "X-Chronik-Last-Seen-TS": last_seen_dt.isoformat() if last_seen_dt else "",
     }
     return JSONResponse(content=results, headers=headers)
+
+
+@app.get("/v1/integrity", dependencies=[Depends(_require_auth_dep)])
+async def integrity_view():
+    """
+    Optional view: returns the latest integrity status for all known repos
+    (domains starting with 'integrity.').
+    """
+    # 1. List all domains starting with "integrity"
+    # Note: we use "integrity" prefix, which matches "integrity.jsonl" and "integrity.*.jsonl"
+    domains = await run_in_threadpool(list_domains, "integrity")
+
+    results = {}
+
+    for dom in domains:
+        try:
+            # 2. Read last line for each domain
+            line = await run_in_threadpool(read_last_line, dom)
+            if line:
+                item = json.loads(line)
+                # The generic ingest wrapper structure is:
+                # { "domain": ..., "received_at": ..., "payload": ... }
+
+                # Filter by kind/type to avoid "integrity junk"
+                payload = item.get("payload", {}) or {}
+                kind = payload.get("kind") or payload.get("type") or item.get("type")
+
+                if kind != "integrity.summary.published.v1":
+                    continue
+
+                # We use the domain stored in the event if possible, else the filename key.
+                real_domain = item.get("domain", dom)
+                results[real_domain] = item
+        except (StorageError, json.JSONDecodeError):
+            # Ignore errors for individual files in the aggregate view
+            continue
+
+    return results
 
 
 @app.get("/health")

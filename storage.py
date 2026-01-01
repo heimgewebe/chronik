@@ -27,6 +27,7 @@ __all__ = [
     "write_payload",
     "read_tail",
     "read_last_line",
+    "list_domains",
     "get_lock_path",
     "FILENAME_RE",
 ]
@@ -252,6 +253,35 @@ def read_last_line(domain: str) -> str | None:
     """
     lines = read_tail(domain, 1)
     return lines[0] if lines else None
+
+
+def list_domains(prefix: str = "") -> list[str]:
+    """List domains that match the given prefix.
+
+    This inspects the filenames in DATA_DIR.
+    Note: For hashed filenames, this returns the hash-based name (the storage key),
+    not the original full domain. The caller should inspect the payload if they
+    need the original domain.
+    """
+    results = []
+    try:
+        for entry in os.scandir(DATA_DIR):
+            if not entry.is_file():
+                continue
+            name = entry.name
+            if not FILENAME_RE.fullmatch(name):
+                continue
+            if prefix and not name.startswith(prefix):
+                continue
+
+            # Remove extension .jsonl
+            domain_key = name[:-6]
+            results.append(domain_key)
+    except OSError as exc:
+        logger.error(f"failed to scan data dir: {exc}")
+        return []
+
+    return sorted(results)
 
 
 def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
