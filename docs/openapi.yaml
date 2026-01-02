@@ -171,7 +171,7 @@ paths:
       operationId: getIntegrity
       description: |
         Returns the latest integrity status for all known repositories (domains starting with `integrity.`).
-        Only returns events with `kind` or `type` equal to `integrity.summary.published.v1`.
+        Only returns events with `payload.type` equal to `integrity.summary.published.v1`.
 
         **Note:** This endpoint returns Chronik's storage/view envelope; it is not the forwarded input event format.
         - Input Event: Has a top-level `type` field.
