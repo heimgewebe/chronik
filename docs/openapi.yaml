@@ -172,6 +172,10 @@ paths:
       description: |
         Returns the latest integrity status for all known repositories (domains starting with `integrity.`).
         Only returns events with `kind` or `type` equal to `integrity.summary.published.v1`.
+
+        **Note:** This endpoint returns Chronik's storage/view envelope; it is not the forwarded input event format.
+        - Input Event: Has a top-level `type` field.
+        - Storage/View: The input event is wrapped in `payload`, so the type is found at `payload.type`.
       security:
         - XAuth: []
       responses:
@@ -182,7 +186,7 @@ paths:
               schema:
                 type: object
                 additionalProperties:
-                  $ref: '#/components/schemas/IntegrityEvent'
+                  $ref: '#/components/schemas/IntegrityViewEvent'
 components:
   securitySchemes:
     XAuth:
@@ -206,11 +210,11 @@ components:
           description: Optional summary (maximum 500 characters).
           maxLength: 500
       additionalProperties: true
-    IntegrityEvent:
+    IntegrityViewEvent:
       type: object
       description: |
-        The canonical structure returned by the integrity view.
-        Contains the domain, received timestamp, and the payload (which includes the status).
+        The canonical structure returned by the integrity view (Chronik envelope).
+        Contains the domain, received timestamp, and the original input payload.
       properties:
         domain:
           type: string
@@ -219,6 +223,7 @@ components:
           format: date-time
         payload:
           type: object
+          description: The original input event (where `type` is a field).
           properties:
             type:
               type: string
