@@ -220,7 +220,7 @@ components:
         payload:
           type: object
           properties:
-            kind:
+            type:
               type: string
               enum: [integrity.summary.published.v1]
             repo:
