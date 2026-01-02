@@ -165,6 +165,24 @@ paths:
                 properties:
                   version:
                     type: string
+  /v1/integrity:
+    get:
+      summary: Integrity view
+      operationId: getIntegrity
+      description: |
+        Returns the latest integrity status for all known repositories (domains starting with `integrity.`).
+        Only returns events with `kind` or `type` equal to `integrity.summary.published.v1`.
+      security:
+        - XAuth: []
+      responses:
+        '200':
+          description: A dictionary mapping domains to their latest integrity event.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: '#/components/schemas/IntegrityEvent'
 components:
   securitySchemes:
     XAuth:
@@ -188,3 +206,27 @@ components:
           description: Optional summary (maximum 500 characters).
           maxLength: 500
       additionalProperties: true
+    IntegrityEvent:
+      type: object
+      description: |
+        The canonical structure returned by the integrity view.
+        Contains the domain, received timestamp, and the payload (which includes the status).
+      properties:
+        domain:
+          type: string
+        received_at:
+          type: string
+          format: date-time
+        payload:
+          type: object
+          properties:
+            kind:
+              type: string
+              enum: [integrity.summary.published.v1]
+            repo:
+              type: string
+            status:
+              type: string
+              enum: [OK, WARN, FAIL, MISSING, UNCLEAR]
+            url:
+              type: string
