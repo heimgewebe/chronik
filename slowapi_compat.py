@@ -11,8 +11,8 @@ versions diverge.
 from limits import RateLimitItem
 
 
-def ensure_rate_limit_error_message() -> None:
-    """Add compatibility properties expected by SlowAPI's exceptions."""
+def patch_rate_limit_item() -> None:
+    """Patch RateLimitItem with properties expected by SlowAPI's exceptions."""
 
     if not hasattr(RateLimitItem, "error_message"):
         RateLimitItem.error_message = property(  # type: ignore[attr-defined]
@@ -24,4 +24,4 @@ def ensure_rate_limit_error_message() -> None:
 
 
 # Apply the patch immediately for any importers.
-ensure_rate_limit_error_message()
+patch_rate_limit_item()
