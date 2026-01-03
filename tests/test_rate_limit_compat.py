@@ -1,7 +1,7 @@
+import slowapi_compat  # noqa: F401
+
 from limits import RateLimitItemPerMinute
 from slowapi.errors import RateLimitExceeded
-
-import slowapi_compat  # noqa: F401
 
 
 def test_rate_limit_exceeded_init_handles_missing_error_message():
@@ -14,3 +14,4 @@ def test_rate_limit_exceeded_init_handles_missing_error_message():
 
     assert "1 per 1 minute" in str(exc)
     assert "Rate limit exceeded" in limit.error_message
+    assert limit.limit is limit

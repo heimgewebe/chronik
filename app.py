@@ -16,12 +16,13 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.concurrency import run_in_threadpool
+
+import slowapi_compat  # noqa: F401  (triggers RateLimitItem patch on import)
+
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
-
-import slowapi_compat  # noqa: F401  (triggers RateLimitItem patch on import)
 
 from storage import (
     DomainError,

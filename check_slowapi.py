@@ -1,7 +1,7 @@
-from slowapi.errors import RateLimitExceeded
-from limits import RateLimitItemPerMinute
+import slowapi_compat  # noqa: F401
 
-import slowapi_compat
+from limits import RateLimitItemPerMinute
+from slowapi.errors import RateLimitExceeded
 
 limit = RateLimitItemPerMinute(1)
 try:
