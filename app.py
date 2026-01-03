@@ -270,19 +270,19 @@ def _normalize_heimgeist_item(item: dict) -> dict:
     if legacy_required.issubset(item.keys()):
         legacy_payload = item["payload"]
         if not isinstance(legacy_payload, dict):
-             raise HTTPException(status_code=400, detail="legacy payload must be a dict")
+            raise HTTPException(status_code=400, detail="legacy payload must be a dict")
 
         # kind/version must be present in the nested payload
+        if "kind" not in legacy_payload or "version" not in legacy_payload:
+            raise HTTPException(status_code=400, detail="legacy payload missing kind/version")
+
         kind = legacy_payload.get("kind")
         version = legacy_payload.get("version")
-
-        if not kind or not version:
-             raise HTTPException(status_code=400, detail="legacy payload missing kind/version")
 
         # Prefer inner 'data', else treat stripped payload as data
         data = legacy_payload.get("data")
         if data is None:
-             data = {k: v for k, v in legacy_payload.items() if k not in ("kind", "version")}
+            data = {k: v for k, v in legacy_payload.items() if k not in ("kind", "version")}
 
         new_item = {
             "kind": kind,
@@ -292,7 +292,7 @@ def _normalize_heimgeist_item(item: dict) -> dict:
                 "occurred_at": item["timestamp"],
                 "producer": item["source"],
             },
-            "data": data
+            "data": data,
         }
         _validate_heimgeist_payload(new_item)
         return new_item

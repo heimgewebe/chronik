@@ -195,3 +195,22 @@ def test_heimgeist_legacy_adapter_missing_kind(monkeypatch, client):
     response = client.post("/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"})
     assert response.status_code == 400
     assert "legacy payload missing kind/version" in response.text
+
+
+def test_heimgeist_legacy_adapter_invalid_version(monkeypatch, client):
+    monkeypatch.setenv("CHRONIK_TOKEN", "secret")
+    payload = {
+        "id": "legacy-3",
+        "source": "src",
+        "timestamp": "2023-10-27T10:00:00Z",
+        "payload": {
+            "kind": "heimgeist.insight",
+            "version": 0,  # Present but invalid
+            "data": {"foo": "bar"}
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist", json=payload, headers={"X-Auth": "secret"}
+    )
+    assert response.status_code == 400
+    assert "invalid version" in response.text
