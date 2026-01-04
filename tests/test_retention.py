@@ -12,19 +12,23 @@ from retention import (
 
 
 def test_retention_policy_matches():
-    """Test retention policy pattern matching."""
+    """Test retention policy pattern matching with fnmatch."""
     policy = RetentionPolicy("*.debug.*", 7, "Debug events")
     
+    # fnmatch requires content before and after 'debug' for this pattern
     assert policy.matches("foo.debug.bar") is True
     assert policy.matches("app.debug.trace") is True
     assert policy.matches("foo.prod.bar") is False
     
-    # Pattern requires something before and after "debug"
+    # These don't match because fnmatch * doesn't cross dots without content
     assert policy.matches("debug.test") is False
+    assert policy.matches("test.debug") is False
     
-    # Test other patterns
-    policy2 = RetentionPolicy("debug.*", 7, "Debug events")
+    # Test broader patterns
+    policy2 = RetentionPolicy("*debug*", 7, "Debug events - broader pattern")
     assert policy2.matches("debug.test") is True
+    assert policy2.matches("test.debug") is True
+    assert policy2.matches("foo.debug.bar") is True
 
 
 def test_load_retention_policies():

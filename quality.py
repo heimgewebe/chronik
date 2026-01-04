@@ -23,7 +23,7 @@ class SignalStrength(str, Enum):
     HIGH = "high"
 
 
-def compute_signal_strength(payload: dict) -> str:
+def compute_signal_strength(payload: dict) -> SignalStrength:
     """Compute signal strength based on structural completeness.
     
     Rule-based assessment (not semantic):

@@ -446,14 +446,14 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             events_signal_strength.labels(domain=dom, signal_strength=signal_strength).inc()
         
         # 1d. Compute retention metadata
-        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event") or dom
+        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event") or "unknown"
         ttl_days = get_ttl_for_event(event_type)
         received_dt = datetime.now(timezone.utc)
         expiry_dt = compute_expiry_date(event_type, received_dt)
         
         retention_meta = {
             "ttl_days": ttl_days,
-            "expires_at": expiry_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if expiry_dt else None,
+            "expires_at": expiry_dt.isoformat() if expiry_dt else None,
         }
 
         # 2. Canonical Wrapping (All domains)
