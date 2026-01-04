@@ -67,16 +67,24 @@ Strukturelle Bewertung von Events basierend auf Vollständigkeit und Form, **nic
 
 ### Marker
 
-chronik fügt jedem Event automatisch ein `quality`-Objekt hinzu:
+chronik fügt jedem Event automatisch ein `quality`-Objekt **auf Envelope-Ebene** hinzu (nicht im payload):
 
 ```json
 {
+  "domain": "aussen",
+  "received_at": "2026-01-04T10:00:00Z",
+  "payload": {
+    // Original event data - unverändert
+  },
   "quality": {
     "signal_strength": "high",
     "completeness": true
-  }
+  },
+  "retention": { ... }
 }
 ```
+
+**Wichtig**: Das `quality`-Objekt ist Envelope-Metadata und wird **nicht** in das `payload`-Feld eingefügt. Der ursprüngliche Event-Payload bleibt unverändert.
 
 #### signal_strength
 
@@ -283,11 +291,11 @@ curl -X POST "http://localhost:8788/v1/ingest?domain=aussen" \
     },
     "kind": "test.event",
     "ts": "2026-01-04T10:00:00Z",
-    "data": {"status": "ok"},
-    "quality": {
-      "signal_strength": "high",
-      "completeness": true
-    }
+    "data": {"status": "ok"}
+  },
+  "quality": {
+    "signal_strength": "high",
+    "completeness": true
   },
   "retention": {
     "ttl_days": 7,

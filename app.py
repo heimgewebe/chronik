@@ -183,6 +183,39 @@ provenance_validation_failures = Counter(
 )
 
 
+def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
+    """Sanitize a value for use as a Prometheus metric label.
+    
+    Protects against label cardinality explosion by:
+    - Limiting length
+    - Replacing problematic characters
+    - Providing a fallback for empty/invalid values
+    
+    Args:
+        value: The value to sanitize
+        max_length: Maximum allowed length (default: 80)
+    
+    Returns:
+        Sanitized label value safe for Prometheus
+    """
+    if not value or not isinstance(value, str):
+        return "unknown"
+    
+    # Truncate if too long
+    if len(value) > max_length:
+        value = value[:max_length]
+    
+    # Replace problematic characters (keep alphanumeric, dots, dashes, underscores)
+    import re
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', value)
+    
+    # Ensure it's not empty after sanitization
+    if not sanitized or sanitized == '_' * len(sanitized):
+        return "unknown"
+    
+    return sanitized
+
+
 def _sanitize_domain(domain: str) -> str:
     try:
         return sanitize_domain(domain)
@@ -439,25 +472,33 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             # Non-strict validation: just log warnings
             validate_provenance(normalized, strict=False)
         
-        # 1c. Add quality markers (if enabled)
+        # 1c. Compute quality markers (if enabled) - but don't mutate payload
+        quality_meta = None
         if ENABLE_QUALITY_MARKERS:
-            normalized = add_quality_markers(normalized)
-            signal_strength = normalized.get("quality", {}).get("signal_strength", "unknown")
-            events_signal_strength.labels(domain=dom, signal_strength=signal_strength).inc()
+            from quality import compute_signal_strength, compute_completeness
+            signal_strength = compute_signal_strength(normalized)
+            completeness = compute_completeness(normalized)
+            quality_meta = {
+                "signal_strength": signal_strength.value if hasattr(signal_strength, 'value') else signal_strength,
+                "completeness": completeness,
+            }
+            events_signal_strength.labels(domain=dom, signal_strength=quality_meta["signal_strength"]).inc()
         
         # 1d. Compute retention metadata
-        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event") or "unknown"
+        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event") or dom
+        # Sanitize event_type for metrics to prevent label cardinality explosion
+        event_type_for_metrics = _sanitize_metric_label(event_type)
         ttl_days = get_ttl_for_event(event_type)
         received_dt = datetime.now(timezone.utc)
         expiry_dt = compute_expiry_date(event_type, received_dt)
         
         retention_meta = {
             "ttl_days": ttl_days,
-            "expires_at": expiry_dt.isoformat() if expiry_dt else None,
+            "expires_at": expiry_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if expiry_dt else None,
         }
 
         # 2. Canonical Wrapping (All domains)
-        # We always wrap to ensure consistent {domain, received_at, payload} structure.
+        # Payload remains unmodified; quality and retention are envelope metadata
         wrapper = {
             "domain": dom,
             "received_at": received_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -465,8 +506,12 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             "retention": retention_meta,
         }
         
-        # Track metrics
-        events_ingested_total.labels(domain=dom, event_type=event_type).inc()
+        # Add quality to wrapper (not payload) if enabled
+        if quality_meta:
+            wrapper["quality"] = quality_meta
+        
+        # Track metrics with sanitized label
+        events_ingested_total.labels(domain=dom, event_type=event_type_for_metrics).inc()
         
         lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
     return lines

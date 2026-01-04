@@ -150,12 +150,18 @@ Events haben definierte TTLs basierend auf Event-Typ (konfigurierbar in `config/
   "domain": "aussen",
   "received_at": "2026-01-04T10:00:05Z",
   "payload": { ... },
+  "quality": {
+    "signal_strength": "high",
+    "completeness": true
+  },
   "retention": {
     "ttl_days": 30,
     "expires_at": "2026-02-03T10:00:05Z"
   }
 }
 ```
+
+**Wichtig**: `quality` ist Envelope-Metadata und wird nicht in `payload` eingefügt. Der ursprüngliche Event-Payload bleibt unverändert.
 
 **Siehe auch:** Ausführliche Dokumentation in [`docs/chronik/event-quality.md`](docs/chronik/event-quality.md)
 ## Betrieb & Wartung

@@ -46,10 +46,13 @@ def test_event_with_quality_markers(client):
     assert resp.status_code == 200
     data = resp.json()
     
-    # Check quality markers were added
-    assert "quality" in data["payload"]
-    assert data["payload"]["quality"]["signal_strength"] == "high"
-    assert data["payload"]["quality"]["completeness"] is True
+    # Check quality markers were added to wrapper (not payload)
+    assert "quality" in data
+    assert data["quality"]["signal_strength"] == "high"
+    assert data["quality"]["completeness"] is True
+    
+    # Verify payload remains unmodified (no quality field)
+    assert "quality" not in data["payload"]
 
 
 def test_event_with_retention_metadata(client):
