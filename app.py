@@ -35,12 +35,21 @@ from storage import (
     sanitize_domain,
     write_payload,
 )
+from provenance import ProvenanceError, validate_provenance, has_provenance
+from quality import add_quality_markers, compute_signal_strength
+from retention import get_ttl_for_event, compute_expiry_date
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
     os.getenv("CHRONIK_MAX_BODY") or str(1024 * 1024)
 )
 RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
+
+# Provenance enforcement: set to "1" to require provenance fields
+ENFORCE_PROVENANCE: Final[bool] = os.getenv("CHRONIK_ENFORCE_PROVENANCE", "0") == "1"
+
+# Quality markers: set to "0" to disable quality marker computation
+ENABLE_QUALITY_MARKERS: Final[bool] = os.getenv("CHRONIK_ENABLE_QUALITY", "1") == "1"
 
 LOG_LEVEL = (
     os.getenv("CHRONIK_LOG_LEVEL") or os.getenv("LOG_LEVEL", "INFO")
@@ -144,6 +153,34 @@ async def _on_rate_limited(request: Request, exc: RateLimitExceeded):
 
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+# Custom metrics for event quality and provenance
+from prometheus_client import Counter, Histogram
+
+# Event ingestion metrics
+events_ingested_total = Counter(
+    "chronik_events_ingested_total",
+    "Total number of events ingested",
+    ["domain", "event_type"],
+)
+
+events_rejected_total = Counter(
+    "chronik_events_rejected_total",
+    "Total number of events rejected",
+    ["domain", "reason"],
+)
+
+events_signal_strength = Counter(
+    "chronik_events_signal_strength_total",
+    "Events by signal strength level",
+    ["domain", "signal_strength"],
+)
+
+provenance_validation_failures = Counter(
+    "chronik_provenance_validation_failures_total",
+    "Events rejected due to missing provenance",
+    ["domain"],
+)
 
 
 def _sanitize_domain(domain: str) -> str:
@@ -382,14 +419,55 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
                     raise HTTPException(status_code=400, detail="invalid payload") from exc
                 if sanitized_entry_domain != dom:
                     raise HTTPException(status_code=400, detail="domain mismatch")
+        
+        # 1b. Provenance validation (if enabled)
+        if ENFORCE_PROVENANCE:
+            try:
+                validate_provenance(normalized, strict=True)
+            except ProvenanceError as exc:
+                provenance_validation_failures.labels(domain=dom).inc()
+                events_rejected_total.labels(domain=dom, reason="provenance").inc()
+                logger.warning(
+                    f"Provenance validation failed: {exc}",
+                    extra={"domain": dom}
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"provenance validation failed: {str(exc)}"
+                ) from exc
+        else:
+            # Non-strict validation: just log warnings
+            validate_provenance(normalized, strict=False)
+        
+        # 1c. Add quality markers (if enabled)
+        if ENABLE_QUALITY_MARKERS:
+            normalized = add_quality_markers(normalized)
+            signal_strength = normalized.get("quality", {}).get("signal_strength", "unknown")
+            events_signal_strength.labels(domain=dom, signal_strength=signal_strength).inc()
+        
+        # 1d. Compute retention metadata
+        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event") or dom
+        ttl_days = get_ttl_for_event(event_type)
+        received_dt = datetime.now(timezone.utc)
+        expiry_dt = compute_expiry_date(event_type, received_dt)
+        
+        retention_meta = {
+            "ttl_days": ttl_days,
+            "expires_at": expiry_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if expiry_dt else None,
+        }
 
         # 2. Canonical Wrapping (All domains)
         # We always wrap to ensure consistent {domain, received_at, payload} structure.
         wrapper = {
             "domain": dom,
-            "received_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "payload": normalized
+            "received_at": received_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "payload": normalized,
+            "retention": retention_meta,
         }
+        
+        # Track metrics
+        events_ingested_total.labels(domain=dom, event_type=event_type).inc()
+        
         lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
     return lines
 

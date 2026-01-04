@@ -1,0 +1,45 @@
+# chronik Retention Policies
+# TTL (Time-To-Live) in days for different event types
+#
+# Rules:
+# - Events matching patterns get the specified TTL
+# - TTL of 0 means unlimited retention (canonical events)
+# - Events are evaluated in order, first match wins
+
+policies:
+  # Debug and probe events - short retention
+  - pattern: "*.debug.*"
+    ttl_days: 7
+    description: "Debug events - 7 days retention"
+  
+  - pattern: "*.probe.*"
+    ttl_days: 7
+    description: "Probe/health check events - 7 days retention"
+  
+  - pattern: "*.test.*"
+    ttl_days: 7
+    description: "Test events - 7 days retention"
+
+  # Temporary/ephemeral events
+  - pattern: "*.temp.*"
+    ttl_days: 1
+    description: "Temporary events - 1 day retention"
+
+  # Canonical published events - unlimited retention
+  - pattern: "*.published.v1"
+    ttl_days: 0
+    description: "Canonical published events - unlimited retention"
+  
+  - pattern: "*.published.v*"
+    ttl_days: 0
+    description: "All published versioned events - unlimited retention"
+
+  # Insights and analytics - medium retention
+  - pattern: "insights.*"
+    ttl_days: 90
+    description: "Insights events - 90 days retention"
+
+  # Default for unmatched events
+  - pattern: "*"
+    ttl_days: 30
+    description: "Default retention for other events - 30 days"
