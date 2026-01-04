@@ -1,0 +1,99 @@
+# chronik Retention Policies
+# TTL (Time-To-Live) in days for different event types
+#
+# IMPORTANT: Changes to this file require application restart!
+# Policies are loaded once at startup and cached for performance.
+#
+# Pattern Matching (fnmatch syntax):
+# - * matches any sequence of characters (but requires at least one char before/after dots)
+# - ? matches any single character
+# - [seq] matches any character in seq
+# - [!seq] matches any character not in seq
+#
+# Pattern Strategy (avoid false matches):
+# - ✓ Recommended: Use dot-delimited patterns (debug.*, *.debug, *.debug.*)
+#   → Matches only: "debug.trace", "app.debug", "app.debug.trace"
+#   → Avoids: "debugger", "debugging", "contest" (no accidental matches)
+#
+# - ✗ Too broad: Avoid substring patterns (*debug*, *test*, *temp*)
+#   → Matches everything containing substring (including "debugger", "contest", "temperature")
+#   → Risk: Retention governed by linguistic coincidence, not taxonomy
+#
+# Examples:
+# - "debug.*" matches "debug.trace", "debug.test"
+# - "*.debug" matches "app.debug", "service.debug"
+# - "*.debug.*" matches "app.debug.trace"
+# - "*debug*" matches EVERYTHING with "debug" (including "debugger", "undebugable") - USE WITH CAUTION
+#
+# Rules:
+# - Events are evaluated in order, first match wins
+# - TTL of 0 means unlimited retention (canonical events)
+# - Use specific patterns first, then broader catch-alls
+
+policies:
+  # Debug and probe events - short retention
+  # Use word boundaries (dots) to avoid false matches like "debugger" or "contest"
+  - pattern: "debug.*"
+    ttl_days: 7
+    description: "Debug events (starts with debug) - 7 days retention"
+  
+  - pattern: "*.debug"
+    ttl_days: 7
+    description: "Debug events (ends with debug) - 7 days retention"
+  
+  - pattern: "*.debug.*"
+    ttl_days: 7
+    description: "Debug events (debug in middle) - 7 days retention"
+  
+  - pattern: "probe.*"
+    ttl_days: 7
+    description: "Probe/health check events - 7 days retention"
+  
+  - pattern: "*.probe"
+    ttl_days: 7
+    description: "Probe events (ends with probe) - 7 days retention"
+  
+  - pattern: "test.*"
+    ttl_days: 7
+    description: "Test events (starts with test) - 7 days retention"
+  
+  - pattern: "*.test"
+    ttl_days: 7
+    description: "Test events (ends with test) - 7 days retention"
+  
+  - pattern: "*.test.*"
+    ttl_days: 7
+    description: "Test events (test in middle) - 7 days retention"
+
+  # Temporary/ephemeral events
+  - pattern: "temp.*"
+    ttl_days: 1
+    description: "Temporary events - 1 day retention"
+  
+  - pattern: "*.temp"
+    ttl_days: 1
+    description: "Temporary events (ends with temp) - 1 day retention"
+  
+  - pattern: "*.temp.*"
+    ttl_days: 1
+    description: "Temporary events (temp in middle) - 1 day retention"
+
+  # Canonical published events - unlimited retention
+  # These must come before broader patterns
+  - pattern: "*.published.v1"
+    ttl_days: 0
+    description: "Canonical published events - unlimited retention"
+  
+  - pattern: "*.published.v*"
+    ttl_days: 0
+    description: "All published versioned events - unlimited retention"
+
+  # Insights and analytics - medium retention
+  - pattern: "insights.*"
+    ttl_days: 90
+    description: "Insights events - 90 days retention"
+
+  # Default for unmatched events
+  - pattern: "*"
+    ttl_days: 30
+    description: "Default retention for other events - 30 days"

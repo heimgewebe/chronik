@@ -35,12 +35,28 @@ from storage import (
     sanitize_domain,
     write_payload,
 )
+from provenance import ProvenanceError, validate_provenance, has_provenance
+from retention import get_ttl_for_event, compute_expiry_date
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
     os.getenv("CHRONIK_MAX_BODY") or str(1024 * 1024)
 )
 RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
+
+# Provenance enforcement: set to "1" to require provenance fields
+# Quality markers: set to "0" to disable quality marker computation
+# Note: These are read at runtime, not frozen at import time
+
+
+def _is_provenance_enforced() -> bool:
+    """Check if provenance enforcement is enabled at runtime."""
+    return os.getenv("CHRONIK_ENFORCE_PROVENANCE", "0") == "1"
+
+
+def _is_quality_enabled() -> bool:
+    """Check if quality markers are enabled at runtime."""
+    return os.getenv("CHRONIK_ENABLE_QUALITY", "1") == "1"
 
 LOG_LEVEL = (
     os.getenv("CHRONIK_LOG_LEVEL") or os.getenv("LOG_LEVEL", "INFO")
@@ -144,6 +160,67 @@ async def _on_rate_limited(request: Request, exc: RateLimitExceeded):
 
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+# Custom metrics for event quality and provenance
+from prometheus_client import Counter, Histogram
+
+# Event ingestion metrics
+events_ingested_total = Counter(
+    "chronik_events_ingested_total",
+    "Total number of events ingested",
+    ["domain", "event_type"],
+)
+
+events_rejected_total = Counter(
+    "chronik_events_rejected_total",
+    "Total number of events rejected",
+    ["domain", "reason"],
+)
+
+events_signal_strength = Counter(
+    "chronik_events_signal_strength_total",
+    "Events by signal strength level",
+    ["domain", "signal_strength"],
+)
+
+provenance_validation_failures = Counter(
+    "chronik_provenance_validation_failures_total",
+    "Events rejected due to missing provenance",
+    ["domain"],
+)
+
+
+def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
+    """Sanitize a value for use as a Prometheus metric label.
+    
+    Protects against label cardinality explosion by:
+    - Limiting length
+    - Replacing problematic characters
+    - Providing a fallback for empty/invalid values
+    
+    Args:
+        value: The value to sanitize
+        max_length: Maximum allowed length (default: 80)
+    
+    Returns:
+        Sanitized label value safe for Prometheus
+    """
+    if not value or not isinstance(value, str):
+        return "unknown"
+    
+    # Truncate if too long
+    if len(value) > max_length:
+        value = value[:max_length]
+    
+    # Replace problematic characters (keep alphanumeric, dots, dashes, underscores)
+    import re
+    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', value)
+    
+    # Ensure it's not empty after sanitization
+    if not sanitized or sanitized == '_' * len(sanitized):
+        return "unknown"
+    
+    return sanitized
 
 
 def _sanitize_domain(domain: str) -> str:
@@ -382,14 +459,84 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
                     raise HTTPException(status_code=400, detail="invalid payload") from exc
                 if sanitized_entry_domain != dom:
                     raise HTTPException(status_code=400, detail="domain mismatch")
+        
+        # 1b. Provenance validation (if enabled)
+        if _is_provenance_enforced():
+            try:
+                validate_provenance(normalized, strict=True)
+            except ProvenanceError as exc:
+                # Sanitize domain for metrics to prevent label cardinality explosion
+                domain_label = _sanitize_metric_label(dom)
+                provenance_validation_failures.labels(domain=domain_label).inc()
+                events_rejected_total.labels(domain=domain_label, reason="provenance").inc()
+                logger.warning(
+                    f"Provenance validation failed: {exc}",
+                    extra={"domain": dom}
+                )
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"provenance validation failed: {str(exc)}"
+                ) from exc
+        else:
+            # Non-strict validation: just log warnings
+            validate_provenance(normalized, strict=False)
+        
+        # 1c. Compute quality markers (if enabled) - but don't mutate payload
+        quality_meta = None
+        if _is_quality_enabled():
+            from quality import compute_signal_strength, compute_completeness
+            signal_strength = compute_signal_strength(normalized)
+            completeness = compute_completeness(normalized)
+            quality_meta = {
+                "signal_strength": signal_strength.value if hasattr(signal_strength, 'value') else signal_strength,
+                "completeness": completeness,
+            }
+            # Sanitize domain for metrics to prevent label cardinality explosion
+            domain_label = _sanitize_metric_label(dom)
+            events_signal_strength.labels(domain=domain_label, signal_strength=quality_meta["signal_strength"]).inc()
+        
+        # 1d. Compute retention metadata
+        # Extract event_type from event itself (not from domain)
+        # Priority: kind > type > event
+        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event")
+        
+        # For retention: use event_type if available, otherwise apply default policy
+        # Note: We do NOT use domain as event_type - they serve different purposes
+        retention_event_type = event_type if event_type else "unknown"
+        
+        # For metrics: use domain as fallback to preserve observability
+        # This allows us to see which domains produce events without type fields
+        metrics_event_type = event_type if event_type else f"domain.{dom}"
+        
+        # Sanitize for metrics to prevent label cardinality explosion
+        event_type_for_metrics = _sanitize_metric_label(metrics_event_type)
+        domain_label = _sanitize_metric_label(dom)
+        
+        ttl_days = get_ttl_for_event(retention_event_type)
+        received_dt = datetime.now(timezone.utc)
+        expiry_dt = compute_expiry_date(retention_event_type, received_dt)
+        
+        retention_meta = {
+            "ttl_days": ttl_days,
+            "expires_at": expiry_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if expiry_dt else None,
+        }
 
         # 2. Canonical Wrapping (All domains)
-        # We always wrap to ensure consistent {domain, received_at, payload} structure.
+        # Payload remains unmodified; quality and retention are envelope metadata
         wrapper = {
             "domain": dom,
-            "received_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "payload": normalized
+            "received_at": received_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "payload": normalized,
+            "retention": retention_meta,
         }
+        
+        # Add quality to wrapper (not payload) if enabled
+        if quality_meta:
+            wrapper["quality"] = quality_meta
+        
+        # Track metrics with sanitized labels (both domain and event_type)
+        events_ingested_total.labels(domain=domain_label, event_type=event_type_for_metrics).inc()
+        
         lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
     return lines
 
