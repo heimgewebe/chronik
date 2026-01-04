@@ -87,6 +87,8 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 | `CHRONIK_RATE_LIMIT` | nein    | `60/minute` | Rate-Limit pro Quell-IP (SlowAPI-Format). |
 | `CHRONIK_LOG_LEVEL`  | nein    | `INFO`   | Log-Level (z. B. `DEBUG`, `INFO`, `WARNING`). |
 | `LOG_LEVEL`            | nein    | `INFO`   | Fallback Log-Level, falls `CHRONIK_LOG_LEVEL` nicht gesetzt. |
+| `CHRONIK_ENFORCE_PROVENANCE` | nein | `0` | Provenienz-Enforcement: `1` = Events ohne Provenienz werden abgelehnt, `0` = nur Warnung. |
+| `CHRONIK_ENABLE_QUALITY` | nein | `1` | Qualitätsmarker: `1` = aktiviert, `0` = deaktiviert. |
 
 **Hinweis:** `CHRONIK_TOKEN` ist die primäre Umgebungsvariable für das Authentifizierungs-Token.
 
@@ -107,6 +109,55 @@ Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml)
 * Der Dateiname entspricht der Domain (`<domain>.jsonl`). Extrem lange Domains werden automatisch gekürzt und erhalten einen 8-stelligen Hash-Suffix (z. B. `very-long…-1a2b3c4d.jsonl`), um Dateisystemlimits einzuhalten.
 * Jeder Request wird unverändert (bzw. um das Feld `domain` ergänzt) als einzelne Zeile im JSONL-Format angehängt.
 
+## Event-Qualität, Provenienz & Retention
+
+chronik implementiert drei zentrale Invarianten für verlässliche Event-Verarbeitung:
+
+### 1. Provenienz (Herkunft)
+Events sollten ihre Herkunft dokumentieren. Bei aktiviertem Enforcement (`CHRONIK_ENFORCE_PROVENANCE=1`) werden folgende Felder zwingend erforderlich:
+- `source.repo`: Repository/System-Name
+- `source.component`: Komponente
+- `event_id`: Eindeutiger Identifier
+
+**Beispiel:**
+```json
+{
+  "event_id": "550e8400-e29b-41d4-a716-446655440000",
+  "source": {
+    "repo": "heimgewebe/wgx",
+    "component": "semantAH"
+  },
+  "kind": "embedding.computed",
+  "ts": "2026-01-04T10:00:00Z",
+  "data": {"vector_dim": 768}
+}
+```
+
+### 2. Qualitätsmarker (Signal Strength)
+Events werden regelbasiert bewertet (nicht semantisch):
+- `quality.signal_strength`: `high`, `medium`, `low` (basierend auf Vollständigkeit)
+- `quality.completeness`: Boolean (alle Pflichtfelder vorhanden?)
+
+### 3. Retention (Lebenszyklen)
+Events haben definierte TTLs basierend auf Event-Typ (konfigurierbar in `config/retention.yml`):
+- Debug-Events: 7 Tage
+- Published Events (*.published.v*): Unbegrenzt
+- Default: 30 Tage
+
+**Gespeichertes Event-Format:**
+```json
+{
+  "domain": "aussen",
+  "received_at": "2026-01-04T10:00:05Z",
+  "payload": { ... },
+  "retention": {
+    "ttl_days": 30,
+    "expires_at": "2026-02-03T10:00:05Z"
+  }
+}
+```
+
+**Siehe auch:** Ausführliche Dokumentation in [`docs/chronik/event-quality.md`](docs/chronik/event-quality.md)
 ## Betrieb & Wartung
 * Logs: `uvicorn` schreibt standardmäßig auf STDOUT; bei Bedarf Output umleiten oder in eine zentrale Log-Pipeline integrieren.
 * Backups: Das Datenverzeichnis lässt sich als Ganzes sichern. Durch die reine Anhänge-Strategie eignen sich inkrementelle Backups.

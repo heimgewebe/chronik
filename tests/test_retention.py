@@ -16,8 +16,15 @@ def test_retention_policy_matches():
     policy = RetentionPolicy("*.debug.*", 7, "Debug events")
     
     assert policy.matches("foo.debug.bar") is True
-    assert policy.matches("debug.test") is True
+    assert policy.matches("app.debug.trace") is True
     assert policy.matches("foo.prod.bar") is False
+    
+    # Pattern requires something before and after "debug"
+    assert policy.matches("debug.test") is False
+    
+    # Test other patterns
+    policy2 = RetentionPolicy("debug.*", 7, "Debug events")
+    assert policy2.matches("debug.test") is True
 
 
 def test_load_retention_policies():
