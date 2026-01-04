@@ -1,31 +1,44 @@
 # chronik Retention Policies
 # TTL (Time-To-Live) in days for different event types
 #
+# Pattern Matching (fnmatch syntax):
+# - * matches any sequence of characters (but requires at least one char before/after dots)
+# - ? matches any single character
+# - [seq] matches any character in seq
+# - [!seq] matches any character not in seq
+#
+# Examples:
+# - "*.debug.*" matches "app.debug.trace" but NOT "debug.trace" (needs prefix)
+# - "*debug*" matches "debug.trace", "app.debug.trace", "debugger" (broad match)
+# - "debug.*" matches "debug.trace" but NOT "app.debug.trace" (no prefix allowed)
+#
 # Rules:
-# - Events matching patterns get the specified TTL
-# - TTL of 0 means unlimited retention (canonical events)
 # - Events are evaluated in order, first match wins
+# - TTL of 0 means unlimited retention (canonical events)
+# - Use specific patterns first, then broader catch-alls
 
 policies:
   # Debug and probe events - short retention
-  - pattern: "*.debug.*"
+  # Broad pattern to catch debug events regardless of prefix
+  - pattern: "*debug*"
     ttl_days: 7
-    description: "Debug events - 7 days retention"
+    description: "Debug events (anywhere in name) - 7 days retention"
   
-  - pattern: "*.probe.*"
+  - pattern: "*probe*"
     ttl_days: 7
     description: "Probe/health check events - 7 days retention"
   
-  - pattern: "*.test.*"
+  - pattern: "*test*"
     ttl_days: 7
     description: "Test events - 7 days retention"
 
   # Temporary/ephemeral events
-  - pattern: "*.temp.*"
+  - pattern: "*temp*"
     ttl_days: 1
     description: "Temporary events - 1 day retention"
 
   # Canonical published events - unlimited retention
+  # These must come before broader patterns
   - pattern: "*.published.v1"
     ttl_days: 0
     description: "Canonical published events - unlimited retention"

@@ -50,6 +50,8 @@ export CHRONIK_ENFORCE_PROVENANCE=1
 export CHRONIK_ENFORCE_PROVENANCE=0
 ```
 
+**Hinweis**: Die ENV-Variablen werden zur Laufzeit ausgelesen (nicht beim Import eingefroren), sodass Tests flexibel zwischen Modi wechseln können.
+
 ### Verhalten
 
 - **Strict Mode** (`ENFORCE_PROVENANCE=1`):
@@ -131,7 +133,8 @@ Retention-Policies sind in `config/retention.yml` definiert:
 
 ```yaml
 policies:
-  - pattern: "*.debug.*"
+  # Broad patterns to catch events regardless of prefix
+  - pattern: "*debug*"
     ttl_days: 7
     description: "Debug events - 7 days retention"
   
@@ -149,6 +152,16 @@ policies:
 - Policies verwenden `fnmatch`-Patterns (Unix-Wildcard-Syntax)
 - First-Match-Wins: Erste passende Policy wird angewendet
 - `ttl_days: 0` bedeutet unbegrenzte Retention
+
+**Pattern-Beispiele:**
+- `*debug*` matcht "debug.test", "app.debug.trace", "debugging" (breit)
+- `*.debug.*` matcht "app.debug.trace" aber NICHT "debug.test" (benötigt Präfix)
+- `debug.*` matcht "debug.test" aber NICHT "app.debug.trace" (kein Präfix erlaubt)
+
+**Event Type Bestimmung:**
+- Retention-Policy basiert auf `kind`, `type` oder `event` Feld im Event
+- Falls keines vorhanden: "unknown" → Default-Policy (30 Tage)
+- Domain wird NICHT als Event-Typ verwendet (unterschiedliche Zwecke)
 
 ### Retention-Metadaten
 

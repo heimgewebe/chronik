@@ -21,6 +21,8 @@ import yaml
 logger = logging.getLogger(__name__)
 
 # Path to retention config
+# This resolves to: <repo_root>/config/retention.yml
+# since retention.py is at repo root level
 RETENTION_CONFIG_PATH: Final[Path] = Path(__file__).parent / "config" / "retention.yml"
 
 # Global cache for loaded policies

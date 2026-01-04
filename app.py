@@ -46,10 +46,18 @@ MAX_PAYLOAD_SIZE: Final[int] = int(
 RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
 
 # Provenance enforcement: set to "1" to require provenance fields
-ENFORCE_PROVENANCE: Final[bool] = os.getenv("CHRONIK_ENFORCE_PROVENANCE", "0") == "1"
-
 # Quality markers: set to "0" to disable quality marker computation
-ENABLE_QUALITY_MARKERS: Final[bool] = os.getenv("CHRONIK_ENABLE_QUALITY", "1") == "1"
+# Note: These are read at runtime, not frozen at import time
+
+
+def _is_provenance_enforced() -> bool:
+    """Check if provenance enforcement is enabled at runtime."""
+    return os.getenv("CHRONIK_ENFORCE_PROVENANCE", "0") == "1"
+
+
+def _is_quality_enabled() -> bool:
+    """Check if quality markers are enabled at runtime."""
+    return os.getenv("CHRONIK_ENABLE_QUALITY", "1") == "1"
 
 LOG_LEVEL = (
     os.getenv("CHRONIK_LOG_LEVEL") or os.getenv("LOG_LEVEL", "INFO")
@@ -454,7 +462,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
                     raise HTTPException(status_code=400, detail="domain mismatch")
         
         # 1b. Provenance validation (if enabled)
-        if ENFORCE_PROVENANCE:
+        if _is_provenance_enforced():
             try:
                 validate_provenance(normalized, strict=True)
             except ProvenanceError as exc:
@@ -474,7 +482,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         
         # 1c. Compute quality markers (if enabled) - but don't mutate payload
         quality_meta = None
-        if ENABLE_QUALITY_MARKERS:
+        if _is_quality_enabled():
             from quality import compute_signal_strength, compute_completeness
             signal_strength = compute_signal_strength(normalized)
             completeness = compute_completeness(normalized)
@@ -485,12 +493,24 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             events_signal_strength.labels(domain=dom, signal_strength=quality_meta["signal_strength"]).inc()
         
         # 1d. Compute retention metadata
-        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event") or dom
-        # Sanitize event_type for metrics to prevent label cardinality explosion
-        event_type_for_metrics = _sanitize_metric_label(event_type)
-        ttl_days = get_ttl_for_event(event_type)
+        # Extract event_type from event itself (not from domain)
+        # Priority: kind > type > event
+        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event")
+        
+        # For retention: use event_type if available, otherwise apply default policy
+        # Note: We do NOT use domain as event_type - they serve different purposes
+        retention_event_type = event_type if event_type else "unknown"
+        
+        # For metrics: use domain as fallback to preserve observability
+        # This allows us to see which domains produce events without type fields
+        metrics_event_type = event_type if event_type else f"domain.{dom}"
+        
+        # Sanitize for metrics to prevent label cardinality explosion
+        event_type_for_metrics = _sanitize_metric_label(metrics_event_type)
+        
+        ttl_days = get_ttl_for_event(retention_event_type)
         received_dt = datetime.now(timezone.utc)
-        expiry_dt = compute_expiry_date(event_type, received_dt)
+        expiry_dt = compute_expiry_date(retention_event_type, received_dt)
         
         retention_meta = {
             "ttl_days": ttl_days,
