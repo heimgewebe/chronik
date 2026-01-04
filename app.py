@@ -36,7 +36,6 @@ from storage import (
     write_payload,
 )
 from provenance import ProvenanceError, validate_provenance, has_provenance
-from quality import add_quality_markers, compute_signal_strength
 from retention import get_ttl_for_event, compute_expiry_date
 
 # --- Runtime constants & logging ---
@@ -466,8 +465,10 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             try:
                 validate_provenance(normalized, strict=True)
             except ProvenanceError as exc:
-                provenance_validation_failures.labels(domain=dom).inc()
-                events_rejected_total.labels(domain=dom, reason="provenance").inc()
+                # Sanitize domain for metrics to prevent label cardinality explosion
+                domain_label = _sanitize_metric_label(dom)
+                provenance_validation_failures.labels(domain=domain_label).inc()
+                events_rejected_total.labels(domain=domain_label, reason="provenance").inc()
                 logger.warning(
                     f"Provenance validation failed: {exc}",
                     extra={"domain": dom}
@@ -490,7 +491,9 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
                 "signal_strength": signal_strength.value if hasattr(signal_strength, 'value') else signal_strength,
                 "completeness": completeness,
             }
-            events_signal_strength.labels(domain=dom, signal_strength=quality_meta["signal_strength"]).inc()
+            # Sanitize domain for metrics to prevent label cardinality explosion
+            domain_label = _sanitize_metric_label(dom)
+            events_signal_strength.labels(domain=domain_label, signal_strength=quality_meta["signal_strength"]).inc()
         
         # 1d. Compute retention metadata
         # Extract event_type from event itself (not from domain)
@@ -507,6 +510,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         
         # Sanitize for metrics to prevent label cardinality explosion
         event_type_for_metrics = _sanitize_metric_label(metrics_event_type)
+        domain_label = _sanitize_metric_label(dom)
         
         ttl_days = get_ttl_for_event(retention_event_type)
         received_dt = datetime.now(timezone.utc)
@@ -530,8 +534,8 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         if quality_meta:
             wrapper["quality"] = quality_meta
         
-        # Track metrics with sanitized label
-        events_ingested_total.labels(domain=dom, event_type=event_type_for_metrics).inc()
+        # Track metrics with sanitized labels (both domain and event_type)
+        events_ingested_total.labels(domain=domain_label, event_type=event_type_for_metrics).inc()
         
         lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
     return lines
