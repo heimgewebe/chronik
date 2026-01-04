@@ -62,6 +62,11 @@ def compute_signal_strength(payload: dict) -> SignalStrength:
 def compute_completeness(payload: dict, required_fields: list[str] | None = None) -> bool:
     """Check if payload has all required fields.
     
+    Recognizes common field synonyms to avoid false negatives:
+    - kind/type/event (event type)
+    - ts/timestamp/occurred_at (timestamp)
+    - source (provenance)
+    
     Args:
         payload: The event payload
         required_fields: List of required field names (optional, uses defaults if None)
@@ -72,11 +77,21 @@ def compute_completeness(payload: dict, required_fields: list[str] | None = None
     if not isinstance(payload, dict):
         return False
     
-    if required_fields is None:
-        # Default required fields for canonical events
-        required_fields = ["kind", "ts", "source"]
+    if required_fields is not None:
+        # Custom required fields - check exactly as specified
+        return all(field in payload for field in required_fields)
     
-    return all(field in payload for field in required_fields)
+    # Default: check for core event fields with synonym support
+    # Event type (at least one variant)
+    has_kind = "kind" in payload or "type" in payload or "event" in payload
+    
+    # Timestamp (at least one variant)
+    has_timestamp = "ts" in payload or "timestamp" in payload or "occurred_at" in payload
+    
+    # Source (provenance)
+    has_source = "source" in payload
+    
+    return has_kind and has_timestamp and has_source
 
 
 def add_quality_markers(payload: dict) -> dict:

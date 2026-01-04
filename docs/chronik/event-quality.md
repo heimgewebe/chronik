@@ -133,10 +133,14 @@ Retention-Policies sind in `config/retention.yml` definiert:
 
 ```yaml
 policies:
-  # Broad patterns to catch events regardless of prefix
-  - pattern: "*debug*"
+  # Use dot-delimited patterns to avoid false matches
+  - pattern: "debug.*"
     ttl_days: 7
     description: "Debug events - 7 days retention"
+  
+  - pattern: "*.debug"
+    ttl_days: 7
+    description: "Debug events (suffix) - 7 days retention"
   
   - pattern: "*.published.v1"
     ttl_days: 0
@@ -147,16 +151,28 @@ policies:
     description: "Default retention"
 ```
 
+**Wichtig:** Policies werden beim Start geladen und gecached. Änderungen an `retention.yml` erfordern einen Neustart.
+
 ### Pattern-Matching
 
 - Policies verwenden `fnmatch`-Patterns (Unix-Wildcard-Syntax)
 - First-Match-Wins: Erste passende Policy wird angewendet
 - `ttl_days: 0` bedeutet unbegrenzte Retention
 
+**Pattern-Strategie (Drift-Vermeidung):**
+- ✅ **Empfohlen**: `debug.*`, `*.debug`, `*.debug.*` (dot-delimited)
+  - Matcht nur: "debug.trace", "app.debug", "app.debug.trace"
+  - Matcht NICHT: "debugger", "debugging" (keine Zufallstreffer)
+  
+- ⚠️ **Zu breit**: `*debug*` (catch-all)
+  - Matcht auch: "debugger", "contest", "undebugable"
+  - Risiko: Retention wird von Sprachzufällen gesteuert
+
 **Pattern-Beispiele:**
-- `*debug*` matcht "debug.test", "app.debug.trace", "debugging" (breit)
-- `*.debug.*` matcht "app.debug.trace" aber NICHT "debug.test" (benötigt Präfix)
-- `debug.*` matcht "debug.test" aber NICHT "app.debug.trace" (kein Präfix erlaubt)
+- `debug.*` matcht "debug.test", "debug.trace"
+- `*.debug` matcht "app.debug", "service.debug"
+- `*.debug.*` matcht "app.debug.trace"
+- `*debug*` matcht ALLES mit "debug" (inkl. "debugger", "undebugable")
 
 **Event Type Bestimmung:**
 - Retention-Policy basiert auf `kind`, `type` oder `event` Feld im Event

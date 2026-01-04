@@ -45,8 +45,14 @@ class RetentionPolicy:
         return f"RetentionPolicy(pattern={self.pattern!r}, ttl_days={self.ttl_days})"
 
 
-def load_retention_policies() -> list[RetentionPolicy]:
+def load_retention_policies(force_reload: bool = False) -> list[RetentionPolicy]:
     """Load retention policies from config file.
+    
+    Policies are cached globally after first load. Changes to the config file
+    require an application restart, unless force_reload=True is used.
+    
+    Args:
+        force_reload: If True, bypass cache and reload from disk
     
     Returns:
         List of RetentionPolicy objects in priority order.
@@ -54,10 +60,15 @@ def load_retention_policies() -> list[RetentionPolicy]:
     Raises:
         FileNotFoundError: If config file doesn't exist
         ValueError: If config is invalid
+    
+    Note:
+        In production, retention policies are cached at startup.
+        Config changes require restart for safety and consistency.
+        Use force_reload=True only for testing or admin tools.
     """
     global _RETENTION_POLICIES
     
-    if _RETENTION_POLICIES is not None:
+    if _RETENTION_POLICIES is not None and not force_reload:
         return _RETENTION_POLICIES
     
     if not RETENTION_CONFIG_PATH.exists():
@@ -97,6 +108,24 @@ def load_retention_policies() -> list[RetentionPolicy]:
         # Fallback to default
         _RETENTION_POLICIES = [RetentionPolicy("*", 30, "Default retention (fallback)")]
         return _RETENTION_POLICIES
+
+
+def reload_retention_policies() -> list[RetentionPolicy]:
+    """Force reload of retention policies from config file.
+    
+    This clears the cache and reloads from disk. Useful for:
+    - Testing with different configurations
+    - Admin tools that update policies
+    - Development/debugging
+    
+    In production, prefer application restart for policy changes.
+    
+    Returns:
+        List of RetentionPolicy objects in priority order.
+    """
+    global _RETENTION_POLICIES
+    _RETENTION_POLICIES = None
+    return load_retention_policies(force_reload=True)
 
 
 def get_ttl_for_event(event_type: str) -> int:
