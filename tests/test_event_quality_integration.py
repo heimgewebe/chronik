@@ -1,28 +1,20 @@
 """Integration tests for event quality, provenance, and retention features."""
 
 import json
-import os
 import pytest
 from fastapi.testclient import TestClient
 
-
-# Set environment variables BEFORE importing app
-os.environ.setdefault("CHRONIK_TOKEN", "test-token")
-os.environ.setdefault("CHRONIK_ENABLE_QUALITY", "1")
-os.environ.setdefault("CHRONIK_ENFORCE_PROVENANCE", "0")
-
-
 @pytest.fixture
-def client():
+def client(monkeypatch, tmp_path):
     """Create test client with token configured."""
+    monkeypatch.setenv("CHRONIK_TOKEN", "test-token")
+    monkeypatch.setenv("CHRONIK_ENABLE_QUALITY", "1")
+    monkeypatch.setenv("CHRONIK_ENFORCE_PROVENANCE", "0")
+    monkeypatch.setenv("CHRONIK_DATA_DIR", str(tmp_path))
+    import storage
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
     from app import app
     return TestClient(app)
-
-
-@pytest.fixture(autouse=True)
-def setup_data_dir(tmp_path, monkeypatch):
-    """Patch storage.DATA_DIR to use tmp_path."""
-    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
 
 def test_event_with_quality_markers(client):
