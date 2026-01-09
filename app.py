@@ -303,9 +303,11 @@ def _validate_heimgeist_payload(item: dict) -> None:
     # Structure & Type strictness
     if not isinstance(item["kind"], str):
         raise HTTPException(status_code=400, detail="kind must be a string")
-    if item["kind"] != "heimgeist.insight":
+
+    valid_kinds = {"heimgeist.insight", "heimgeist.self_state.snapshot"}
+    if item["kind"] not in valid_kinds:
         raise HTTPException(
-            status_code=400, detail="invalid kind: expected 'heimgeist.insight'"
+            status_code=400, detail=f"invalid kind: expected one of {valid_kinds}"
         )
 
     if not isinstance(item["version"], int):
@@ -319,6 +321,46 @@ def _validate_heimgeist_payload(item: dict) -> None:
     # Data field must be an object
     if not isinstance(item["data"], dict):
         raise HTTPException(status_code=400, detail="data must be a dict")
+
+    # Specific validation for heimgeist.self_state.snapshot
+    if item["kind"] == "heimgeist.self_state.snapshot":
+        data = item["data"]
+        required_fields = {
+            "confidence",
+            "fatigue",
+            "risk_tension",
+            "autonomy_level",
+            "basis_signals",
+        }
+        missing_fields = required_fields - data.keys()
+        if missing_fields:
+            raise HTTPException(
+                status_code=400,
+                detail=f"missing data fields: {', '.join(sorted(missing_fields))}",
+            )
+
+        # Type and Range checks
+        # 0.0 - 1.0 floats
+        for field in ("confidence", "fatigue", "risk_tension"):
+            val = data[field]
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise HTTPException(
+                    status_code=400, detail=f"{field} must be a number between 0.0 and 1.0"
+                )
+
+        # autonomy_level enum
+        valid_autonomy = {"dormant", "aware", "reflective", "critical"}
+        if data["autonomy_level"] not in valid_autonomy:
+            raise HTTPException(
+                status_code=400, detail=f"invalid autonomy_level: expected {valid_autonomy}"
+            )
+
+        # basis_signals list of strings
+        if not isinstance(data["basis_signals"], list):
+            raise HTTPException(status_code=400, detail="basis_signals must be a list")
+        for s in data["basis_signals"]:
+            if not isinstance(s, str):
+                raise HTTPException(status_code=400, detail="basis_signals must contain strings")
 
     # Meta fields
     meta = item["meta"]

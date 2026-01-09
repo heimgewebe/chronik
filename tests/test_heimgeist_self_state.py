@@ -1,0 +1,126 @@
+
+import pytest
+from fastapi.testclient import TestClient
+from app import app
+import os
+import json
+
+@pytest.fixture(autouse=True)
+def mock_storage(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    monkeypatch.setenv("CHRONIK_TOKEN", "test-token")
+
+@pytest.fixture
+def client():
+    return TestClient(app)
+
+def test_ingest_self_state_snapshot_valid(client):
+    payload = {
+        "kind": "heimgeist.self_state.snapshot",
+        "version": 1,
+        "id": "uuid-1234",
+        "meta": {
+            "occurred_at": "2023-10-27T10:00:00Z"
+        },
+        "data": {
+            "confidence": 0.9,
+            "fatigue": 0.1,
+            "risk_tension": 0.2,
+            "autonomy_level": "aware",
+            "basis_signals": ["ci_passing", "low_risk"]
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    assert response.status_code == 202
+
+def test_ingest_self_state_snapshot_missing_fields(client):
+    payload = {
+        "kind": "heimgeist.self_state.snapshot",
+        "version": 1,
+        "id": "uuid-1234",
+        "meta": {
+            "occurred_at": "2023-10-27T10:00:00Z"
+        },
+        "data": {
+            "confidence": 0.9,
+            # Missing other fields
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    assert response.status_code == 400
+    assert "missing data fields" in response.json()["detail"]
+
+def test_ingest_self_state_snapshot_invalid_values(client):
+    payload = {
+        "kind": "heimgeist.self_state.snapshot",
+        "version": 1,
+        "id": "uuid-1234",
+        "meta": {
+            "occurred_at": "2023-10-27T10:00:00Z"
+        },
+        "data": {
+            "confidence": 1.5, # Invalid > 1.0
+            "fatigue": 0.1,
+            "risk_tension": 0.2,
+            "autonomy_level": "aware",
+            "basis_signals": []
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    assert response.status_code == 400
+    assert "confidence must be a number between 0.0 and 1.0" in response.json()["detail"]
+
+def test_ingest_self_state_snapshot_invalid_enum(client):
+    payload = {
+        "kind": "heimgeist.self_state.snapshot",
+        "version": 1,
+        "id": "uuid-1234",
+        "meta": {
+            "occurred_at": "2023-10-27T10:00:00Z"
+        },
+        "data": {
+            "confidence": 0.5,
+            "fatigue": 0.1,
+            "risk_tension": 0.2,
+            "autonomy_level": "skynet_active", # Invalid
+            "basis_signals": []
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    assert response.status_code == 400
+    assert "invalid autonomy_level" in response.json()["detail"]
+
+def test_ingest_heimgeist_insight_still_works(client):
+    payload = {
+        "kind": "heimgeist.insight",
+        "version": 1,
+        "id": "uuid-5678",
+        "meta": {
+            "occurred_at": "2023-10-27T10:00:00Z"
+        },
+        "data": {
+            "foo": "bar" # Insight data is flexible
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    assert response.status_code == 202
