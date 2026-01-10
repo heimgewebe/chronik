@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.heimgewebe.net/heimgeist/self_state.snapshot.schema.json",
+  "title": "Heimgeist Self-State Snapshot",
+  "description": "A snapshot of Heimgeist's internal self-model state (meta-cognition).",
+  "type": "object",
+  "properties": {
+    "kind": {
+      "const": "heimgeist.self_state.snapshot"
+    },
+    "version": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "meta": {
+      "type": "object",
+      "properties": {
+        "occurred_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["occurred_at"]
+    },
+    "data": {
+      "type": "object",
+      "properties": {
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Confidence level (0.0 - 1.0)"
+        },
+        "fatigue": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Fatigue level (0.0 - 1.0)"
+        },
+        "risk_tension": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Risk tension level (0.0 - 1.0)"
+        },
+        "autonomy_level": {
+          "type": "string",
+          "enum": ["dormant", "aware", "reflective", "critical"],
+          "description": "Current level of autonomy"
+        },
+        "last_updated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp of the last model update (ISO 8601)"
+        },
+        "basis_signals": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "List of signals used to derive this state (transparency)"
+        }
+      },
+      "required": ["confidence", "fatigue", "risk_tension", "autonomy_level", "last_updated", "basis_signals"]
+    }
+  },
+  "required": ["kind", "version", "id", "meta", "data"]
+}

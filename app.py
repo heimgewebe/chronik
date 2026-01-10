@@ -330,6 +330,7 @@ def _validate_heimgeist_payload(item: dict) -> None:
             "fatigue",
             "risk_tension",
             "autonomy_level",
+            "last_updated",
             "basis_signals",
         }
         missing_fields = required_fields - data.keys()
@@ -354,6 +355,13 @@ def _validate_heimgeist_payload(item: dict) -> None:
             raise HTTPException(
                 status_code=400, detail=f"invalid autonomy_level: expected {valid_autonomy}"
             )
+
+        # last_updated timestamp (string)
+        if not isinstance(data["last_updated"], str):
+             raise HTTPException(status_code=400, detail="last_updated must be a string")
+        # Reuse _parse_iso_ts to check format
+        if _parse_iso_ts(data["last_updated"]) is None:
+             raise HTTPException(status_code=400, detail="last_updated must be valid ISO8601")
 
         # basis_signals list of strings
         if not isinstance(data["basis_signals"], list):

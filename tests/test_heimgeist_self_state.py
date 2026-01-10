@@ -27,6 +27,7 @@ def test_ingest_self_state_snapshot_valid(client):
             "fatigue": 0.1,
             "risk_tension": 0.2,
             "autonomy_level": "aware",
+            "last_updated": "2023-10-27T09:59:00Z",
             "basis_signals": ["ci_passing", "low_risk"]
         }
     }
@@ -71,6 +72,7 @@ def test_ingest_self_state_snapshot_invalid_values(client):
             "fatigue": 0.1,
             "risk_tension": 0.2,
             "autonomy_level": "aware",
+            "last_updated": "2023-10-27T09:59:00Z",
             "basis_signals": []
         }
     }
@@ -95,6 +97,7 @@ def test_ingest_self_state_snapshot_invalid_enum(client):
             "fatigue": 0.1,
             "risk_tension": 0.2,
             "autonomy_level": "skynet_active", # Invalid
+            "last_updated": "2023-10-27T09:59:00Z",
             "basis_signals": []
         }
     }
