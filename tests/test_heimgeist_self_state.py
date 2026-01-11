@@ -127,3 +127,24 @@ def test_ingest_heimgeist_insight_still_works(client):
         headers={"X-Auth": "test-token"}
     )
     assert response.status_code == 202
+
+def test_ingest_rejects_bundle(client):
+    payload = {
+        "kind": "heimgeist.self_state.bundle.v1",
+        "version": 1,
+        "id": "uuid-bundle",
+        "meta": {
+            "occurred_at": "2023-10-27T10:00:00Z"
+        },
+        "data": {
+            "current": {},
+            "history": []
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    assert response.status_code == 400
+    assert "invalid kind" in response.json()["detail"]

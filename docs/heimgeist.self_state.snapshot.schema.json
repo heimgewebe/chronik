@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.heimgewebe.net/heimgeist/self_state.snapshot.schema.json",
   "title": "Heimgeist Self-State Snapshot",
-  "description": "A snapshot of Heimgeist's internal self-model state (meta-cognition).",
+  "description": "A snapshot of Heimgeist's internal self-model state (meta-cognition). This is an Event (Stream). Do NOT confuse with SelfStateBundle (Aggregate/Artifact).",
   "type": "object",
   "properties": {
     "kind": {
