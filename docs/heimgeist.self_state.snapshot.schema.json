@@ -64,8 +64,10 @@
           "description": "List of signals used to derive this state (transparency)"
         }
       },
-      "required": ["confidence", "fatigue", "risk_tension", "autonomy_level", "last_updated", "basis_signals"]
+      "required": ["confidence", "fatigue", "risk_tension", "autonomy_level", "last_updated", "basis_signals"],
+      "additionalProperties": false
     }
   },
-  "required": ["kind", "version", "id", "meta", "data"]
+  "required": ["kind", "version", "id", "meta", "data"],
+  "additionalProperties": false
 }

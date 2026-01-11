@@ -175,9 +175,37 @@ def test_ingest_rejects_pure_bundle_artifact(client):
         json=payload,
         headers={"X-Auth": "test-token"}
     )
-    # It should fail either with "missing fields" or "invalid payload structure"
     assert response.status_code == 400
     detail = response.json()["detail"]
-    # We expect rejection. Exact message depends on implementation details of normalization.
-    # It will likely fail normalization.
     assert "invalid payload structure" in detail or "missing fields" in detail
+
+def test_ingest_rejects_extra_fields(client):
+    """
+    Event with extra fields in data must fail validation (strict schema).
+    """
+    payload = {
+        "kind": "heimgeist.self_state.snapshot",
+        "version": 1,
+        "id": "123e4567-e89b-12d3-a456-426614174000",
+        "meta": {
+            "occurred_at": "2023-10-27T10:00:00Z"
+        },
+        "data": {
+            "confidence": 0.9,
+            "fatigue": 0.1,
+            "risk_tension": 0.2,
+            "autonomy_level": "aware",
+            "last_updated": "2023-10-27T09:59:00Z",
+            "basis_signals": ["ci_passing", "low_risk"],
+            "debug_info": "this should be rejected"
+        }
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    assert response.status_code == 400
+    assert "schema validation failed" in response.json()["detail"]
+    # Usually jsonschema says: 'Additional properties are not allowed ('debug_info' was unexpected)'
+    # We can check for "Additional properties" if we want to be specific, or just verify rejection.
