@@ -80,3 +80,20 @@ Nach der Verarbeitung durch den Dienst wird die Zeile in `aussen.jsonl` so ausse
 ```json
 {"event": "deploy", "status": "success", "domain": "aussen"}
 ```
+
+## Schema: `heimgeist.self_state.snapshot` (Mirror)
+
+Chronik spiegelt das kanonische Schema aus dem Metarepo:
+`contracts/events/heimgeist.self_state.snapshot.v1.schema.json`
+
+- **Enforced via:** Strict JSON Schema (`additionalProperties: false`).
+- **Rejected:** `heimgeist.self_state.bundle.v1` (Artifact Bundle) wird explizit mit HTTP 400 abgewiesen.
+- **Retention:** `ttl_days: 0` (unbegrenzt).
+
+### Felder (Self-State Object in `data`)
+- `confidence` (0.0 - 1.0)
+- `fatigue` (0.0 - 1.0)
+- `risk_tension` (0.0 - 1.0)
+- `autonomy_level` (`dormant` | `aware` | `reflective` | `critical`)
+- `last_updated` (ISO 8601 Timestamp)
+- `basis_signals` (String Array)
