@@ -42,7 +42,7 @@ def test_ingest_self_state_snapshot_missing_fields(client):
     payload = {
         "kind": "heimgeist.self_state.snapshot",
         "version": 1,
-        "id": "uuid-1234",
+        "id": "123e4567-e89b-12d3-a456-426614174000",
         "meta": {
             "occurred_at": "2023-10-27T10:00:00Z"
         },
@@ -63,7 +63,7 @@ def test_ingest_self_state_snapshot_invalid_values(client):
     payload = {
         "kind": "heimgeist.self_state.snapshot",
         "version": 1,
-        "id": "uuid-1234",
+        "id": "123e4567-e89b-12d3-a456-426614174000",
         "meta": {
             "occurred_at": "2023-10-27T10:00:00Z"
         },
@@ -88,7 +88,7 @@ def test_ingest_self_state_snapshot_invalid_enum(client):
     payload = {
         "kind": "heimgeist.self_state.snapshot",
         "version": 1,
-        "id": "uuid-1234",
+        "id": "123e4567-e89b-12d3-a456-426614174000",
         "meta": {
             "occurred_at": "2023-10-27T10:00:00Z"
         },
@@ -128,7 +128,11 @@ def test_ingest_heimgeist_insight_still_works(client):
     )
     assert response.status_code == 202
 
-def test_ingest_rejects_bundle(client):
+def test_ingest_rejects_bundle_artifact_with_kind(client):
+    """
+    If someone mistakenly tries to send a bundle artifact as an event (by adding 'kind'),
+    it should be rejected by the whitelist check because the kind is not allowed.
+    """
     payload = {
         "kind": "heimgeist.self_state.bundle.v1",
         "version": 1,
@@ -148,3 +152,32 @@ def test_ingest_rejects_bundle(client):
     )
     assert response.status_code == 400
     assert "invalid kind" in response.json()["detail"]
+
+def test_ingest_rejects_pure_bundle_artifact(client):
+    """
+    A pure bundle artifact (schema, current, history) sent to the ingest endpoint
+    should fail because it lacks the required event envelope structure (kind, version, etc.).
+    """
+    payload = {
+        "schema": "heimgeist.self_state.bundle.v1",
+        "current": {
+            "confidence": 0.9,
+            "fatigue": 0.1,
+            "risk_tension": 0.2,
+            "autonomy_level": "aware",
+            "last_updated": "2023-10-27T09:59:00Z",
+            "basis_signals": []
+        },
+        "history": []
+    }
+    response = client.post(
+        "/v1/ingest?domain=heimgeist",
+        json=payload,
+        headers={"X-Auth": "test-token"}
+    )
+    # It should fail either with "missing fields" or "invalid payload structure"
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    # We expect rejection. Exact message depends on implementation details of normalization.
+    # It will likely fail normalization.
+    assert "invalid payload structure" in detail or "missing fields" in detail
