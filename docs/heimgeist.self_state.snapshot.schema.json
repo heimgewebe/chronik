@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://heimgewebe/contracts/heimgeist/self_state.snapshot.event.schema.json",
-  "title": "Heimgeist Self-State Snapshot",
-  "description": "A snapshot of Heimgeist's internal self-model state (meta-cognition). This is an Event (Stream). Do NOT confuse with SelfStateBundle (Aggregate/Artifact). Mirror of metarepo contract.",
+  "$id": "https://heimgewebe/contracts/events/heimgeist.self_state.snapshot.v1.schema.json",
+  "title": "MIRROR: Heimgeist Self-State Snapshot Event V1",
+  "description": "Mirror of metarepo contract. Chronik validates events; bundle artifacts are rejected.",
   "type": "object",
   "properties": {
     "kind": {
