@@ -80,6 +80,10 @@ policies:
 
   # Canonical published events - unlimited retention
   # These must come before broader patterns
+  - pattern: "heimgeist.self_state.snapshot"
+    ttl_days: 0
+    description: "Heimgeist Self-State Snapshots - unlimited retention"
+
   - pattern: "*.published.v1"
     ttl_days: 0
     description: "Canonical published events - unlimited retention"

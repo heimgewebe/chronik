@@ -303,9 +303,11 @@ def _validate_heimgeist_payload(item: dict) -> None:
     # Structure & Type strictness
     if not isinstance(item["kind"], str):
         raise HTTPException(status_code=400, detail="kind must be a string")
-    if item["kind"] != "heimgeist.insight":
+
+    valid_kinds = {"heimgeist.insight", "heimgeist.self_state.snapshot"}
+    if item["kind"] not in valid_kinds:
         raise HTTPException(
-            status_code=400, detail="invalid kind: expected 'heimgeist.insight'"
+            status_code=400, detail=f"invalid kind: expected one of: {', '.join(sorted(valid_kinds))}"
         )
 
     if not isinstance(item["version"], int):
@@ -319,6 +321,16 @@ def _validate_heimgeist_payload(item: dict) -> None:
     # Data field must be an object
     if not isinstance(item["data"], dict):
         raise HTTPException(status_code=400, detail="data must be a dict")
+
+    # Specific validation for heimgeist.self_state.snapshot
+    if item["kind"] == "heimgeist.self_state.snapshot":
+        schema = _get_heimgeist_self_state_snapshot_schema()
+        try:
+            jsonschema.Draft202012Validator(
+                schema, format_checker=jsonschema.FormatChecker()
+            ).validate(item)
+        except jsonschema.ValidationError as exc:
+            raise HTTPException(status_code=400, detail=f"schema validation failed: {exc.message}")
 
     # Meta fields
     meta = item["meta"]
@@ -380,8 +392,9 @@ def _normalize_heimgeist_item(item: dict) -> dict:
     raise HTTPException(status_code=400, detail="invalid payload structure (neither wrapper nor valid legacy)")
 
 
-# Global cache for the loaded schema
+# Global cache for the loaded schemas
 _INSIGHTS_DAILY_SCHEMA = None
+_HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA = None
 
 
 def _get_insights_daily_schema() -> dict:
@@ -392,9 +405,6 @@ def _get_insights_daily_schema() -> dict:
     # Attempt to load the schema from docs/ (mirror)
     path = Path(__file__).parent / "docs" / "insights.daily.schema.json"
     if not path.exists():
-        # Fallback or error?
-        # In a real environment we might try to fetch from metarepo here or fail.
-        # For now, if the file is missing, we can't validate.
         logger.error("missing schema file: docs/insights.daily.schema.json")
         raise HTTPException(status_code=500, detail="server configuration error: schema missing")
 
@@ -406,6 +416,26 @@ def _get_insights_daily_schema() -> dict:
         raise HTTPException(status_code=500, detail="server configuration error: schema invalid")
 
     return _INSIGHTS_DAILY_SCHEMA
+
+
+def _get_heimgeist_self_state_snapshot_schema() -> dict:
+    global _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
+    if _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA is not None:
+        return _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
+
+    path = Path(__file__).parent / "docs" / "heimgeist.self_state.snapshot.schema.json"
+    if not path.exists():
+        logger.error("missing schema file: docs/heimgeist.self_state.snapshot.schema.json")
+        raise HTTPException(status_code=500, detail="server configuration error: schema missing")
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA = json.load(f)
+    except Exception as exc:
+        logger.error(f"failed to load schema: {exc}")
+        raise HTTPException(status_code=500, detail="server configuration error: schema invalid")
+
+    return _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
 
 
 def _validate_insights_daily_payload(item: dict) -> None:
