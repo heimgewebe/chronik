@@ -2,8 +2,6 @@
 import pytest
 from fastapi.testclient import TestClient
 from app import app
-import os
-import json
 
 @pytest.fixture(autouse=True)
 def mock_storage(monkeypatch, tmp_path):

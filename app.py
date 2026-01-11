@@ -307,7 +307,7 @@ def _validate_heimgeist_payload(item: dict) -> None:
     valid_kinds = {"heimgeist.insight", "heimgeist.self_state.snapshot"}
     if item["kind"] not in valid_kinds:
         raise HTTPException(
-            status_code=400, detail=f"invalid kind: expected one of {valid_kinds}"
+            status_code=400, detail=f"invalid kind: expected one of: {', '.join(sorted(valid_kinds))}"
         )
 
     if not isinstance(item["version"], int):

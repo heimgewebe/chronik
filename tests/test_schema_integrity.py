@@ -1,5 +1,4 @@
 import json
-import pytest
 from pathlib import Path
 
 def test_heimgeist_self_state_snapshot_schema_strictness():
@@ -24,7 +23,5 @@ def test_heimgeist_self_state_snapshot_schema_strictness():
     assert data_schema.get("additionalProperties") is False, \
         "Data schema must enforce additionalProperties: false to prevent drift"
 
-    # 3. Meta object should probably strictly validate too (implied by previous steps but good to check)
-    # The current prompt didn't explicitly demand meta strictness, but it's good practice.
-    # Checking if it's there based on my previous read_file output: it wasn't explicitly set to false in meta.
-    # I will stick to testing root and data as these are the critical business logic parts.
+    # 3. Meta object is not strictly enforced in this test as root and data strictness
+    # are the critical business logic requirements preventing payload drift.
