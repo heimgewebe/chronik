@@ -18,7 +18,7 @@ def test_ingest_self_state_snapshot_valid(client):
     payload = {
         "kind": "heimgeist.self_state.snapshot",
         "version": 1,
-        "id": "uuid-1234",
+        "id": "123e4567-e89b-12d3-a456-426614174000",
         "meta": {
             "occurred_at": "2023-10-27T10:00:00Z"
         },
@@ -57,7 +57,7 @@ def test_ingest_self_state_snapshot_missing_fields(client):
         headers={"X-Auth": "test-token"}
     )
     assert response.status_code == 400
-    assert "missing data fields" in response.json()["detail"]
+    assert "schema validation failed" in response.json()["detail"]
 
 def test_ingest_self_state_snapshot_invalid_values(client):
     payload = {
@@ -82,7 +82,7 @@ def test_ingest_self_state_snapshot_invalid_values(client):
         headers={"X-Auth": "test-token"}
     )
     assert response.status_code == 400
-    assert "confidence must be a number between 0.0 and 1.0" in response.json()["detail"]
+    assert "schema validation failed" in response.json()["detail"]
 
 def test_ingest_self_state_snapshot_invalid_enum(client):
     payload = {
@@ -107,7 +107,7 @@ def test_ingest_self_state_snapshot_invalid_enum(client):
         headers={"X-Auth": "test-token"}
     )
     assert response.status_code == 400
-    assert "invalid autonomy_level" in response.json()["detail"]
+    assert "schema validation failed" in response.json()["detail"]
 
 def test_ingest_heimgeist_insight_still_works(client):
     payload = {

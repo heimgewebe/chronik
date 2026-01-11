@@ -324,51 +324,13 @@ def _validate_heimgeist_payload(item: dict) -> None:
 
     # Specific validation for heimgeist.self_state.snapshot
     if item["kind"] == "heimgeist.self_state.snapshot":
-        data = item["data"]
-        required_fields = {
-            "confidence",
-            "fatigue",
-            "risk_tension",
-            "autonomy_level",
-            "last_updated",
-            "basis_signals",
-        }
-        missing_fields = required_fields - data.keys()
-        if missing_fields:
-            raise HTTPException(
-                status_code=400,
-                detail=f"missing data fields: {', '.join(sorted(missing_fields))}",
-            )
-
-        # Type and Range checks
-        # 0.0 - 1.0 floats
-        for field in ("confidence", "fatigue", "risk_tension"):
-            val = data[field]
-            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
-                raise HTTPException(
-                    status_code=400, detail=f"{field} must be a number between 0.0 and 1.0"
-                )
-
-        # autonomy_level enum
-        valid_autonomy = {"dormant", "aware", "reflective", "critical"}
-        if data["autonomy_level"] not in valid_autonomy:
-            raise HTTPException(
-                status_code=400, detail=f"invalid autonomy_level: expected {valid_autonomy}"
-            )
-
-        # last_updated timestamp (string)
-        if not isinstance(data["last_updated"], str):
-             raise HTTPException(status_code=400, detail="last_updated must be a string")
-        # Reuse _parse_iso_ts to check format
-        if _parse_iso_ts(data["last_updated"]) is None:
-             raise HTTPException(status_code=400, detail="last_updated must be valid ISO8601")
-
-        # basis_signals list of strings
-        if not isinstance(data["basis_signals"], list):
-            raise HTTPException(status_code=400, detail="basis_signals must be a list")
-        for s in data["basis_signals"]:
-            if not isinstance(s, str):
-                raise HTTPException(status_code=400, detail="basis_signals must contain strings")
+        schema = _get_heimgeist_self_state_snapshot_schema()
+        try:
+            jsonschema.Draft202012Validator(
+                schema, format_checker=jsonschema.FormatChecker()
+            ).validate(item)
+        except jsonschema.ValidationError as exc:
+            raise HTTPException(status_code=400, detail=f"schema validation failed: {exc.message}")
 
     # Meta fields
     meta = item["meta"]
@@ -430,8 +392,9 @@ def _normalize_heimgeist_item(item: dict) -> dict:
     raise HTTPException(status_code=400, detail="invalid payload structure (neither wrapper nor valid legacy)")
 
 
-# Global cache for the loaded schema
+# Global cache for the loaded schemas
 _INSIGHTS_DAILY_SCHEMA = None
+_HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA = None
 
 
 def _get_insights_daily_schema() -> dict:
@@ -442,9 +405,6 @@ def _get_insights_daily_schema() -> dict:
     # Attempt to load the schema from docs/ (mirror)
     path = Path(__file__).parent / "docs" / "insights.daily.schema.json"
     if not path.exists():
-        # Fallback or error?
-        # In a real environment we might try to fetch from metarepo here or fail.
-        # For now, if the file is missing, we can't validate.
         logger.error("missing schema file: docs/insights.daily.schema.json")
         raise HTTPException(status_code=500, detail="server configuration error: schema missing")
 
@@ -456,6 +416,26 @@ def _get_insights_daily_schema() -> dict:
         raise HTTPException(status_code=500, detail="server configuration error: schema invalid")
 
     return _INSIGHTS_DAILY_SCHEMA
+
+
+def _get_heimgeist_self_state_snapshot_schema() -> dict:
+    global _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
+    if _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA is not None:
+        return _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
+
+    path = Path(__file__).parent / "docs" / "heimgeist.self_state.snapshot.schema.json"
+    if not path.exists():
+        logger.error("missing schema file: docs/heimgeist.self_state.snapshot.schema.json")
+        raise HTTPException(status_code=500, detail="server configuration error: schema missing")
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA = json.load(f)
+    except Exception as exc:
+        logger.error(f"failed to load schema: {exc}")
+        raise HTTPException(status_code=500, detail="server configuration error: schema invalid")
+
+    return _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
 
 
 def _validate_insights_daily_payload(item: dict) -> None:
