@@ -8,9 +8,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final
-from pathlib import Path
 
-import jsonschema
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
@@ -37,6 +35,11 @@ from storage import (
 )
 from provenance import ProvenanceError, validate_provenance, has_provenance
 from retention import get_ttl_for_event, compute_expiry_date
+from validation import (
+    normalize_heimgeist_item,
+    parse_iso_ts,
+    validate_insights_daily_payload,
+)
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
@@ -111,14 +114,6 @@ VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 def _get_secret() -> str | None:
     # Runtime lookup (no import-time hard dependency)
     return os.environ.get("CHRONIK_TOKEN")
-
-
-def _parse_iso_ts(value: str) -> datetime | None:
-    # Minimal ISO parsing: supports trailing 'Z'
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except Exception:
-        return None
 
 
 @app.middleware("http")
@@ -287,172 +282,6 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
     return bytes(data)
 
 
-def _validate_heimgeist_payload(item: dict) -> None:
-    """
-    Validate payload wrapper integrity.
-    Mirror of metarepo/contracts/heimgeist.insight.v1.schema.json.
-    """
-    # Root fields
-    required_root = {"kind", "version", "id", "meta", "data"}
-    missing = required_root - item.keys()
-    if missing:
-        raise HTTPException(
-            status_code=400, detail=f"missing fields: {', '.join(sorted(missing))}"
-        )
-
-    # Structure & Type strictness
-    if not isinstance(item["kind"], str):
-        raise HTTPException(status_code=400, detail="kind must be a string")
-
-    valid_kinds = {"heimgeist.insight", "heimgeist.self_state.snapshot"}
-    if item["kind"] not in valid_kinds:
-        raise HTTPException(
-            status_code=400, detail=f"invalid kind: expected one of: {', '.join(sorted(valid_kinds))}"
-        )
-
-    if not isinstance(item["version"], int):
-        raise HTTPException(status_code=400, detail="version must be an integer")
-    if item["version"] != 1:
-        raise HTTPException(status_code=400, detail="invalid version: expected 1")
-
-    if not isinstance(item["id"], str):
-        raise HTTPException(status_code=400, detail="id must be a string")
-
-    # Data field must be an object
-    if not isinstance(item["data"], dict):
-        raise HTTPException(status_code=400, detail="data must be a dict")
-
-    # Specific validation for heimgeist.self_state.snapshot
-    if item["kind"] == "heimgeist.self_state.snapshot":
-        schema = _get_heimgeist_self_state_snapshot_schema()
-        try:
-            jsonschema.Draft202012Validator(
-                schema, format_checker=jsonschema.FormatChecker()
-            ).validate(item)
-        except jsonschema.ValidationError as exc:
-            raise HTTPException(status_code=400, detail=f"schema validation failed: {exc.message}")
-
-    # Meta fields
-    meta = item["meta"]
-    if not isinstance(meta, dict):
-        raise HTTPException(status_code=400, detail="meta must be a dict")
-
-    if "occurred_at" not in meta:
-        raise HTTPException(status_code=400, detail="missing meta.occurred_at")
-    if not isinstance(meta["occurred_at"], str):
-        raise HTTPException(status_code=400, detail="meta.occurred_at must be a string")
-    if _parse_iso_ts(meta["occurred_at"]) is None:
-        raise HTTPException(status_code=400, detail="meta.occurred_at must be valid ISO8601")
-
-
-def _normalize_heimgeist_item(item: dict) -> dict:
-    """
-    Normalize legacy payloads to the canonical wrapper.
-    Legacy inputs: {id, source, timestamp, payload}
-    Canonical wrapper: {kind, version, id, meta, data}
-    """
-    # 1. Check if it's already a valid Wrapper
-    required_wrapper = {"kind", "version", "id", "meta", "data"}
-    if required_wrapper.issubset(item.keys()):
-        _validate_heimgeist_payload(item)
-        return item
-
-    # 2. Legacy Adapter
-    legacy_required = {"id", "source", "timestamp", "payload"}
-    if legacy_required.issubset(item.keys()):
-        legacy_payload = item["payload"]
-        if not isinstance(legacy_payload, dict):
-            raise HTTPException(status_code=400, detail="legacy payload must be a dict")
-
-        # kind/version must be present in the nested payload
-        if "kind" not in legacy_payload or "version" not in legacy_payload:
-            raise HTTPException(status_code=400, detail="legacy payload missing kind/version")
-
-        kind = legacy_payload.get("kind")
-        version = legacy_payload.get("version")
-
-        # Prefer inner 'data', else treat stripped payload as data
-        data = legacy_payload.get("data")
-        if data is None:
-            data = {k: v for k, v in legacy_payload.items() if k not in ("kind", "version")}
-
-        new_item = {
-            "kind": kind,
-            "version": version,
-            "id": item["id"],
-            "meta": {
-                "occurred_at": item["timestamp"],
-                "producer": item["source"],
-            },
-            "data": data,
-        }
-        _validate_heimgeist_payload(new_item)
-        return new_item
-
-    raise HTTPException(status_code=400, detail="invalid payload structure (neither wrapper nor valid legacy)")
-
-
-# Global cache for the loaded schemas
-_INSIGHTS_DAILY_SCHEMA = None
-_HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA = None
-
-
-def _get_insights_daily_schema() -> dict:
-    global _INSIGHTS_DAILY_SCHEMA
-    if _INSIGHTS_DAILY_SCHEMA is not None:
-        return _INSIGHTS_DAILY_SCHEMA
-
-    # Attempt to load the schema from docs/ (mirror)
-    path = Path(__file__).parent / "docs" / "insights.daily.schema.json"
-    if not path.exists():
-        logger.error("missing schema file: docs/insights.daily.schema.json")
-        raise HTTPException(status_code=500, detail="server configuration error: schema missing")
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            _INSIGHTS_DAILY_SCHEMA = json.load(f)
-    except Exception as exc:
-        logger.error(f"failed to load schema: {exc}")
-        raise HTTPException(status_code=500, detail="server configuration error: schema invalid")
-
-    return _INSIGHTS_DAILY_SCHEMA
-
-
-def _get_heimgeist_self_state_snapshot_schema() -> dict:
-    global _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
-    if _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA is not None:
-        return _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
-
-    path = Path(__file__).parent / "docs" / "heimgeist.self_state.snapshot.schema.json"
-    if not path.exists():
-        logger.error("missing schema file: docs/heimgeist.self_state.snapshot.schema.json")
-        raise HTTPException(status_code=500, detail="server configuration error: schema missing")
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA = json.load(f)
-    except Exception as exc:
-        logger.error(f"failed to load schema: {exc}")
-        raise HTTPException(status_code=500, detail="server configuration error: schema invalid")
-
-    return _HEIMGEIST_SELF_STATE_SNAPSHOT_SCHEMA
-
-
-def _validate_insights_daily_payload(item: dict) -> None:
-    """
-    Validate insights.daily payload against the JSON Schema.
-    Uses Draft 2020-12 and FormatChecker.
-    """
-    schema = _get_insights_daily_schema()
-    try:
-        jsonschema.Draft202012Validator(
-            schema, format_checker=jsonschema.FormatChecker()
-        ).validate(item)
-    except jsonschema.ValidationError as exc:
-        # Provide a helpful error message
-        raise HTTPException(status_code=400, detail=f"schema validation failed: {exc.message}")
-
-
 def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
     # Leeres Array: nichts zu tun
@@ -469,9 +298,9 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
 
         # 1. Validation & Normalization logic per domain
         if dom == "insights.daily":
-            _validate_insights_daily_payload(normalized)
+            validate_insights_daily_payload(normalized)
         elif dom == "heimgeist":
-            normalized = _normalize_heimgeist_item(normalized)
+            normalized = normalize_heimgeist_item(normalized)
         else:
             # Generic domain checks
             summary_val = normalized.get("summary")
@@ -722,7 +551,7 @@ async def tail_v1(
 
     since_dt: datetime | None = None
     if since:
-        since_dt = _parse_iso_ts(since)
+        since_dt = parse_iso_ts(since)
         if since_dt is None:
             raise HTTPException(status_code=400, detail="invalid since format")
 
@@ -754,7 +583,7 @@ async def tail_v1(
 
             dt = None
             if isinstance(ts_str, str):
-                dt = _parse_iso_ts(ts_str)
+                dt = parse_iso_ts(ts_str)
 
             if since_dt and (dt is None or dt <= since_dt):
                 continue
