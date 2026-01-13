@@ -23,14 +23,11 @@ def prewarm_validators() -> None:
     """
     Load all validators into cache.
     Should be called at application startup to avoid latency on the first request.
+    Raises exceptions if schemas are missing or invalid, ensuring fail-fast startup.
     """
-    try:
-        _get_insights_daily_validator()
-        _get_heimgeist_self_state_snapshot_validator()
-        logger.info("validators pre-warmed successfully")
-    except Exception as exc:
-        # We log but do not crash here; let the first request fail if schemas are broken
-        logger.warning(f"validator pre-warming failed: {exc}")
+    _get_insights_daily_validator()
+    _get_heimgeist_self_state_snapshot_validator()
+    logger.info("validators pre-warmed successfully")
 
 
 def parse_iso_ts(value: str) -> datetime | None:
