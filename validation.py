@@ -39,6 +39,17 @@ def parse_iso_ts(value: str) -> datetime | None:
         return None
 
 
+def _has_ref_key(obj: Any) -> bool:
+    """Recursively check for '$ref' keys in a dictionary or list."""
+    if isinstance(obj, dict):
+        if "$ref" in obj:
+            return True
+        return any(_has_ref_key(v) for v in obj.values())
+    elif isinstance(obj, list):
+        return any(_has_ref_key(v) for v in obj)
+    return False
+
+
 def _get_validator(schema_filename: str) -> jsonschema.Draft202012Validator:
     """
     Helper to load schema and create a validator.
@@ -55,9 +66,11 @@ def _get_validator(schema_filename: str) -> jsonschema.Draft202012Validator:
         with open(path, "r", encoding="utf-8") as f:
             schema = json.load(f)
 
-        # Enforce self-contained assumption
-        if "$ref" in json.dumps(schema):
-            raise ValueError("Schema contains $ref, which is not supported in this environment.")
+        # Enforce self-contained assumption via precise recursive check
+        if _has_ref_key(schema):
+            raise ValueError(
+                f"Schema {schema_filename} contains '$ref', which is not supported in this environment."
+            )
 
         return jsonschema.Draft202012Validator(
             schema, format_checker=jsonschema.FormatChecker()
