@@ -113,7 +113,7 @@ logging.getLogger().setLevel(LOG_LEVEL)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Pre-warm validators to avoid latency on first request
-    prewarm_validators()
+    await run_in_threadpool(prewarm_validators)
     yield
 
 

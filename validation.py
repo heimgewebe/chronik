@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 from datetime import datetime
@@ -12,12 +13,6 @@ import jsonschema
 from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
-
-# Global cache for the loaded validators
-# Note: Caching is process-local. In a multi-worker environment (e.g. uvicorn workers),
-# each worker will maintain its own cache.
-_INSIGHTS_DAILY_VALIDATOR = None
-_HEIMGEIST_SELF_STATE_SNAPSHOT_VALIDATOR = None
 
 
 def prewarm_validators() -> None:
@@ -83,24 +78,14 @@ def _get_validator(schema_filename: str) -> jsonschema.Draft202012Validator:
         )
 
 
+@functools.lru_cache(maxsize=None)
 def _get_insights_daily_validator() -> jsonschema.Draft202012Validator:
-    global _INSIGHTS_DAILY_VALIDATOR
-    if _INSIGHTS_DAILY_VALIDATOR is not None:
-        return _INSIGHTS_DAILY_VALIDATOR
-
-    _INSIGHTS_DAILY_VALIDATOR = _get_validator("insights.daily.schema.json")
-    return _INSIGHTS_DAILY_VALIDATOR
+    return _get_validator("insights.daily.schema.json")
 
 
+@functools.lru_cache(maxsize=None)
 def _get_heimgeist_self_state_snapshot_validator() -> jsonschema.Draft202012Validator:
-    global _HEIMGEIST_SELF_STATE_SNAPSHOT_VALIDATOR
-    if _HEIMGEIST_SELF_STATE_SNAPSHOT_VALIDATOR is not None:
-        return _HEIMGEIST_SELF_STATE_SNAPSHOT_VALIDATOR
-
-    _HEIMGEIST_SELF_STATE_SNAPSHOT_VALIDATOR = _get_validator(
-        "heimgeist.self_state.snapshot.schema.json"
-    )
-    return _HEIMGEIST_SELF_STATE_SNAPSHOT_VALIDATOR
+    return _get_validator("heimgeist.self_state.snapshot.schema.json")
 
 
 def validate_heimgeist_payload(item: dict) -> None:
