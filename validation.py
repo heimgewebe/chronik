@@ -54,6 +54,11 @@ def _get_validator(schema_filename: str) -> jsonschema.Draft202012Validator:
     try:
         with open(path, "r", encoding="utf-8") as f:
             schema = json.load(f)
+
+        # Enforce self-contained assumption
+        if "$ref" in json.dumps(schema):
+            raise ValueError("Schema contains $ref, which is not supported in this environment.")
+
         return jsonschema.Draft202012Validator(
             schema, format_checker=jsonschema.FormatChecker()
         )
