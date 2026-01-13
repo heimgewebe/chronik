@@ -13,8 +13,24 @@ from fastapi import HTTPException
 logger = logging.getLogger(__name__)
 
 # Global cache for the loaded validators
+# Note: Caching is process-local. In a multi-worker environment (e.g. uvicorn workers),
+# each worker will maintain its own cache.
 _INSIGHTS_DAILY_VALIDATOR = None
 _HEIMGEIST_SELF_STATE_SNAPSHOT_VALIDATOR = None
+
+
+def prewarm_validators() -> None:
+    """
+    Load all validators into cache.
+    Should be called at application startup to avoid latency on the first request.
+    """
+    try:
+        _get_insights_daily_validator()
+        _get_heimgeist_self_state_snapshot_validator()
+        logger.info("validators pre-warmed successfully")
+    except Exception as exc:
+        # We log but do not crash here; let the first request fail if schemas are broken
+        logger.warning(f"validator pre-warming failed: {exc}")
 
 
 def parse_iso_ts(value: str) -> datetime | None:
@@ -27,7 +43,10 @@ def parse_iso_ts(value: str) -> datetime | None:
 
 
 def _get_validator(schema_filename: str) -> jsonschema.Draft202012Validator:
-    """Helper to load schema and create a validator."""
+    """
+    Helper to load schema and create a validator.
+    Assumes schemas are self-contained (no external $ref).
+    """
     path = Path(__file__).parent / "docs" / schema_filename
     if not path.exists():
         logger.error(f"missing schema file: docs/{schema_filename}")

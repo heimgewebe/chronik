@@ -9,6 +9,8 @@ import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Final
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
@@ -38,6 +40,7 @@ from retention import get_ttl_for_event, compute_expiry_date
 from validation import (
     normalize_heimgeist_item,
     parse_iso_ts,
+    prewarm_validators,
     validate_insights_daily_payload,
 )
 
@@ -106,7 +109,15 @@ _handler.setFormatter(ExtraFormatter(fmt="%(levelname)s:%(name)s:%(message)s"))
 logging.getLogger().handlers = [_handler]
 logging.getLogger().setLevel(LOG_LEVEL)
 
-app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE)
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Pre-warm validators to avoid latency on first request
+    prewarm_validators()
+    yield
+
+
+app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
 
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
