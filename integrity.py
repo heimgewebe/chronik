@@ -141,6 +141,12 @@ class IntegrityManager:
             logger.error(f"Unsupported integrity apiVersion: {api_version}")
             return None
 
+        # Validate generated_at (required by schema)
+        generated_at = data.get("generated_at")
+        if not generated_at or not isinstance(generated_at, str) or parse_iso_ts(generated_at) is None:
+            logger.error(f"Integrity sources invalid/missing generated_at: {generated_at}")
+            return None
+
         raw_sources = data.get("sources", [])
         if not isinstance(raw_sources, list):
             logger.error("Integrity sources 'sources' field must be a list")
@@ -154,6 +160,7 @@ class IntegrityManager:
 
             repo = item.get("repo")
             url = item.get("summary_url")
+            enabled = item.get("enabled")
 
             if not isinstance(repo, str) or not repo:
                 logger.warning(f"Skipping invalid source item (missing/invalid repo): {item}")
@@ -161,6 +168,10 @@ class IntegrityManager:
 
             if not isinstance(url, str) or not url:
                 logger.warning(f"Skipping invalid source item (missing/invalid summary_url): {item}")
+                continue
+
+            if enabled is not None and not isinstance(enabled, bool):
+                logger.warning(f"Skipping invalid source item (enabled not bool): {item}")
                 continue
 
             valid_sources.append(item)
@@ -379,6 +390,3 @@ class IntegrityManager:
             "total_status": total_status,
             "repos": repos
         }
-
-# Global singleton instance
-manager = IntegrityManager()

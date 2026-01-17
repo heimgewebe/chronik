@@ -28,6 +28,7 @@ async def test_integrity_sync_success(monkeypatch, tmp_path):
     # Setup Override for sources
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [
             {
                 "repo": "heimgewebe/wgx",
@@ -77,10 +78,12 @@ async def test_integrity_sources_validation_filtering(monkeypatch, tmp_path):
     # Mix of valid and invalid sources
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [
             {"repo": "valid/repo", "summary_url": "http://ok", "enabled": True},
             {"repo": "", "summary_url": "http://bad-repo"},  # Invalid repo
             {"repo": "no/url", "summary_url": ""},           # Invalid URL
+            {"repo": "bad/enabled", "summary_url": "http://skip", "enabled": "not-bool"}, # Invalid enabled type
             {"not-a-dict": True}                             # Invalid type
         ]
     }
@@ -104,6 +107,26 @@ async def test_integrity_sources_validation_filtering(monkeypatch, tmp_path):
     assert args[0] == "http://ok"
 
 @pytest.mark.asyncio
+async def test_integrity_sources_invalid_generated_at(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    # Missing generated_at
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [{"repo": "repo", "summary_url": "http://url"}]
+    }
+
+    mock_get = AsyncMock()
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    # Should have rejected sources entirely, so no fetches made
+    assert mock_get.call_count == 0
+
+@pytest.mark.asyncio
 async def test_integrity_status_normalization(monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     from storage import read_last_line, sanitize_domain
@@ -111,6 +134,7 @@ async def test_integrity_status_normalization(monkeypatch, tmp_path):
     repo = "heimgewebe/wgx"
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
     summary_data = {
@@ -161,6 +185,7 @@ async def test_integrity_no_overwrite_old(monkeypatch, tmp_path):
     # 2. Sync with older report
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
     summary_data = {
@@ -216,6 +241,7 @@ async def test_integrity_skip_on_equal_timestamp(monkeypatch, tmp_path):
     # Expectation: Should SKIP update because timestamp is equal (stable logic)
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
     summary_data = {
@@ -257,6 +283,8 @@ async def test_integrity_future_timestamp_handling(monkeypatch, tmp_path):
 
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
     summary_data = {
@@ -349,6 +377,7 @@ async def test_integrity_write_invalid_timestamp_if_empty(monkeypatch, tmp_path)
     repo = "heimgewebe/wgx"
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
     summary_data = {
@@ -391,6 +420,7 @@ async def test_integrity_valid_timestamp_no_sanitized_flag(monkeypatch, tmp_path
     repo = "heimgewebe/wgx"
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
     summary_data = {
@@ -445,6 +475,8 @@ async def test_integrity_fetch_failure_preserves_state(monkeypatch, tmp_path):
 
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
 
@@ -472,6 +504,7 @@ async def test_integrity_json_failure_is_fail(monkeypatch, tmp_path):
     repo = "heimgewebe/wgx"
     sources_data = {
         "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
 
