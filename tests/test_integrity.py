@@ -692,6 +692,7 @@ def test_integrity_view_aggregate(client, monkeypatch, tmp_path):
         assert resp.status_code == 200
         data = resp.json()
 
+    assert "as_of" in data
     assert data["total_status"] == "WARN"
     repos = data["repos"]
     assert len(repos) == 2
@@ -710,6 +711,7 @@ def test_integrity_view_empty_is_missing(client, monkeypatch, tmp_path):
 
         assert data["total_status"] == "MISSING"
         assert len(data["repos"]) == 0
+        assert "as_of" in data
 
 def test_integrity_view_ignores_junk_kind(client, monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -732,3 +734,30 @@ def test_integrity_view_ignores_junk_kind(client, monkeypatch, tmp_path):
 
         assert data["total_status"] == "MISSING" # Because junk is ignored, result is empty -> MISSING
         assert len(data["repos"]) == 0
+
+def test_integrity_view_legacy_support(client, monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
+    headers = {"X-Auth": "test-token"}
+
+    # Ingest legacy kind (in payload, not wrapper)
+    dom = sanitize_domain("integrity.legacy")
+    wrapper = {
+        "domain": dom,
+        # No kind in wrapper
+        "payload": {
+            "kind": "integrity.summary.published.v1",
+            "repo": "legacy",
+            "status": "OK"
+        }
+    }
+    write_payload(dom, [json.dumps(wrapper)])
+
+    from app import app
+    with TestClient(app) as client:
+        resp = client.get("/v1/integrity", headers=headers)
+        data = resp.json()
+
+        assert data["total_status"] == "OK"
+        assert len(data["repos"]) == 1
+        assert data["repos"][0]["legacy"] is True

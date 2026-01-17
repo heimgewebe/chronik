@@ -382,17 +382,19 @@ class IntegrityManager:
 
                 item = json.loads(line)
 
-                # Check kind in wrapper
-                if item.get("kind") != "integrity.summary.published.v1":
-                    # Backward compatibility or junk filtering
-                    # If kind not in wrapper, check payload (old way) just in case
-                    payload = item.get("payload", {})
-                    if payload.get("kind") != "integrity.summary.published.v1":
-                        continue
-
                 payload = item.get("payload", {})
                 # Make a copy to avoid side-effects on the stored dict if reused
                 payload = payload.copy()
+
+                # Check kind in wrapper (Canonical)
+                if item.get("kind") == "integrity.summary.published.v1":
+                    pass # Canonical path
+                # Backward compatibility: check payload.kind if wrapper.kind missing
+                elif payload.get("kind") == "integrity.summary.published.v1":
+                    payload["legacy"] = True
+                else:
+                    # Junk or unrelated event
+                    continue
 
                 status = normalize_status(payload.get("status", "UNCLEAR"))
                 payload["status"] = status
@@ -418,6 +420,7 @@ class IntegrityManager:
         repos.sort(key=lambda x: x.get("repo", ""))
 
         return {
+            "as_of": get_current_utc_str(),
             "total_status": total_status,
             "repos": repos
         }
