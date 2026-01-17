@@ -222,8 +222,10 @@ class IntegrityManager:
                     if "url" not in payload_data:
                         payload_data["url"] = url
 
-                    if "repo" not in payload_data:
-                        payload_data["repo"] = repo
+                    if "repo" not in payload_data or not payload_data["repo"]:
+                        # Missing or empty repo in report is a contract violation
+                        status = "FAIL"
+                        payload_data["repo"] = repo # Fallback to source repo
 
                 except ValueError as exc:
                     status = "FAIL" # Schema/Parse fail

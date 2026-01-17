@@ -284,7 +284,6 @@ async def test_integrity_future_timestamp_handling(monkeypatch, tmp_path):
     sources_data = {
         "apiVersion": "integrity.sources.v1",
         "generated_at": "2023-01-01T00:00:00Z",
-        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
     summary_data = {
@@ -527,6 +526,80 @@ async def test_integrity_json_failure_is_fail(monkeypatch, tmp_path):
 
     # Should be FAIL (not MISSING)
     assert data["payload"]["status"] == "FAIL"
+
+@pytest.mark.asyncio
+async def test_integrity_missing_repo_is_fail(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import read_last_line, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
+        "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
+    }
+
+    # Missing repo in report
+    summary_data = {
+        "status": "OK",
+        "generated_at": "2023-01-01T00:00:00Z",
+        # "repo" missing
+    }
+
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = summary_data
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+    line = read_last_line(domain)
+    data = json.loads(line)
+
+    # Should be FAIL due to missing contract field
+    assert data["payload"]["status"] == "FAIL"
+    # Repo backfilled from source for identification
+    assert data["payload"]["repo"] == repo
+
+@pytest.mark.asyncio
+async def test_integrity_unknown_status_is_unclear(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import read_last_line, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
+        "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
+    }
+    summary_data = {
+        "repo": repo,
+        "status": "WEIRD",
+        "generated_at": "2023-01-01T00:00:00Z"
+    }
+
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = summary_data
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+    line = read_last_line(domain)
+    data = json.loads(line)
+    assert data["payload"]["status"] == "UNCLEAR"
 
 def test_integrity_view_aggregate(client, monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
