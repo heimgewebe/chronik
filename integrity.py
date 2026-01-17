@@ -30,6 +30,15 @@ STATUS_SEVERITY = {
     "FAIL": 40,
 }
 
+ALLOWED_STATUS = set(STATUS_SEVERITY.keys())
+
+def normalize_status(value: Any) -> str:
+    """Normalize status to contract-allowed values. Unknown -> UNCLEAR."""
+    if not isinstance(value, str):
+        return "UNCLEAR"
+    v = value.strip().upper()
+    return v if v in ALLOWED_STATUS else "UNCLEAR"
+
 DEFAULT_SOURCES_URL = "https://raw.githubusercontent.com/heimgewebe/metarepo/main/reports/integrity/sources.v1.json"
 
 
@@ -141,18 +150,24 @@ class IntegrityManager:
 
         status = "MISSING"
         payload_data = {}
+        invalid_new_generated_at = False
 
         try:
             resp = await client.get(url, timeout=10.0)
             if resp.status_code == 200:
                 try:
                     report = resp.json()
-                    status = report.get("status", "UNCLEAR")
+                    status = normalize_status(report.get("status", "UNCLEAR"))
                     payload_data = report
 
                     # Ensure minimal fields in payload (report contract)
                     if "generated_at" not in payload_data:
                          payload_data["generated_at"] = received_at # Fallback
+                    else:
+                        # Validate generated_at is parseable ISO
+                        if parse_iso_ts(payload_data.get("generated_at")) is None:
+                            invalid_new_generated_at = True
+                            status = "FAIL"
 
                     if "url" not in payload_data:
                         payload_data["url"] = url
@@ -171,37 +186,50 @@ class IntegrityManager:
 
         # Check Latest Semantics (Optimistic concurrency control manually)
         new_generated_at = payload_data.get("generated_at")
-        if new_generated_at:
-            current_line = await run_in_threadpool(read_last_line, domain)
-            if current_line:
-                try:
-                    current_item = json.loads(current_line)
-                    current_payload = current_item.get("payload", {})
-                    current_generated_at = current_payload.get("generated_at")
+        current_line = await run_in_threadpool(read_last_line, domain)
+        if current_line:
+            try:
+                current_item = json.loads(current_line)
+                current_payload = current_item.get("payload", {})
+                current_generated_at = current_payload.get("generated_at")
 
-                    if current_generated_at:
-                         new_dt = parse_iso_ts(new_generated_at)
-                         curr_dt = parse_iso_ts(current_generated_at)
-                         if new_dt and curr_dt and new_dt <= curr_dt:
-                             # New report is older or same, skip update
-                             logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_generated_at}")
-                             return
-                except (json.JSONDecodeError, ValueError):
-                    pass # corrupt current state, overwrite safe
+                curr_dt = parse_iso_ts(current_generated_at) if current_generated_at else None
+                new_dt = parse_iso_ts(new_generated_at) if new_generated_at else None
+
+                if invalid_new_generated_at and curr_dt:
+                    logger.warning(
+                        f"Skipping overwrite for {repo}: invalid generated_at in fetched report "
+                        f"({new_generated_at!r}); keeping current ({current_generated_at!r})"
+                    )
+                    return
+
+                if new_dt and curr_dt and new_dt <= curr_dt:
+                        # New report is older or same, skip update
+                        logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_generated_at}")
+                        return
+            except (json.JSONDecodeError, ValueError):
+                pass # corrupt current state, overwrite safe
 
         # If we failed fetch/parse, we synthesize a minimal payload to report status
         if not payload_data:
             payload_data = {
                 "repo": repo,
                 "url": url,
-                "status": status,
+                "status": normalize_status(status),
                 "generated_at": received_at
             }
         else:
             # Ensure status is updated in payload if we overrode it (e.g. FAIL/UNCLEAR logic)
             # But normally we trust the report's status unless fetch failed.
-            if status in ["MISSING", "FAIL"] and payload_data.get("status") != status:
-                 payload_data["status"] = status
+            if status in ["MISSING", "FAIL", "UNCLEAR"] and payload_data.get("status") != status:
+                 payload_data["status"] = normalize_status(status)
+            else:
+                 payload_data["status"] = normalize_status(payload_data.get("status", status))
+
+            # If generated_at was invalid and we are allowed to write (no current valid state),
+            # normalize it to received_at so the stored state is parseable downstream.
+            if invalid_new_generated_at:
+                payload_data["generated_at"] = received_at
 
         # Create Envelope
         # Strict Schema: kind is in wrapper, not payload
@@ -258,7 +286,8 @@ class IntegrityManager:
                         continue
 
                 payload = item.get("payload", {})
-                status = payload.get("status", "UNCLEAR")
+                status = normalize_status(payload.get("status", "UNCLEAR"))
+                payload["status"] = status
 
                 # Update total status
                 severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
