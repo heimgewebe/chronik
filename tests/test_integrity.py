@@ -156,7 +156,7 @@ async def test_integrity_no_overwrite_old(monkeypatch, tmp_path):
     assert data["payload"]["generated_at"] == "2023-01-02T10:00:00Z"
 
 @pytest.mark.asyncio
-async def test_integrity_overwrite_on_equal_timestamp(monkeypatch, tmp_path):
+async def test_integrity_skip_on_equal_timestamp(monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     from storage import write_payload, sanitize_domain
 
@@ -179,6 +179,7 @@ async def test_integrity_overwrite_on_equal_timestamp(monkeypatch, tmp_path):
     write_payload(domain, [json.dumps(existing_wrapper)])
 
     # 2. Sync with same timestamp but different status
+    # Expectation: Should SKIP update because timestamp is equal (stable logic)
     sources_data = {
         "apiVersion": "integrity.sources.v1",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
@@ -202,11 +203,11 @@ async def test_integrity_overwrite_on_equal_timestamp(monkeypatch, tmp_path):
     with patch("httpx.AsyncClient.get", side_effect=mock_get):
         await test_manager.sync_all()
 
-    # 3. Verify overwritten
+    # 3. Verify NOT overwritten (status remains OK)
     from storage import read_last_line
     line = read_last_line(domain)
     data = json.loads(line)
-    assert data["payload"]["status"] == "FAIL"
+    assert data["payload"]["status"] == "OK"
     assert data["payload"]["generated_at"] == ts
 
 @pytest.mark.asyncio

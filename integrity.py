@@ -183,7 +183,7 @@ class IntegrityManager:
                     if "repo" not in payload_data:
                         payload_data["repo"] = repo
 
-                except json.JSONDecodeError:
+                except ValueError:
                     status = "FAIL" # Schema/Parse fail
             else:
                 logger.warning(f"Integrity fetch failed for {repo}: {resp.status_code}")
@@ -212,11 +212,10 @@ class IntegrityManager:
                     return
 
                 # Update logic:
-                # - Skip only if STRICTLY older (<).
-                # - If equal (==), we overwrite (last-writer-wins / idempotency).
-                if new_dt and curr_dt and new_dt < curr_dt:
-                        # New report is older, skip update
-                        logger.debug(f"Skipping update for {repo}: {new_generated_at} < {current_generated_at}")
+                # - Skip if older or equal (<=) to prevent redundant writes/churn.
+                if new_dt and curr_dt and new_dt <= curr_dt:
+                        # New report is older or same, skip update
+                        logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_generated_at}")
                         return
             except (json.JSONDecodeError, ValueError):
                 pass # corrupt current state, overwrite safe
