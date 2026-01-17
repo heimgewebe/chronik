@@ -525,6 +525,10 @@ async def test_integrity_json_failure_is_fail(monkeypatch, tmp_path):
 
     # Should be FAIL (not MISSING)
     assert data["payload"]["status"] == "FAIL"
+    # Check meta error reason
+    assert "meta" in data
+    assert "error_reason" in data["meta"]
+    assert "Invalid JSON" in data["meta"]["error_reason"]
 
 @pytest.mark.asyncio
 async def test_integrity_missing_repo_is_fail(monkeypatch, tmp_path):
@@ -563,6 +567,9 @@ async def test_integrity_missing_repo_is_fail(monkeypatch, tmp_path):
 
     # Should be FAIL due to missing contract field
     assert data["payload"]["status"] == "FAIL"
+    # Check meta error reason
+    assert "meta" in data
+    assert data["meta"]["error_reason"] == "Missing or empty repo in report"
     # Repo backfilled from source for identification
     assert data["payload"]["repo"] == repo
 

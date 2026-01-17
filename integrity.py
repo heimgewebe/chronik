@@ -190,6 +190,7 @@ class IntegrityManager:
         status = "MISSING"
         payload_data = {}
         invalid_new_generated_at = False
+        error_reason = None
 
         try:
             resp = await client.get(url, timeout=10.0)
@@ -204,12 +205,14 @@ class IntegrityManager:
                          # Missing timestamp -> FAIL and sanitize
                          invalid_new_generated_at = True
                          status = "FAIL"
+                         error_reason = "Missing generated_at"
                     else:
                         # Validate generated_at is parseable ISO
                         parsed_dt = parse_iso_ts(payload_data.get("generated_at"))
                         if parsed_dt is None:
                             invalid_new_generated_at = True
                             status = "FAIL"
+                            error_reason = "Invalid timestamp format"
                         else:
                              # Sanity check: Future timestamps (> 10 mins) are invalid
                              # This prevents frozen state if a producer clock is wrong
@@ -218,6 +221,7 @@ class IntegrityManager:
                                  logger.warning(f"Future timestamp detected for {repo}: {parsed_dt}")
                                  invalid_new_generated_at = True
                                  status = "FAIL"
+                                 error_reason = "Future timestamp detected"
 
                     if "url" not in payload_data:
                         payload_data["url"] = url
@@ -225,17 +229,21 @@ class IntegrityManager:
                     if "repo" not in payload_data or not payload_data["repo"]:
                         # Missing or empty repo in report is a contract violation
                         status = "FAIL"
+                        error_reason = "Missing or empty repo in report"
                         payload_data["repo"] = repo # Fallback to source repo
 
                 except ValueError as exc:
                     status = "FAIL" # Schema/Parse fail
+                    error_reason = f"Invalid JSON: {str(exc)}"
                     logger.warning(f"Integrity JSON parse failed for {repo} ({url}): {exc}")
             else:
                 logger.warning(f"Integrity fetch failed for {repo}: {resp.status_code}")
                 status = "MISSING"
+                error_reason = f"HTTP {resp.status_code}"
         except Exception as exc:
             logger.warning(f"Integrity fetch exception for {repo}: {exc}")
             status = "MISSING"
+            error_reason = f"Network Error: {str(exc)}"
 
         # Check Latest Semantics (Optimistic concurrency control manually)
         new_generated_at = payload_data.get("generated_at")
@@ -315,6 +323,10 @@ class IntegrityManager:
             "received_at": received_at,
             "payload": payload_data,
         }
+
+        # Add meta with error reason if available
+        if error_reason:
+            wrapper["meta"] = {"error_reason": error_reason}
 
         # Write to storage
         try:
