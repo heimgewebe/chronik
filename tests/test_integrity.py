@@ -475,7 +475,6 @@ async def test_integrity_fetch_failure_preserves_state(monkeypatch, tmp_path):
     sources_data = {
         "apiVersion": "integrity.sources.v1",
         "generated_at": "2023-01-01T00:00:00Z",
-        "generated_at": "2023-01-01T00:00:00Z",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
 
