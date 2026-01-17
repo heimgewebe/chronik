@@ -195,32 +195,48 @@ class IntegrityManager:
         # Check Latest Semantics (Optimistic concurrency control manually)
         new_generated_at = payload_data.get("generated_at")
         current_line = await run_in_threadpool(read_last_line, domain)
+
+        current_payload = {}
+        curr_dt = None
+        has_current_state = False
+
         if current_line:
             try:
                 current_item = json.loads(current_line)
                 current_payload = current_item.get("payload", {})
                 current_generated_at = current_payload.get("generated_at")
-
                 curr_dt = parse_iso_ts(current_generated_at) if current_generated_at else None
-                new_dt = parse_iso_ts(new_generated_at) if new_generated_at else None
+                has_current_state = True
+            except (json.JSONDecodeError, ValueError):
+                # Corrupt current state, treat as no state
+                pass
 
-                if invalid_new_generated_at and curr_dt:
-                    logger.warning(
-                        f"Skipping overwrite for {repo}: invalid generated_at in fetched report "
-                        f"({new_generated_at!r}); keeping current ({current_generated_at!r})"
-                    )
+        # Stability Logic:
+        # If fetch failed (MISSING) and we have a valid current state, preserve it.
+        # Don't overwrite known truth with transient network failure.
+        if status == "MISSING" and has_current_state:
+            logger.debug(f"Preserving existing state for {repo} despite fetch failure")
+            return
+
+        if has_current_state:
+            # If new generated_at invalid, preserve valid current state
+            if invalid_new_generated_at and curr_dt:
+                logger.warning(
+                    f"Skipping overwrite for {repo}: invalid generated_at in fetched report "
+                    f"({new_generated_at!r}); keeping current ({current_payload.get('generated_at')!r})"
+                )
+                return
+
+            new_dt = parse_iso_ts(new_generated_at) if new_generated_at else None
+
+            # Update logic:
+            # - Skip if older or equal (<=) to prevent redundant writes/churn.
+            if new_dt and curr_dt and new_dt <= curr_dt:
+                    # New report is older or same, skip update
+                    logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_payload.get('generated_at')}")
                     return
 
-                # Update logic:
-                # - Skip if older or equal (<=) to prevent redundant writes/churn.
-                if new_dt and curr_dt and new_dt <= curr_dt:
-                        # New report is older or same, skip update
-                        logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_generated_at}")
-                        return
-            except (json.JSONDecodeError, ValueError):
-                pass # corrupt current state, overwrite safe
-
-        # If we failed fetch/parse, we synthesize a minimal payload to report status
+        # If we failed fetch/parse (and didn't return early), we synthesize a minimal payload
         if not payload_data:
             payload_data = {
                 "repo": repo,

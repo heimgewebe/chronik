@@ -347,6 +347,80 @@ async def test_integrity_write_invalid_timestamp_if_empty(monkeypatch, tmp_path)
     # Just check it's ISO-like
     assert "T" in data["payload"]["generated_at"]
 
+@pytest.mark.asyncio
+async def test_integrity_fetch_failure_preserves_state(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    domain = sanitize_domain("integrity.heimgewebe.wgx")
+
+    # 1. Existing OK state
+    existing_wrapper = {
+        "domain": domain,
+        "kind": "integrity.summary.published.v1",
+        "received_at": "2023-01-02T12:00:00Z",
+        "payload": {
+            "repo": repo,
+            "status": "OK",
+            "generated_at": "2023-01-02T10:00:00Z",
+            "url": "..."
+        }
+    }
+    write_payload(domain, [json.dumps(existing_wrapper)])
+
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
+    }
+
+    # Simulate Fetch Failure (Exception)
+    mock_get = AsyncMock(side_effect=Exception("Network down"))
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    # Verify existing OK state persists (no overwrite with MISSING)
+    from storage import read_last_line
+    line = read_last_line(domain)
+    data = json.loads(line)
+    assert data["payload"]["status"] == "OK"
+
+
+@pytest.mark.asyncio
+async def test_integrity_json_failure_is_fail(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import read_last_line, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
+    }
+
+    # Simulate 200 but garbage JSON (httpx.Response.json raises ValueError)
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.side_effect = ValueError("Bad JSON")
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    domain = sanitize_domain("integrity.heimgewebe.wgx")
+    line = read_last_line(domain)
+    data = json.loads(line)
+
+    # Should be FAIL (not MISSING)
+    assert data["payload"]["status"] == "FAIL"
+
 def test_integrity_view_aggregate(client, monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     from storage import write_payload, sanitize_domain
