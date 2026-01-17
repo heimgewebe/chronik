@@ -41,6 +41,10 @@ def normalize_status(value: Any) -> str:
 
 DEFAULT_SOURCES_URL = "https://github.com/heimgewebe/metarepo/releases/download/integrity/sources.v1.json"
 
+def get_current_utc_str() -> str:
+    """Return current UTC time in strict ISO8601 format (Z-suffix)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
 
 class IntegrityManager:
     def __init__(self):
@@ -191,10 +195,6 @@ class IntegrityManager:
 
         data["sources"] = valid_sources
         return data
-
-def get_current_utc_str() -> str:
-    """Return current UTC time in strict ISO8601 format (Z-suffix)."""
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     async def _fetch_and_update(self, client: httpx.AsyncClient, repo: str, url: str):
         received_at = get_current_utc_str()

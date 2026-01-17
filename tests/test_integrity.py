@@ -622,11 +622,12 @@ async def test_integrity_corrupt_current_state_overwritten(monkeypatch, tmp_path
     repo = "heimgewebe/wgx"
     domain = sanitize_domain("integrity.heimgewebe.wgx")
 
-    # Write garbage to domain
+    # Write garbage to domain, ensuring newline so next write appends to new line
+    # storage.write_payload appends. read_last_line reads last line.
     from storage import safe_target_path
     path = safe_target_path(domain)
     with open(path, "w") as f:
-        f.write("{garbage-json")
+        f.write("{garbage-json\n")
 
     sources_data = {
         "apiVersion": "integrity.sources.v1",
