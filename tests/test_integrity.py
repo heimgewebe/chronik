@@ -346,6 +346,46 @@ async def test_integrity_write_invalid_timestamp_if_empty(monkeypatch, tmp_path)
     assert data["payload"]["generated_at"] != "yolo-timestamp"
     # Just check it's ISO-like
     assert "T" in data["payload"]["generated_at"]
+    # Path B: Explicitly marked as sanitized
+    assert data["payload"]["generated_at_sanitized"] is True
+
+@pytest.mark.asyncio
+async def test_integrity_valid_timestamp_no_sanitized_flag(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import read_last_line, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
+    }
+    summary_data = {
+        "repo": repo,
+        "status": "OK",
+        "generated_at": "2023-01-01T12:00:00Z",
+        "url": "..."
+    }
+
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = summary_data
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+    line = read_last_line(domain)
+    data = json.loads(line)
+
+    assert data["payload"]["status"] == "OK"
+    assert data["payload"]["generated_at"] == "2023-01-01T12:00:00Z"
+    # Flag must be absent
+    assert "generated_at_sanitized" not in data["payload"]
 
 @pytest.mark.asyncio
 async def test_integrity_fetch_failure_preserves_state(monkeypatch, tmp_path):

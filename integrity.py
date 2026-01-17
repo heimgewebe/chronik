@@ -161,7 +161,9 @@ class IntegrityManager:
 
                     # Ensure minimal fields in payload (report contract)
                     if "generated_at" not in payload_data:
-                         payload_data["generated_at"] = received_at # Fallback
+                         # Missing timestamp -> FAIL and sanitize
+                         invalid_new_generated_at = True
+                         status = "FAIL"
                     else:
                         # Validate generated_at is parseable ISO
                         parsed_dt = parse_iso_ts(payload_data.get("generated_at"))
@@ -252,10 +254,15 @@ class IntegrityManager:
             else:
                  payload_data["status"] = normalize_status(payload_data.get("status", status))
 
-            # If generated_at was invalid and we are allowed to write (no current valid state),
-            # normalize it to received_at so the stored state is parseable downstream.
+            # Sanitization Strategy (Path B):
+            # If generated_at was invalid/missing and we are allowed to write,
+            # normalize it to received_at AND mark it explicitly.
             if invalid_new_generated_at:
                 payload_data["generated_at"] = received_at
+                payload_data["generated_at_sanitized"] = True
+            else:
+                # Ensure flag is absent if valid
+                payload_data.pop("generated_at_sanitized", None)
 
         # Create Envelope
         # Strict Schema: kind is in wrapper, not payload
