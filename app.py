@@ -117,10 +117,23 @@ async def lifespan(app: FastAPI):
     # Pre-warm validators to avoid latency on first request
     await run_in_threadpool(prewarm_validators)
 
-    # Start integrity sync loop
-    asyncio.create_task(integrity_manager.loop())
+    # Start integrity sync loop if enabled
+    integrity_enabled = os.getenv("CHRONIK_INTEGRITY_ENABLED", "1") == "1"
+    if integrity_enabled:
+        app.state.integrity_task = asyncio.create_task(integrity_manager.loop())
+    else:
+        app.state.integrity_task = None
 
     yield
+
+    # Clean shutdown of integrity loop
+    if app.state.integrity_task:
+        integrity_manager.stop()
+        app.state.integrity_task.cancel()
+        try:
+            await app.state.integrity_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)

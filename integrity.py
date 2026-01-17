@@ -16,6 +16,8 @@ from storage import (
     sanitize_domain,
 )
 
+from validation import parse_iso_ts
+
 logger = logging.getLogger(__name__)
 
 # Ranking: lower index = better status.
@@ -37,6 +39,7 @@ class IntegrityManager:
         self.override = os.getenv("INTEGRITY_SOURCES_OVERRIDE")
         self.fetch_interval = int(os.getenv("INTEGRITY_FETCH_INTERVAL_SEC", "300"))
         self._running = False
+        self._task: asyncio.Task | None = None
 
     async def loop(self):
         """Background loop to sync integrity data."""
@@ -45,16 +48,27 @@ class IntegrityManager:
         while self._running:
             try:
                 await self.sync_all()
+            except asyncio.CancelledError:
+                logger.info("Integrity sync loop cancelled")
+                break
             except Exception as exc:
                 logger.error(f"Integrity sync failed: {exc}")
 
-            await asyncio.sleep(self.fetch_interval)
+            try:
+                await asyncio.sleep(self.fetch_interval)
+            except asyncio.CancelledError:
+                logger.info("Integrity sync loop cancelled during sleep")
+                break
+
+    def stop(self):
+        """Signal the loop to stop."""
+        self._running = False
 
     async def sync_all(self):
         """Fetch sources and update state for each."""
         sources = await self.fetch_sources()
         if not sources:
-            logger.warning("No integrity sources found")
+            logger.warning("No integrity sources found or invalid source data")
             return
 
         async with httpx.AsyncClient() as client:
@@ -79,17 +93,20 @@ class IntegrityManager:
                     with open(self.override, "r") as f:
                         data = json.load(f)
                     logger.info(f"Loaded integrity sources from file: {self.override}")
-                    return data
+                    return self._validate_sources_data(data)
                 except Exception as exc:
                     logger.error(f"Failed to load override file: {exc}")
+                    # If override fails, do we fallback? Strict behavior suggests failing or returning None.
+                    return None
             else:
                 # Try parsing as JSON string
                 try:
                     data = json.loads(self.override)
                     logger.info("Loaded integrity sources from ENV JSON")
-                    return data
+                    return self._validate_sources_data(data)
                 except json.JSONDecodeError:
                     logger.warning("INTEGRITY_SOURCES_OVERRIDE is neither file nor valid JSON")
+                    return None
 
         # 2. URL
         if not self.sources_url:
@@ -100,14 +117,23 @@ class IntegrityManager:
                 resp = await client.get(self.sources_url, timeout=10.0)
                 resp.raise_for_status()
                 data = resp.json()
-
-                if data.get("apiVersion") != "integrity.sources.v1":
-                    logger.warning(f"Unknown integrity apiVersion: {data.get('apiVersion')}")
-
-                return data
+                return self._validate_sources_data(data)
         except Exception as exc:
             logger.error(f"Failed to fetch integrity sources from {self.sources_url}: {exc}")
             return None
+
+    def _validate_sources_data(self, data: Any) -> dict[str, Any] | None:
+        """Validate the sources data structure."""
+        if not isinstance(data, dict):
+             logger.error("Integrity sources data must be a dictionary")
+             return None
+
+        api_version = data.get("apiVersion")
+        if api_version != "integrity.sources.v1":
+            logger.error(f"Unsupported integrity apiVersion: {api_version}")
+            return None
+
+        return data
 
     async def _fetch_and_update(self, client: httpx.AsyncClient, repo: str, url: str):
         received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -121,21 +147,16 @@ class IntegrityManager:
             if resp.status_code == 200:
                 try:
                     report = resp.json()
-                    # Validate/Normalize
-                    # "kind" must be in payload to be identified later if we used the generic storage
-                    # but here we are constructing the envelope ourselves.
-
                     status = report.get("status", "UNCLEAR")
                     payload_data = report
-                    # Ensure minimal fields
+
+                    # Ensure minimal fields in payload (report contract)
                     if "generated_at" not in payload_data:
                          payload_data["generated_at"] = received_at # Fallback
 
-                    # Ensure url is present in payload (as requested)
                     if "url" not in payload_data:
                         payload_data["url"] = url
 
-                    # Ensure repo is present
                     if "repo" not in payload_data:
                         payload_data["repo"] = repo
 
@@ -148,23 +169,47 @@ class IntegrityManager:
             logger.warning(f"Integrity fetch exception for {repo}: {exc}")
             status = "MISSING"
 
+        # Check Latest Semantics (Optimistic concurrency control manually)
+        new_generated_at = payload_data.get("generated_at")
+        if new_generated_at:
+            current_line = await run_in_threadpool(read_last_line, domain)
+            if current_line:
+                try:
+                    current_item = json.loads(current_line)
+                    current_payload = current_item.get("payload", {})
+                    current_generated_at = current_payload.get("generated_at")
+
+                    if current_generated_at:
+                         new_dt = parse_iso_ts(new_generated_at)
+                         curr_dt = parse_iso_ts(current_generated_at)
+                         if new_dt and curr_dt and new_dt <= curr_dt:
+                             # New report is older or same, skip update
+                             logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_generated_at}")
+                             return
+                except (json.JSONDecodeError, ValueError):
+                    pass # corrupt current state, overwrite safe
+
+        # If we failed fetch/parse, we synthesize a minimal payload to report status
+        if not payload_data:
+            payload_data = {
+                "repo": repo,
+                "url": url,
+                "status": status,
+                "generated_at": received_at
+            }
+        else:
+            # Ensure status is updated in payload if we overrode it (e.g. FAIL/UNCLEAR logic)
+            # But normally we trust the report's status unless fetch failed.
+            if status in ["MISSING", "FAIL"] and payload_data.get("status") != status:
+                 payload_data["status"] = status
+
         # Create Envelope
-        # Note: 'kind' inside payload is crucial for integrity_view filtering in app.py logic
-        # (though we might replace that view logic with get_aggregate_view here)
-
-        # We enforce strict schema for the stored event
-        payload_data["kind"] = "integrity.summary.published.v1"
-        payload_data["status"] = status
-        # If we failed, we might not have a full payload, so fill essentials
-        if "repo" not in payload_data: payload_data["repo"] = repo
-        if "url" not in payload_data: payload_data["url"] = url
-        if "generated_at" not in payload_data: payload_data["generated_at"] = received_at
-
+        # Strict Schema: kind is in wrapper, not payload
         wrapper = {
             "domain": domain,
+            "kind": "integrity.summary.published.v1",
             "received_at": received_at,
             "payload": payload_data,
-            # No retention needed (unlimited? or standard?)
         }
 
         # Write to storage
@@ -175,19 +220,26 @@ class IntegrityManager:
             logger.error(f"Failed to save integrity state for {repo}: {exc}")
 
     def _repo_to_domain(self, repo: str) -> str:
-        # "owner/name" -> "integrity.owner.name"
-        # Sanitize slashes and other unsafe chars
-        safe_repo = re.sub(r"[^a-z0-9-]", ".", repo.lower())
-        # Remove duplicate dots
-        safe_repo = re.sub(r"\.+", ".", safe_repo)
-        return f"integrity.{safe_repo}"
+        # Canonicalize using sanitize_domain
+        # Strategy: integrity.owner.repo
+        # We replace '/' with '.' and let sanitize_domain handle the rest
+        base = "integrity." + repo.replace("/", ".")
+        try:
+            return sanitize_domain(base)
+        except Exception:
+            # Fallback for very weird characters: purely alphanumeric + dots
+            safe_repo = re.sub(r"[^a-z0-9-]", ".", repo.lower())
+            safe_repo = re.sub(r"\.+", ".", safe_repo)
+            return f"integrity.{safe_repo}"
 
     async def get_aggregate_view(self) -> dict[str, Any]:
         """Return the aggregated view of all integrity states."""
         domains = await run_in_threadpool(list_domains, "integrity")
         repos = []
         worst_severity = 0
-        total_status = "OK"
+        total_status = "MISSING" # Default to MISSING if no repos found
+
+        found_any = False
 
         for dom in domains:
             try:
@@ -196,19 +248,29 @@ class IntegrityManager:
                     continue
 
                 item = json.loads(line)
+
+                # Check kind in wrapper
+                if item.get("kind") != "integrity.summary.published.v1":
+                    # Backward compatibility or junk filtering
+                    # If kind not in wrapper, check payload (old way) just in case
+                    payload = item.get("payload", {})
+                    if payload.get("kind") != "integrity.summary.published.v1":
+                        continue
+
                 payload = item.get("payload", {})
-
-                # Check kind
-                if payload.get("kind") != "integrity.summary.published.v1":
-                    continue
-
                 status = payload.get("status", "UNCLEAR")
 
                 # Update total status
                 severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
-                if severity > worst_severity:
+                if not found_any:
+                    # First item initializes status
                     worst_severity = severity
                     total_status = status
+                    found_any = True
+                else:
+                    if severity > worst_severity:
+                        worst_severity = severity
+                        total_status = status
 
                 repos.append(payload)
 

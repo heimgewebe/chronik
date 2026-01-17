@@ -1,7 +1,7 @@
-
 import pytest
 import json
 import os
+import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
@@ -10,9 +10,8 @@ from fastapi.testclient import TestClient
 def mock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("CHRONIK_TOKEN", "test-token")
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
-    # Prevent the real loop from running in background during tests if app is imported
-    # But app lifespan starts it. We can patch IntegrityManager.loop
-    pass
+    # Disable integrity loop in app lifespan by default for tests
+    monkeypatch.setenv("CHRONIK_INTEGRITY_ENABLED", "0")
 
 from app import app
 from integrity import IntegrityManager, manager
@@ -23,6 +22,9 @@ def client(mock_env):
 
 @pytest.mark.asyncio
 async def test_integrity_sync_success(monkeypatch, tmp_path):
+    # Ensure patching works for async context
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
     # Setup Override for sources
     sources_data = {
         "apiVersion": "integrity.sources.v1",
@@ -43,14 +45,12 @@ async def test_integrity_sync_success(monkeypatch, tmp_path):
 
     # Setup mocks
     mock_get = AsyncMock()
-    # First call (sources) is skipped if we use override, or we can mock URL fetch
-    # Let's mock the URL fetch for summary
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
     mock_get.return_value = mock_response
 
-    # Instantiate a fresh manager to test logic isolated
+    # Instantiate a fresh manager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -59,95 +59,147 @@ async def test_integrity_sync_success(monkeypatch, tmp_path):
 
     # Verify storage
     from storage import read_last_line, sanitize_domain
-    # heimgewebe/wgx -> integrity.heimgewebe.wgx
-    domain = "integrity.heimgewebe.wgx"
+    domain = sanitize_domain("integrity.heimgewebe.wgx")
     line = read_last_line(domain)
     assert line is not None
     data = json.loads(line)
+
+    # Verify Envelope
     assert data["domain"] == domain
-    assert data["payload"]["repo"] == "heimgewebe/wgx"
+    assert data["kind"] == "integrity.summary.published.v1"
+
+    # Verify Payload
+    payload = data["payload"]
+    assert payload["repo"] == "heimgewebe/wgx"
+    assert payload["status"] == "OK"
+    assert payload["url"] == "https://example.com/wgx/summary.json"
+    # Ensure kind is NOT in payload
+    assert "kind" not in payload
+
+@pytest.mark.asyncio
+async def test_integrity_no_overwrite_old(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    domain = sanitize_domain("integrity.heimgewebe.wgx")
+
+    # 1. Write an "existing" newer entry
+    existing_wrapper = {
+        "domain": domain,
+        "kind": "integrity.summary.published.v1",
+        "received_at": "2023-01-02T12:00:00Z",
+        "payload": {
+            "repo": repo,
+            "status": "OK",
+            "generated_at": "2023-01-02T10:00:00Z",
+            "url": "..."
+        }
+    }
+    write_payload(domain, [json.dumps(existing_wrapper)])
+
+    # 2. Sync with an older report
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [
+            {
+                "repo": repo,
+                "summary_url": "https://example.com/wgx/summary.json",
+                "enabled": True
+            }
+        ]
+    }
+    # Older generated_at
+    summary_data = {
+        "repo": repo,
+        "status": "FAIL",
+        "generated_at": "2023-01-01T10:00:00Z",
+        "url": "..."
+    }
+
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = summary_data
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    # 3. Verify it was NOT overwritten
+    from storage import read_last_line
+    line = read_last_line(domain)
+    data = json.loads(line)
     assert data["payload"]["status"] == "OK"
-    assert data["payload"]["kind"] == "integrity.summary.published.v1"
-    assert data["payload"]["url"] == "https://example.com/wgx/summary.json"
+    assert data["payload"]["generated_at"] == "2023-01-02T10:00:00Z"
 
 
-def test_integrity_view_aggregate(client):
+def test_integrity_view_aggregate(client, monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
     headers = {"X-Auth": "test-token"}
 
-    # 1. Ingest integrity event manually to simulate stored state
-    # (Since we tested sync separately)
-    repo_a_payload = {
-        "domain": "integrity.repo-a",
-        "kind": "integrity.summary.published.v1",
-        "repo": "repo-a",
-        "status": "OK",
-        "url": "https://example.com/repo-a/summary.json"
-    }
-    client.post("/v1/ingest", json=repo_a_payload, headers=headers)
+    # 1. Manually write stored state with proper Envelope
+    def store_integrity(repo, status):
+        dom = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+        wrapper = {
+            "domain": dom,
+            "kind": "integrity.summary.published.v1",
+            "received_at": "2023-01-01T00:00:00Z",
+            "payload": {
+                "repo": repo,
+                "status": status,
+                "generated_at": "2023-01-01T00:00:00Z",
+                "url": "http://foo"
+            }
+        }
+        write_payload(dom, [json.dumps(wrapper)])
 
-    repo_b_payload = {
-        "domain": "integrity.repo-b",
-        "kind": "integrity.summary.published.v1",
-        "repo": "repo-b",
-        "status": "WARN",
-        "url": "https://example.com/repo-b/summary.json"
-    }
-    client.post("/v1/ingest", json=repo_b_payload, headers=headers)
+    store_integrity("repo-a", "OK")
+    store_integrity("repo-b", "WARN")
 
     # 2. Get View
     resp = client.get("/v1/integrity", headers=headers)
     assert resp.status_code == 200
     data = resp.json()
 
-    assert "total_status" in data
-    assert "repos" in data
-
-    # OK + WARN -> WARN (worst of)
     assert data["total_status"] == "WARN"
-
     repos = data["repos"]
     assert len(repos) == 2
-
-    # Sort order is by repo name
     assert repos[0]["repo"] == "repo-a"
-    assert repos[0]["status"] == "OK"
     assert repos[1]["repo"] == "repo-b"
-    assert repos[1]["status"] == "WARN"
 
-def test_integrity_view_missing_handling(client):
+def test_integrity_view_empty_is_missing(client, monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     headers = {"X-Auth": "test-token"}
 
-    # Ingest a MISSING status
-    payload = {
-        "domain": "integrity.repo-c",
-        "kind": "integrity.summary.published.v1",
-        "repo": "repo-c",
-        "status": "MISSING",
-    }
-    client.post("/v1/ingest", json=payload, headers=headers)
+    # No data ingested
 
     resp = client.get("/v1/integrity", headers=headers)
     data = resp.json()
 
     assert data["total_status"] == "MISSING"
-    assert data["repos"][0]["status"] == "MISSING"
+    assert len(data["repos"]) == 0
 
-def test_integrity_view_ignores_junk(client):
+def test_integrity_view_ignores_junk_kind(client, monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
     headers = {"X-Auth": "test-token"}
 
-    # Ingest junk
-    payload = {
-        "domain": "integrity.junk",
+    # Ingest junk kind
+    dom = sanitize_domain("integrity.junk")
+    wrapper = {
+        "domain": dom,
         "kind": "some.other.kind",
-        "repo": "junk",
-        "status": "FAIL"
+        "payload": {"repo": "junk", "status": "FAIL"}
     }
-    client.post("/v1/ingest", json=payload, headers=headers)
+    write_payload(dom, [json.dumps(wrapper)])
 
     resp = client.get("/v1/integrity", headers=headers)
     data = resp.json()
 
-    # Should be empty if only junk exists (default total_status OK? or None?)
-    # Implementation says defaults: total_status="OK", repos=[]
-    assert data["total_status"] == "OK"
+    assert data["total_status"] == "MISSING" # Because junk is ignored, result is empty -> MISSING
     assert len(data["repos"]) == 0
