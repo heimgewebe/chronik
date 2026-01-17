@@ -47,6 +47,8 @@ class IntegrityManager:
         self.sources_url = os.getenv("INTEGRITY_SOURCES_URL", DEFAULT_SOURCES_URL)
         self.override = os.getenv("INTEGRITY_SOURCES_OVERRIDE")
         self.fetch_interval = int(os.getenv("INTEGRITY_FETCH_INTERVAL_SEC", "300"))
+        # Default 10 min tolerance for future timestamps
+        self.future_tolerance_min = int(os.getenv("INTEGRITY_FUTURE_TOLERANCE_MIN", "10"))
         self._running = False
 
     async def loop(self):
@@ -74,12 +76,13 @@ class IntegrityManager:
 
     async def sync_all(self):
         """Fetch sources and update state for each."""
-        sources = await self.fetch_sources()
-        if not sources:
-            logger.warning("No integrity sources found or invalid source data")
-            return
+        # Reuse client for both sources fetch and individual reports
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            sources = await self.fetch_sources(client)
+            if not sources:
+                logger.warning("No integrity sources found or invalid source data")
+                return
 
-        async with httpx.AsyncClient() as client:
             for source in sources.get("sources", []):
                 if not source.get("enabled", True):
                     continue
@@ -91,7 +94,7 @@ class IntegrityManager:
 
                 await self._fetch_and_update(client, repo, url)
 
-    async def fetch_sources(self) -> dict[str, Any] | None:
+    async def fetch_sources(self, client: httpx.AsyncClient = None) -> dict[str, Any] | None:
         """Load sources from override or URL."""
         # 1. Override
         if self.override:
@@ -104,7 +107,6 @@ class IntegrityManager:
                     return self._validate_sources_data(data)
                 except Exception as exc:
                     logger.error(f"Failed to load override file: {exc}")
-                    # If override fails, do we fallback? Strict behavior suggests failing or returning None.
                     return None
             else:
                 # Try parsing as JSON string
@@ -120,12 +122,19 @@ class IntegrityManager:
         if not self.sources_url:
             return None
 
+        # If no client provided, use a transient one (e.g. tests calling this directly)
+        if client:
+            return await self._fetch_sources_http(client)
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as temp_client:
+                return await self._fetch_sources_http(temp_client)
+
+    async def _fetch_sources_http(self, client: httpx.AsyncClient) -> dict[str, Any] | None:
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(self.sources_url, timeout=10.0)
-                resp.raise_for_status()
-                data = resp.json()
-                return self._validate_sources_data(data)
+            resp = await client.get(self.sources_url)
+            resp.raise_for_status()
+            data = resp.json()
+            return self._validate_sources_data(data)
         except Exception as exc:
             logger.error(f"Failed to fetch integrity sources from {self.sources_url}: {exc}")
             return None
@@ -183,8 +192,12 @@ class IntegrityManager:
         data["sources"] = valid_sources
         return data
 
+def get_current_utc_str() -> str:
+    """Return current UTC time in strict ISO8601 format (Z-suffix)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
     async def _fetch_and_update(self, client: httpx.AsyncClient, repo: str, url: str):
-        received_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        received_at = get_current_utc_str()
         domain = self._repo_to_domain(repo)
 
         status = "MISSING"
@@ -193,7 +206,7 @@ class IntegrityManager:
         error_reason = None
 
         try:
-            resp = await client.get(url, timeout=10.0)
+            resp = await client.get(url)
             if resp.status_code == 200:
                 try:
                     report = resp.json()
@@ -214,9 +227,9 @@ class IntegrityManager:
                             status = "FAIL"
                             error_reason = "Invalid timestamp format"
                         else:
-                             # Sanity check: Future timestamps (> 10 mins) are invalid
+                             # Sanity check: Future timestamps (> tolerance) are invalid
                              # This prevents frozen state if a producer clock is wrong
-                             future_limit = datetime.now(timezone.utc) + timedelta(minutes=10)
+                             future_limit = datetime.now(timezone.utc) + timedelta(minutes=self.future_tolerance_min)
                              if parsed_dt > future_limit:
                                  logger.warning(f"Future timestamp detected for {repo}: {parsed_dt}")
                                  invalid_new_generated_at = True
