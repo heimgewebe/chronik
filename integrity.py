@@ -187,6 +187,10 @@ class IntegrityManager:
                 logger.warning(f"Skipping invalid source item (enabled not bool): {item}")
                 continue
 
+            # Default enabled to True if missing (Contract: optional, default True)
+            if enabled is None:
+                item["enabled"] = True
+
             valid_sources.append(item)
 
         if not valid_sources and raw_sources:

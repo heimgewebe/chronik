@@ -134,9 +134,12 @@ async def lifespan(app: FastAPI):
         app.state.integrity_manager.stop()
         app.state.integrity_task.cancel()
         try:
-            await app.state.integrity_task
-        except asyncio.CancelledError:
+            # Wait for task to finish with timeout to prevent hanging
+            await asyncio.wait_for(app.state.integrity_task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+        except Exception as exc:
+            logger.error(f"Integrity loop shutdown error: {exc}")
 
 
 app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)

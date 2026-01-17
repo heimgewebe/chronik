@@ -14,16 +14,15 @@ def mock_env(monkeypatch, tmp_path):
     # Disable integrity loop in app lifespan by default for tests
     monkeypatch.setenv("CHRONIK_INTEGRITY_ENABLED", "0")
 
-from app import app
-from integrity import IntegrityManager, get_current_utc_str
-
 @pytest.fixture
 def client(mock_env):
+    from app import app
     return TestClient(app)
 
 @pytest.mark.asyncio
 async def test_integrity_sync_success(monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from integrity import IntegrityManager
 
     # Setup Override for sources
     sources_data = {
@@ -44,11 +43,12 @@ async def test_integrity_sync_success(monkeypatch, tmp_path):
         "generated_at": "2023-01-01T00:00:00Z"
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+
+    # Simple AsyncMock that returns the response directly
+    mock_get = AsyncMock(return_value=mock_response)
 
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
@@ -90,12 +90,12 @@ async def test_integrity_sources_validation_filtering(monkeypatch, tmp_path):
     }
 
     # Mock only the valid one being fetched
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = {"status": "OK", "repo": "valid/repo"}
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -118,6 +118,7 @@ async def test_integrity_sources_invalid_generated_at(monkeypatch, tmp_path):
     }
 
     mock_get = AsyncMock()
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -144,12 +145,12 @@ async def test_integrity_status_normalization(monkeypatch, tmp_path):
         "generated_at": "2023-01-01T00:00:00Z"
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -196,12 +197,12 @@ async def test_integrity_no_overwrite_old(monkeypatch, tmp_path):
         "url": "..."
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -252,12 +253,12 @@ async def test_integrity_skip_on_equal_timestamp(monkeypatch, tmp_path):
         "url": "..."
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -294,12 +295,12 @@ async def test_integrity_future_timestamp_handling(monkeypatch, tmp_path):
         "url": "..."
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     # Configure tolerance to verify config usage (default is 10)
     test_manager.future_tolerance_min = 5
@@ -353,12 +354,12 @@ async def test_integrity_no_overwrite_invalid_timestamp(monkeypatch, tmp_path):
         "url": "..."
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -391,12 +392,12 @@ async def test_integrity_write_invalid_timestamp_if_empty(monkeypatch, tmp_path)
         "url": "..."
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -435,12 +436,12 @@ async def test_integrity_valid_timestamp_no_sanitized_flag(monkeypatch, tmp_path
         "url": "..."
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -487,6 +488,7 @@ async def test_integrity_fetch_failure_preserves_state(monkeypatch, tmp_path):
     # Simulate Fetch Failure (Exception)
     mock_get = AsyncMock(side_effect=Exception("Network down"))
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -513,12 +515,12 @@ async def test_integrity_json_failure_is_fail(monkeypatch, tmp_path):
     }
 
     # Simulate 200 but garbage JSON (httpx.Response.json raises ValueError)
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.side_effect = ValueError("Bad JSON")
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -555,12 +557,12 @@ async def test_integrity_missing_repo_is_fail(monkeypatch, tmp_path):
         # "repo" missing
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -596,12 +598,12 @@ async def test_integrity_unknown_status_is_unclear(monkeypatch, tmp_path):
         "generated_at": "2023-01-01T00:00:00Z"
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -641,12 +643,12 @@ async def test_integrity_corrupt_current_state_overwritten(monkeypatch, tmp_path
         "url": "..."
     }
 
-    mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
-    mock_get.return_value = mock_response
+    mock_get = AsyncMock(return_value=mock_response)
 
+    from integrity import IntegrityManager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
@@ -684,6 +686,7 @@ def test_integrity_view_aggregate(client, monkeypatch, tmp_path):
 
     # 2. Get View - This uses app.state.integrity_manager
     # Ensure client context manages lifespan
+    from app import app
     with TestClient(app) as client:
         resp = client.get("/v1/integrity", headers=headers)
         assert resp.status_code == 200
@@ -700,6 +703,7 @@ def test_integrity_view_empty_is_missing(client, monkeypatch, tmp_path):
     headers = {"X-Auth": "test-token"}
 
     # No data ingested
+    from app import app
     with TestClient(app) as client:
         resp = client.get("/v1/integrity", headers=headers)
         data = resp.json()
@@ -721,6 +725,7 @@ def test_integrity_view_ignores_junk_kind(client, monkeypatch, tmp_path):
     }
     write_payload(dom, [json.dumps(wrapper)])
 
+    from app import app
     with TestClient(app) as client:
         resp = client.get("/v1/integrity", headers=headers)
         data = resp.json()
