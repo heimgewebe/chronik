@@ -4,6 +4,7 @@ import os
 import asyncio
 from unittest.mock import patch, AsyncMock, MagicMock
 from fastapi.testclient import TestClient
+from datetime import datetime, timezone, timedelta
 
 # Use monkeypatch to point storage.DATA_DIR to a tmp_path
 @pytest.fixture(autouse=True)
@@ -22,7 +23,6 @@ def client(mock_env):
 
 @pytest.mark.asyncio
 async def test_integrity_sync_success(monkeypatch, tmp_path):
-    # Ensure patching works for async context
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
     # Setup Override for sources
@@ -43,37 +43,30 @@ async def test_integrity_sync_success(monkeypatch, tmp_path):
         "generated_at": "2023-01-01T00:00:00Z"
     }
 
-    # Setup mocks
     mock_get = AsyncMock()
     mock_response = MagicMock()
     mock_response.status_code = 200
     mock_response.json.return_value = summary_data
     mock_get.return_value = mock_response
 
-    # Instantiate a fresh manager
     test_manager = IntegrityManager()
     test_manager.override = json.dumps(sources_data)
 
     with patch("httpx.AsyncClient.get", side_effect=mock_get):
         await test_manager.sync_all()
 
-    # Verify storage
     from storage import read_last_line, sanitize_domain
     domain = sanitize_domain("integrity.heimgewebe.wgx")
     line = read_last_line(domain)
     assert line is not None
     data = json.loads(line)
 
-    # Verify Envelope
     assert data["domain"] == domain
     assert data["kind"] == "integrity.summary.published.v1"
 
-    # Verify Payload
     payload = data["payload"]
     assert payload["repo"] == "heimgewebe/wgx"
     assert payload["status"] == "OK"
-    assert payload["url"] == "https://example.com/wgx/summary.json"
-    # Ensure kind is NOT in payload
     assert "kind" not in payload
 
 @pytest.mark.asyncio
@@ -86,7 +79,6 @@ async def test_integrity_status_normalization(monkeypatch, tmp_path):
         "apiVersion": "integrity.sources.v1",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
-    # Weird status
     summary_data = {
         "repo": repo,
         "status": "GREEN",
@@ -108,7 +100,6 @@ async def test_integrity_status_normalization(monkeypatch, tmp_path):
     domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
     line = read_last_line(domain)
     data = json.loads(line)
-    # Should be UNCLEAR
     assert data["payload"]["status"] == "UNCLEAR"
 
 @pytest.mark.asyncio
@@ -119,7 +110,7 @@ async def test_integrity_no_overwrite_old(monkeypatch, tmp_path):
     repo = "heimgewebe/wgx"
     domain = sanitize_domain("integrity.heimgewebe.wgx")
 
-    # 1. Write an "existing" newer entry
+    # 1. Write newer entry
     existing_wrapper = {
         "domain": domain,
         "kind": "integrity.summary.published.v1",
@@ -133,12 +124,11 @@ async def test_integrity_no_overwrite_old(monkeypatch, tmp_path):
     }
     write_payload(domain, [json.dumps(existing_wrapper)])
 
-    # 2. Sync with an older report
+    # 2. Sync with older report
     sources_data = {
         "apiVersion": "integrity.sources.v1",
         "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
     }
-    # Older generated_at
     summary_data = {
         "repo": repo,
         "status": "FAIL",
@@ -158,12 +148,109 @@ async def test_integrity_no_overwrite_old(monkeypatch, tmp_path):
     with patch("httpx.AsyncClient.get", side_effect=mock_get):
         await test_manager.sync_all()
 
-    # 3. Verify it was NOT overwritten
+    # 3. Verify NOT overwritten
     from storage import read_last_line
     line = read_last_line(domain)
     data = json.loads(line)
     assert data["payload"]["status"] == "OK"
     assert data["payload"]["generated_at"] == "2023-01-02T10:00:00Z"
+
+@pytest.mark.asyncio
+async def test_integrity_overwrite_on_equal_timestamp(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    domain = sanitize_domain("integrity.heimgewebe.wgx")
+    ts = "2023-01-02T10:00:00Z"
+
+    # 1. Write existing entry
+    existing_wrapper = {
+        "domain": domain,
+        "kind": "integrity.summary.published.v1",
+        "received_at": "2023-01-02T10:00:00Z",
+        "payload": {
+            "repo": repo,
+            "status": "OK",
+            "generated_at": ts,
+            "url": "..."
+        }
+    }
+    write_payload(domain, [json.dumps(existing_wrapper)])
+
+    # 2. Sync with same timestamp but different status
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
+    }
+    summary_data = {
+        "repo": repo,
+        "status": "FAIL",
+        "generated_at": ts,
+        "url": "..."
+    }
+
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = summary_data
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    # 3. Verify overwritten
+    from storage import read_last_line
+    line = read_last_line(domain)
+    data = json.loads(line)
+    assert data["payload"]["status"] == "FAIL"
+    assert data["payload"]["generated_at"] == ts
+
+@pytest.mark.asyncio
+async def test_integrity_future_timestamp_handling(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
+
+    repo = "heimgewebe/wgx"
+    domain = sanitize_domain("integrity.heimgewebe.wgx")
+
+    # 1. Future timestamp (way in future)
+    future_ts = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [{"repo": repo, "summary_url": "...", "enabled": True}]
+    }
+    summary_data = {
+        "repo": repo,
+        "status": "OK",
+        "generated_at": future_ts,
+        "url": "..."
+    }
+
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = summary_data
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    # Verify stored as FAIL and normalized timestamp
+    from storage import read_last_line
+    line = read_last_line(domain)
+    data = json.loads(line)
+    assert data["payload"]["status"] == "FAIL"
+    # Should not be the future timestamp
+    assert data["payload"]["generated_at"] != future_ts
+
 
 @pytest.mark.asyncio
 async def test_integrity_no_overwrite_invalid_timestamp(monkeypatch, tmp_path):

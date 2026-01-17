@@ -3,7 +3,7 @@ import json
 import logging
 import os
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 import httpx
@@ -48,7 +48,6 @@ class IntegrityManager:
         self.override = os.getenv("INTEGRITY_SOURCES_OVERRIDE")
         self.fetch_interval = int(os.getenv("INTEGRITY_FETCH_INTERVAL_SEC", "300"))
         self._running = False
-        self._task: asyncio.Task | None = None
 
     async def loop(self):
         """Background loop to sync integrity data."""
@@ -165,9 +164,18 @@ class IntegrityManager:
                          payload_data["generated_at"] = received_at # Fallback
                     else:
                         # Validate generated_at is parseable ISO
-                        if parse_iso_ts(payload_data.get("generated_at")) is None:
+                        parsed_dt = parse_iso_ts(payload_data.get("generated_at"))
+                        if parsed_dt is None:
                             invalid_new_generated_at = True
                             status = "FAIL"
+                        else:
+                             # Sanity check: Future timestamps (> 10 mins) are invalid
+                             # This prevents frozen state if a producer clock is wrong
+                             future_limit = datetime.now(timezone.utc) + timedelta(minutes=10)
+                             if parsed_dt > future_limit:
+                                 logger.warning(f"Future timestamp detected for {repo}: {parsed_dt}")
+                                 invalid_new_generated_at = True
+                                 status = "FAIL"
 
                     if "url" not in payload_data:
                         payload_data["url"] = url
@@ -203,9 +211,12 @@ class IntegrityManager:
                     )
                     return
 
-                if new_dt and curr_dt and new_dt <= curr_dt:
-                        # New report is older or same, skip update
-                        logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_generated_at}")
+                # Update logic:
+                # - Skip only if STRICTLY older (<).
+                # - If equal (==), we overwrite (last-writer-wins / idempotency).
+                if new_dt and curr_dt and new_dt < curr_dt:
+                        # New report is older, skip update
+                        logger.debug(f"Skipping update for {repo}: {new_generated_at} < {current_generated_at}")
                         return
             except (json.JSONDecodeError, ValueError):
                 pass # corrupt current state, overwrite safe
@@ -286,6 +297,9 @@ class IntegrityManager:
                         continue
 
                 payload = item.get("payload", {})
+                # Make a copy to avoid side-effects on the stored dict if reused
+                payload = payload.copy()
+
                 status = normalize_status(payload.get("status", "UNCLEAR"))
                 payload["status"] = status
 
