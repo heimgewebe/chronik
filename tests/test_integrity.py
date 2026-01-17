@@ -15,7 +15,7 @@ def mock_env(monkeypatch, tmp_path):
     monkeypatch.setenv("CHRONIK_INTEGRITY_ENABLED", "0")
 
 from app import app
-from integrity import IntegrityManager, manager
+from integrity import IntegrityManager
 
 @pytest.fixture
 def client(mock_env):
@@ -68,6 +68,40 @@ async def test_integrity_sync_success(monkeypatch, tmp_path):
     assert payload["repo"] == "heimgewebe/wgx"
     assert payload["status"] == "OK"
     assert "kind" not in payload
+
+@pytest.mark.asyncio
+async def test_integrity_sources_validation_filtering(monkeypatch, tmp_path):
+    # Test that invalid source items are filtered out
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    # Mix of valid and invalid sources
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "sources": [
+            {"repo": "valid/repo", "summary_url": "http://ok", "enabled": True},
+            {"repo": "", "summary_url": "http://bad-repo"},  # Invalid repo
+            {"repo": "no/url", "summary_url": ""},           # Invalid URL
+            {"not-a-dict": True}                             # Invalid type
+        ]
+    }
+
+    # Mock only the valid one being fetched
+    mock_get = AsyncMock()
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"status": "OK", "repo": "valid/repo"}
+    mock_get.return_value = mock_response
+
+    test_manager = IntegrityManager()
+    test_manager.override = json.dumps(sources_data)
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get):
+        await test_manager.sync_all()
+
+    # Verify only 1 call was made (for the valid source)
+    assert mock_get.call_count == 1
+    args, _ = mock_get.call_args
+    assert args[0] == "http://ok"
 
 @pytest.mark.asyncio
 async def test_integrity_status_normalization(monkeypatch, tmp_path):
@@ -485,10 +519,12 @@ def test_integrity_view_aggregate(client, monkeypatch, tmp_path):
     store_integrity("repo-a", "OK")
     store_integrity("repo-b", "WARN")
 
-    # 2. Get View
-    resp = client.get("/v1/integrity", headers=headers)
-    assert resp.status_code == 200
-    data = resp.json()
+    # 2. Get View - This uses app.state.integrity_manager
+    # Ensure client context manages lifespan
+    with TestClient(app) as client:
+        resp = client.get("/v1/integrity", headers=headers)
+        assert resp.status_code == 200
+        data = resp.json()
 
     assert data["total_status"] == "WARN"
     repos = data["repos"]
@@ -501,12 +537,12 @@ def test_integrity_view_empty_is_missing(client, monkeypatch, tmp_path):
     headers = {"X-Auth": "test-token"}
 
     # No data ingested
+    with TestClient(app) as client:
+        resp = client.get("/v1/integrity", headers=headers)
+        data = resp.json()
 
-    resp = client.get("/v1/integrity", headers=headers)
-    data = resp.json()
-
-    assert data["total_status"] == "MISSING"
-    assert len(data["repos"]) == 0
+        assert data["total_status"] == "MISSING"
+        assert len(data["repos"]) == 0
 
 def test_integrity_view_ignores_junk_kind(client, monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -522,8 +558,9 @@ def test_integrity_view_ignores_junk_kind(client, monkeypatch, tmp_path):
     }
     write_payload(dom, [json.dumps(wrapper)])
 
-    resp = client.get("/v1/integrity", headers=headers)
-    data = resp.json()
+    with TestClient(app) as client:
+        resp = client.get("/v1/integrity", headers=headers)
+        data = resp.json()
 
-    assert data["total_status"] == "MISSING" # Because junk is ignored, result is empty -> MISSING
-    assert len(data["repos"]) == 0
+        assert data["total_status"] == "MISSING" # Because junk is ignored, result is empty -> MISSING
+        assert len(data["repos"]) == 0

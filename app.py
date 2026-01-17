@@ -44,7 +44,7 @@ from validation import (
     prewarm_validators,
     validate_insights_daily_payload,
 )
-from integrity import manager as integrity_manager
+from integrity import IntegrityManager
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
@@ -117,10 +117,13 @@ async def lifespan(app: FastAPI):
     # Pre-warm validators to avoid latency on first request
     await run_in_threadpool(prewarm_validators)
 
+    # Initialize IntegrityManager per-app instance
+    app.state.integrity_manager = IntegrityManager()
+
     # Start integrity sync loop if enabled
     integrity_enabled = os.getenv("CHRONIK_INTEGRITY_ENABLED", "1") == "1"
     if integrity_enabled:
-        app.state.integrity_task = asyncio.create_task(integrity_manager.loop())
+        app.state.integrity_task = asyncio.create_task(app.state.integrity_manager.loop())
     else:
         app.state.integrity_task = None
 
@@ -128,7 +131,7 @@ async def lifespan(app: FastAPI):
 
     # Clean shutdown of integrity loop
     if app.state.integrity_task:
-        integrity_manager.stop()
+        app.state.integrity_manager.stop()
         app.state.integrity_task.cancel()
         try:
             await app.state.integrity_task
@@ -636,12 +639,12 @@ async def tail_v1(
 
 
 @app.get("/v1/integrity", dependencies=[Depends(_require_auth_dep)])
-async def integrity_view():
+async def integrity_view(request: Request):
     """
     Optional view: returns the latest integrity status for all known repos.
     Returns aggregated status object.
     """
-    return await integrity_manager.get_aggregate_view()
+    return await request.app.state.integrity_manager.get_aggregate_view()
 
 
 @app.get("/health")

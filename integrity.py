@@ -39,7 +39,7 @@ def normalize_status(value: Any) -> str:
     v = value.strip().upper()
     return v if v in ALLOWED_STATUS else "UNCLEAR"
 
-DEFAULT_SOURCES_URL = "https://raw.githubusercontent.com/heimgewebe/metarepo/main/reports/integrity/sources.v1.json"
+DEFAULT_SOURCES_URL = "https://github.com/heimgewebe/metarepo/releases/download/integrity/sources.v1.json"
 
 
 class IntegrityManager:
@@ -141,6 +141,35 @@ class IntegrityManager:
             logger.error(f"Unsupported integrity apiVersion: {api_version}")
             return None
 
+        raw_sources = data.get("sources", [])
+        if not isinstance(raw_sources, list):
+            logger.error("Integrity sources 'sources' field must be a list")
+            return None
+
+        valid_sources = []
+        for item in raw_sources:
+            if not isinstance(item, dict):
+                logger.warning(f"Skipping invalid source item (not a dict): {item}")
+                continue
+
+            repo = item.get("repo")
+            url = item.get("summary_url")
+
+            if not isinstance(repo, str) or not repo:
+                logger.warning(f"Skipping invalid source item (missing/invalid repo): {item}")
+                continue
+
+            if not isinstance(url, str) or not url:
+                logger.warning(f"Skipping invalid source item (missing/invalid summary_url): {item}")
+                continue
+
+            valid_sources.append(item)
+
+        if not valid_sources and raw_sources:
+             logger.warning("No valid sources found after filtering")
+             return None
+
+        data["sources"] = valid_sources
         return data
 
     async def _fetch_and_update(self, client: httpx.AsyncClient, repo: str, url: str):
@@ -185,8 +214,9 @@ class IntegrityManager:
                     if "repo" not in payload_data:
                         payload_data["repo"] = repo
 
-                except ValueError:
+                except ValueError as exc:
                     status = "FAIL" # Schema/Parse fail
+                    logger.warning(f"Integrity JSON parse failed for {repo} ({url}): {exc}")
             else:
                 logger.warning(f"Integrity fetch failed for {repo}: {resp.status_code}")
                 status = "MISSING"
