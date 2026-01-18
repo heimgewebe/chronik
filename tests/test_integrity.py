@@ -89,11 +89,13 @@ async def test_integrity_sources_validation_filtering(monkeypatch, tmp_path):
         ]
     }
 
-    # Mock only the valid one being fetched
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"status": "OK", "repo": "valid/repo"}
-    mock_get = AsyncMock(return_value=mock_response)
+    # Mock for individual repo fetch
+    repo_response = MagicMock()
+    repo_response.status_code = 200
+    repo_response.json.return_value = {"status": "OK", "repo": "valid/repo"}
+
+    # We use override for sources list, so client.get() is called ONLY for the repos
+    mock_get = AsyncMock(return_value=repo_response)
 
     from integrity import IntegrityManager
     test_manager = IntegrityManager()
@@ -102,7 +104,8 @@ async def test_integrity_sources_validation_filtering(monkeypatch, tmp_path):
     with patch("httpx.AsyncClient.get", side_effect=mock_get):
         await test_manager.sync_all()
 
-    # Verify only 1 call was made (for the valid source)
+    # Sources are loaded from override, so NO network call for sources.
+    # We have 1 valid source item, so expect 1 call.
     assert mock_get.call_count == 1
     args, _ = mock_get.call_args
     assert args[0] == "http://ok"
