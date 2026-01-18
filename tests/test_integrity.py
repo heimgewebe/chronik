@@ -16,11 +16,18 @@ def client(mock_env):
     from app import app
     return TestClient(app)
 
+import httpx
+
 # Helper for unified mocking
 def create_mock_response(json_data, status_code=200):
     mock = MagicMock()
     mock.status_code = status_code
     mock.json.return_value = json_data
+    mock.raise_for_status.return_value = None
+    if status_code >= 400:
+        # Mock raising an error
+        error = httpx.HTTPStatusError("Mock Error", request=MagicMock(), response=mock)
+        mock.raise_for_status.side_effect = error
     return mock
 
 # 1. Full Sync Flow (Validation, Filtering, Normalization, Saving)
