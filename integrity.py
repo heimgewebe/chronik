@@ -146,8 +146,8 @@ class IntegrityManager:
     def _validate_sources_data(self, data: Any) -> dict[str, Any] | None:
         """Validate the sources data structure."""
         if not isinstance(data, dict):
-             logger.error("Integrity sources data must be a dictionary")
-             return None
+            logger.error("Integrity sources data must be a dictionary")
+            return None
 
         api_version = data.get("apiVersion")
         if api_version != "integrity.sources.v1":
@@ -171,9 +171,11 @@ class IntegrityManager:
                 logger.warning(f"Skipping invalid source item (not a dict): {item}")
                 continue
 
-            repo = item.get("repo")
-            url = item.get("summary_url")
-            enabled = item.get("enabled")
+            # Use copy to avoid mutating input dict
+            new_item = dict(item)
+            repo = new_item.get("repo")
+            url = new_item.get("summary_url")
+            enabled = new_item.get("enabled")
 
             if not isinstance(repo, str) or not repo:
                 logger.warning(f"Skipping invalid source item (missing/invalid repo): {item}")
@@ -189,13 +191,13 @@ class IntegrityManager:
 
             # Default enabled to True if missing (Contract: optional, default True)
             if enabled is None:
-                item["enabled"] = True
+                new_item["enabled"] = True
 
-            valid_sources.append(item)
+            valid_sources.append(new_item)
 
         if not valid_sources and raw_sources:
-             logger.warning("No valid sources found after filtering")
-             return None
+            logger.warning("No valid sources found after filtering")
+            return None
 
         data["sources"] = valid_sources
         return data
@@ -219,10 +221,10 @@ class IntegrityManager:
 
                     # Ensure minimal fields in payload (report contract)
                     if "generated_at" not in payload_data:
-                         # Missing timestamp -> FAIL and sanitize
-                         invalid_new_generated_at = True
-                         status = "FAIL"
-                         error_reason = "Missing generated_at"
+                        # Missing timestamp -> FAIL and sanitize
+                        invalid_new_generated_at = True
+                        status = "FAIL"
+                        error_reason = "Missing generated_at"
                     else:
                         # Validate generated_at is parseable ISO
                         parsed_dt = parse_iso_ts(payload_data.get("generated_at"))
@@ -231,14 +233,14 @@ class IntegrityManager:
                             status = "FAIL"
                             error_reason = "Invalid timestamp format"
                         else:
-                             # Sanity check: Future timestamps (> tolerance) are invalid
-                             # This prevents frozen state if a producer clock is wrong
-                             future_limit = datetime.now(timezone.utc) + timedelta(minutes=self.future_tolerance_min)
-                             if parsed_dt > future_limit:
-                                 logger.warning(f"Future timestamp detected for {repo}: {parsed_dt}")
-                                 invalid_new_generated_at = True
-                                 status = "FAIL"
-                                 error_reason = "Future timestamp detected"
+                            # Sanity check: Future timestamps (> tolerance) are invalid
+                            # This prevents frozen state if a producer clock is wrong
+                            future_limit = datetime.now(timezone.utc) + timedelta(minutes=self.future_tolerance_min)
+                            if parsed_dt > future_limit:
+                                logger.warning(f"Future timestamp detected for {repo}: {parsed_dt}")
+                                invalid_new_generated_at = True
+                                status = "FAIL"
+                                error_reason = "Future timestamp detected"
 
                     if "url" not in payload_data:
                         payload_data["url"] = url
@@ -302,9 +304,9 @@ class IntegrityManager:
             # Update logic:
             # - Skip if older or equal (<=) to prevent redundant writes/churn.
             if new_dt and curr_dt and new_dt <= curr_dt:
-                    # New report is older or same, skip update
-                    logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_payload.get('generated_at')}")
-                    return
+                # New report is older or same, skip update
+                logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_payload.get('generated_at')}")
+                return
 
         # If we failed fetch/parse (and didn't return early), we synthesize a minimal payload
         if not payload_data:
@@ -318,9 +320,9 @@ class IntegrityManager:
             # Ensure status is updated in payload if we overrode it (e.g. FAIL/UNCLEAR logic)
             # But normally we trust the report's status unless fetch failed.
             if status in ["MISSING", "FAIL", "UNCLEAR"] and payload_data.get("status") != status:
-                 payload_data["status"] = normalize_status(status)
+                payload_data["status"] = normalize_status(status)
             else:
-                 payload_data["status"] = normalize_status(payload_data.get("status", status))
+                payload_data["status"] = normalize_status(payload_data.get("status", status))
 
             # Sanitization Strategy (Path B):
             # If generated_at was invalid/missing and we are allowed to write,
@@ -389,8 +391,13 @@ class IntegrityManager:
                 # Check kind in wrapper (Canonical)
                 if item.get("kind") == "integrity.summary.published.v1":
                     pass # Canonical path
-                # Backward compatibility: check payload.kind if wrapper.kind missing
+                # Backward compatibility: check payload.kind/type if wrapper.kind missing
                 elif payload.get("kind") == "integrity.summary.published.v1":
+                    payload["legacy"] = True
+                elif payload.get("type") == "integrity.summary.published.v1":
+                    payload["legacy"] = True
+                # Optional: wrapper type fallback
+                elif item.get("type") == "integrity.summary.published.v1":
                     payload["legacy"] = True
                 else:
                     # Junk or unrelated event

@@ -72,6 +72,70 @@ async def test_integrity_sync_success(monkeypatch, tmp_path):
     assert "kind" not in payload
 
 @pytest.mark.asyncio
+async def test_integrity_full_network_flow(monkeypatch, tmp_path):
+    """
+    Test the full flow where both sources and summaries are fetched via HTTP.
+    This ensures that the mock correctly handles different URLs returning different JSONs.
+    """
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from integrity import IntegrityManager
+
+    sources_url = "https://meta.repo/sources.json"
+    summary_url = "https://wgx.repo/summary.json"
+
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
+        "sources": [
+            {
+                "repo": "heimgewebe/wgx",
+                "summary_url": summary_url,
+                "enabled": True
+            }
+        ]
+    }
+
+    summary_data = {
+        "repo": "heimgewebe/wgx",
+        "status": "OK",
+        "generated_at": "2023-01-01T00:00:00Z"
+    }
+
+    # Define a side_effect function for client.get
+    async def mock_get_side_effect(url, *args, **kwargs):
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        if url == sources_url:
+            mock_resp.json.return_value = sources_data
+        elif url == summary_url:
+            mock_resp.json.return_value = summary_data
+        else:
+            mock_resp.status_code = 404
+        return mock_resp
+
+    test_manager = IntegrityManager()
+    test_manager.sources_url = sources_url
+    test_manager.override = None # Ensure we use network for sources
+
+    with patch("httpx.AsyncClient.get", side_effect=mock_get_side_effect) as mock_get:
+        await test_manager.sync_all()
+
+        # Verify calls
+        assert mock_get.call_count == 2
+        # Verify arguments
+        calls = [c[0][0] for c in mock_get.call_args_list]
+        assert sources_url in calls
+        assert summary_url in calls
+
+    from storage import read_last_line, sanitize_domain
+    domain = sanitize_domain("integrity.heimgewebe.wgx")
+    line = read_last_line(domain)
+    assert line is not None
+    data = json.loads(line)
+    assert data["payload"]["status"] == "OK"
+
+
+@pytest.mark.asyncio
 async def test_integrity_sources_validation_filtering(monkeypatch, tmp_path):
     # Test that invalid source items are filtered out
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
