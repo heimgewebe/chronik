@@ -202,3 +202,38 @@ def test_integrity_api_aggregate_view(client, monkeypatch, tmp_path):
     assert repos["heimgewebe/a"]["status"] == "OK"
     assert repos["heimgewebe/b"]["status"] == "FAIL"
     assert repos["heimgewebe/c"]["legacy"] is True
+
+def test_integrity_legacy_payload_type(client, monkeypatch, tmp_path):
+    # Verify strict backward compatibility for payload.type
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from storage import write_payload, sanitize_domain
+
+    repo = "heimgewebe/legacy-type"
+    dom = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+
+    # Store legacy event where payload has "type" but not "kind"
+    # wrapper kind is generic or missing (simulating old ingestion)
+    wrapper = {
+        "domain": dom,
+        "kind": "generic.wrapper",
+        "received_at": "2023-01-01T00:00:00Z",
+        "payload": {
+            "type": "integrity.summary.published.v1",
+            "repo": repo,
+            "status": "OK",
+            "generated_at": "2023-01-01T00:00:00Z"
+        }
+    }
+    write_payload(dom, [json.dumps(wrapper)])
+
+    from app import app
+    with TestClient(app) as tc:
+        resp = tc.get("/v1/integrity", headers={"X-Auth": "test-token"})
+        assert resp.status_code == 200
+        data = resp.json()
+
+    # Should be included and marked legacy
+    repos = {r["repo"]: r for r in data["repos"]}
+    assert repo in repos
+    assert repos[repo]["status"] == "OK"
+    assert repos[repo]["legacy"] is True
