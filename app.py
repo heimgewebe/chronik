@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ from validation import (
     prewarm_validators,
     validate_insights_daily_payload,
 )
+from integrity import IntegrityManager
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
@@ -114,7 +116,31 @@ logging.getLogger().setLevel(LOG_LEVEL)
 async def lifespan(app: FastAPI):
     # Pre-warm validators to avoid latency on first request
     await run_in_threadpool(prewarm_validators)
+
+    # Initialize IntegrityManager per-app instance
+    app.state.integrity_manager = IntegrityManager()
+
+    # Start integrity sync loop if enabled
+    integrity_enabled = os.getenv("CHRONIK_INTEGRITY_ENABLED", "1") == "1"
+    if integrity_enabled:
+        app.state.integrity_task = asyncio.create_task(app.state.integrity_manager.loop())
+    else:
+        app.state.integrity_task = None
+
     yield
+
+    # Clean shutdown of integrity loop
+    if app.state.integrity_task:
+        app.state.integrity_manager.stop()
+        app.state.integrity_task.cancel()
+        try:
+            # Wait for task to finish with timeout to prevent hanging
+            await asyncio.wait_for(app.state.integrity_task, timeout=5.0)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            # Normal shutdown path
+            logger.debug("Integrity loop shutdown gracefully")
+        except Exception as exc:
+            logger.error(f"Integrity loop shutdown error: {exc}")
 
 
 app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
@@ -617,41 +643,12 @@ async def tail_v1(
 
 
 @app.get("/v1/integrity", dependencies=[Depends(_require_auth_dep)])
-async def integrity_view():
+async def integrity_view(request: Request):
     """
-    Optional view: returns the latest integrity status for all known repos
-    (domains starting with 'integrity.').
+    Optional view: returns the latest integrity status for all known repos.
+    Returns aggregated status object.
     """
-    # 1. List all domains starting with "integrity"
-    # Note: we use "integrity" prefix, which matches "integrity.jsonl" and "integrity.*.jsonl"
-    domains = await run_in_threadpool(list_domains, "integrity")
-
-    results = {}
-
-    for dom in domains:
-        try:
-            # 2. Read last line for each domain
-            line = await run_in_threadpool(read_last_line, dom)
-            if line:
-                item = json.loads(line)
-                # The generic ingest wrapper structure is:
-                # { "domain": ..., "received_at": ..., "payload": ... }
-
-                # Filter by kind/type to avoid "integrity junk"
-                payload = item.get("payload", {}) or {}
-                kind = payload.get("kind") or payload.get("type") or item.get("type")
-
-                if kind != "integrity.summary.published.v1":
-                    continue
-
-                # We use the domain stored in the event if possible, else the filename key.
-                real_domain = item.get("domain", dom)
-                results[real_domain] = item
-        except (StorageError, json.JSONDecodeError):
-            # Ignore errors for individual files in the aggregate view
-            continue
-
-    return results
+    return await request.app.state.integrity_manager.get_aggregate_view()
 
 
 @app.get("/health")
