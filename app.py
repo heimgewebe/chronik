@@ -136,9 +136,11 @@ async def lifespan(app: FastAPI):
         try:
             # Wait for task to finish with timeout to prevent hanging
             await asyncio.wait_for(app.state.integrity_task, timeout=5.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
+        except asyncio.CancelledError:
             # Normal shutdown path
             logger.debug("Integrity loop shutdown gracefully")
+        except asyncio.TimeoutError:
+            logger.warning("Integrity loop shutdown timed out")
         except Exception as exc:
             logger.error(f"Integrity loop shutdown error: {exc}")
 
@@ -648,7 +650,14 @@ async def integrity_view(request: Request):
     Optional view: returns the latest integrity status for all known repos.
     Returns aggregated status object.
     """
-    return await request.app.state.integrity_manager.get_aggregate_view()
+    im = getattr(request.app.state, "integrity_manager", None)
+    if im is None:
+        return {
+            "as_of": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "total_status": "MISSING",
+            "repos": [],
+        }
+    return await im.get_aggregate_view()
 
 
 @app.get("/health")
