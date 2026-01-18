@@ -1,6 +1,7 @@
 import pytest
 import json
-from unittest.mock import patch, MagicMock
+import httpx
+from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 from datetime import datetime, timezone, timedelta
 
@@ -15,8 +16,6 @@ def mock_env(monkeypatch, tmp_path):
 def client(mock_env):
     from app import app
     return TestClient(app)
-
-import httpx
 
 # Helper for unified mocking
 def create_mock_response(json_data, status_code=200):
@@ -68,7 +67,8 @@ async def test_integrity_core_sync_flow(monkeypatch, tmp_path):
     test_manager = IntegrityManager()
     test_manager.sources_url = sources_url
 
-    with patch("httpx.AsyncClient.get", side_effect=mock_handler):
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = mock_handler
         await test_manager.sync_all()
 
     # Verify OK Repo
@@ -122,7 +122,8 @@ async def test_integrity_overwrite_protection(monkeypatch, tmp_path):
     test_manager = IntegrityManager()
     test_manager.sources_url = "http://sources"
 
-    with patch("httpx.AsyncClient.get", side_effect=mock_handler):
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = mock_handler
         await test_manager.sync_all()
 
     # Assert State Preserved (still OK, still 2023)
@@ -155,7 +156,8 @@ async def test_integrity_invalid_timestamp_handling(monkeypatch, tmp_path):
     test_manager = IntegrityManager()
     test_manager.sources_url = "http://sources"
 
-    with patch("httpx.AsyncClient.get", side_effect=mock_handler):
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = mock_handler
         await test_manager.sync_all()
 
     # Assert FAIL status and Sanitized Timestamp
