@@ -137,7 +137,8 @@ async def lifespan(app: FastAPI):
             # Wait for task to finish with timeout to prevent hanging
             await asyncio.wait_for(app.state.integrity_task, timeout=5.0)
         except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
+            # Normal shutdown path
+            logger.debug("Integrity loop shutdown gracefully")
         except Exception as exc:
             logger.error(f"Integrity loop shutdown error: {exc}")
 

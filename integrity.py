@@ -206,7 +206,6 @@ class IntegrityManager:
         received_at = get_current_utc_str()
         domain = self._repo_to_domain(repo)
 
-        status = "MISSING"
         payload_data = {}
         invalid_new_generated_at = False
         error_reason = None
@@ -217,7 +216,8 @@ class IntegrityManager:
                 try:
                     report = resp.json()
                     status = normalize_status(report.get("status", "UNCLEAR"))
-                    payload_data = report
+                    # Create copy to avoid mutating cache
+                    payload_data = dict(report)
 
                     # Ensure minimal fields in payload (report contract)
                     if "generated_at" not in payload_data:
@@ -318,11 +318,7 @@ class IntegrityManager:
             }
         else:
             # Ensure status is updated in payload if we overrode it (e.g. FAIL/UNCLEAR logic)
-            # But normally we trust the report's status unless fetch failed.
-            if status in ["MISSING", "FAIL", "UNCLEAR"] and payload_data.get("status") != status:
-                payload_data["status"] = normalize_status(status)
-            else:
-                payload_data["status"] = normalize_status(payload_data.get("status", status))
+            payload_data["status"] = normalize_status(status)
 
             # Sanitization Strategy (Path B):
             # If generated_at was invalid/missing and we are allowed to write,
