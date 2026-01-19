@@ -32,6 +32,7 @@ from storage import (
     StorageBusyError,
     read_tail,
     read_last_line,
+    scan_domain,
     list_domains,
     sanitize_domain,
     write_payload,
@@ -547,6 +548,83 @@ async def ingest(
     await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines)
 
     return PlainTextResponse("ok", status_code=202)
+
+
+@app.get("/v1/events", dependencies=[Depends(_require_auth_dep)])
+async def events_v1(
+    domain: str,
+    limit: int = 100,
+    since: str | None = None,
+    cursor: int | None = None,
+):
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if limit > 2000:
+        raise HTTPException(status_code=400, detail="limit must be <= 2000")
+
+    try:
+        dom = _sanitize_domain(domain)
+    except HTTPException:
+        raise
+
+    since_dt: datetime | None = None
+    if since:
+        since_dt = parse_iso_ts(since)
+        if since_dt is None:
+            raise HTTPException(status_code=400, detail="invalid since format")
+
+    try:
+        start_offset = cursor if cursor is not None else 0
+
+        def fetch_events(d, start, lim, s_dt):
+            results = []
+            next_off = start
+            # scan_domain handles ENOENT by yielding nothing -> consistent with empty list
+            iterator = scan_domain(d, start_offset=start)
+
+            for offset, line in iterator:
+                next_off = offset
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                keep = True
+                # Only filter by time if no explicit cursor was provided.
+                # If cursor is provided, we assume client wants the next batch regardless of time.
+                if s_dt and cursor is None:
+                    ts_str = None
+                    if isinstance(item, dict):
+                         ts_str = item.get("received_at")
+                         if not ts_str:
+                             ts_str = item.get("ts") or item.get("timestamp")
+
+                    dt = parse_iso_ts(ts_str) if ts_str else None
+                    # If timestamp is missing or invalid, we skip it when filtering by time
+                    if dt is None or dt <= s_dt:
+                        keep = False
+
+                if keep:
+                    results.append(item)
+
+                if len(results) >= lim:
+                    break
+
+            return results, next_off
+
+        events, next_cursor = await run_in_threadpool(fetch_events, dom, start_offset, limit, since_dt)
+
+    except StorageBusyError as exc:
+        raise HTTPException(status_code=429, detail="busy, try again") from exc
+    except StorageError as exc:
+        if "invalid target" in str(exc):
+             raise HTTPException(status_code=400, detail="invalid domain") from exc
+        raise HTTPException(status_code=500, detail="storage error") from exc
+
+    return {
+        "events": events,
+        "next_cursor": next_cursor
+    }
 
 
 @app.get("/v1/latest", dependencies=[Depends(_require_auth_dep)])

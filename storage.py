@@ -10,7 +10,7 @@ import re
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final, Iterable, Iterator
+from typing import Final, Iterable, Iterator, Tuple
 
 from filelock import FileLock, Timeout
 
@@ -27,6 +27,7 @@ __all__ = [
     "write_payload",
     "read_tail",
     "read_last_line",
+    "scan_domain",
     "list_domains",
     "get_lock_path",
     "FILENAME_RE",
@@ -253,6 +254,48 @@ def read_last_line(domain: str) -> str | None:
     """
     lines = read_tail(domain, 1)
     return lines[0] if lines else None
+
+
+def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, str]]:
+    """Scan the domain file forward starting from the given byte offset.
+
+    Yields:
+        (next_offset, line_str)
+
+    If start_offset is beyond EOF, yields nothing.
+    """
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    try:
+        with _locked_open(target_path, "rb") as fh:
+            fh.seek(start_offset)
+            while True:
+                line = fh.readline()
+                if not line:
+                    break
+
+                # Current position is the start of the next line
+                next_offset = fh.tell()
+
+                # Decode
+                try:
+                    text = line.decode("utf-8")
+                except UnicodeDecodeError:
+                    text = line.decode("utf-8", errors="replace")
+
+                # Remove trailing newline if present (matching read_tail behavior)
+                if text.endswith("\n"):
+                    text = text[:-1]
+
+                yield next_offset, text
+
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return
+        raise StorageError("read error") from exc
 
 
 def list_domains(prefix: str = "") -> list[str]:

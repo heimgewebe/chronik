@@ -668,3 +668,97 @@ def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path, client):
         except OSError as e:
             # fd is closed (EBADF expected)
             assert e.errno == errno.EBADF, f"Unexpected error: {e}"
+
+
+def test_events_v1_pagination(monkeypatch, tmp_path, client):
+    from datetime import datetime, timedelta, timezone
+
+    # Mock datetime to ensure distinct timestamps for each event
+    base_dt = datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class MockDatetime(datetime):
+        _call_count = 0
+        @classmethod
+        def now(cls, tz=None):
+            cls._call_count += 1
+            return base_dt + timedelta(seconds=cls._call_count)
+
+        @classmethod
+        def fromisoformat(cls, date_string):
+            return datetime.fromisoformat(date_string)
+
+    monkeypatch.setattr("app.datetime", MockDatetime)
+
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    domain = "test.events"
+
+    # Ingest 5 events
+    # Each will have a timestamp 1 second apart (12:00:01 to 12:00:05)
+    for i in range(5):
+        client.post(
+            f"/ingest/{domain}",
+            headers={"X-Auth": secret},
+            json={"n": i}
+        )
+
+    # 1. Fetch all
+    response = client.get(
+        f"/v1/events?domain={domain}",
+        headers={"X-Auth": secret}
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data["events"]) == 5
+    assert data["next_cursor"] > 0
+
+    # 2. Fetch with limit and cursor
+    resp1 = client.get(
+        f"/v1/events?domain={domain}&limit=2",
+        headers={"X-Auth": secret}
+    )
+    data1 = resp1.json()
+    assert len(data1["events"]) == 2
+    assert data1["events"][0]["payload"]["n"] == 0
+    assert data1["events"][1]["payload"]["n"] == 1
+    cursor1 = data1["next_cursor"]
+
+    resp2 = client.get(
+        f"/v1/events?domain={domain}&limit=2&cursor={cursor1}",
+        headers={"X-Auth": secret}
+    )
+    data2 = resp2.json()
+    assert len(data2["events"]) == 2
+    assert data2["events"][0]["payload"]["n"] == 2
+    assert data2["events"][1]["payload"]["n"] == 3
+    cursor2 = data2["next_cursor"]
+
+    resp3 = client.get(
+        f"/v1/events?domain={domain}&limit=2&cursor={cursor2}",
+        headers={"X-Auth": secret}
+    )
+    data3 = resp3.json()
+    assert len(data3["events"]) == 1
+    assert data3["events"][0]["payload"]["n"] == 4
+
+    # 3. Fetch with since
+    # Get timestamp of event #2
+    ts_event_2 = data2["events"][0]["received_at"]
+
+    # Fetch since event #2 timestamp
+    # Should exclude event #2 (<= since check)
+    # Wait, check app.py logic: if dt <= s_dt: keep = False.
+    # So if since = T2, event 2 (T2) is excluded.
+    # Event 3 (T3 > T2) is included.
+    resp_since = client.get(
+        f"/v1/events?domain={domain}&since={ts_event_2}",
+        headers={"X-Auth": secret}
+    )
+    data_since = resp_since.json()
+    events_since = data_since["events"]
+    # Expect 3, 4 (2 events)
+    assert len(events_since) == 2
+    assert events_since[0]["payload"]["n"] == 3
+    assert events_since[1]["payload"]["n"] == 4

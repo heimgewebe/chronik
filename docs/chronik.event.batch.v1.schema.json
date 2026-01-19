@@ -1,0 +1,18 @@
+{
+  "$id": "https://heimgewebe/contracts/chronik/event.batch.v1.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Chronik Event Batch",
+  "type": "object",
+  "properties": {
+    "events": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "next_cursor": {
+      "type": "integer",
+      "description": "Byte offset cursor for the next batch."
+    }
+  },
+  "required": ["events", "next_cursor"],
+  "additionalProperties": false
+}
