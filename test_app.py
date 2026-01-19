@@ -728,6 +728,27 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert data3["events"][0]["payload"]["n"] == 4
     assert data3["has_more"] is False
 
+def test_events_v1_peek_boundary(monkeypatch, tmp_path, client):
+    """Test behavior when exactly limit items are available."""
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    domain = "test.peek"
+
+    # Ingest 2 events
+    client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 0})
+    client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 1})
+
+    # Fetch with limit=2
+    # Should return 2 items, and has_more=False (because no 3rd item exists)
+    resp = client.get(
+        f"/v1/events?domain={domain}&limit=2",
+        headers={"X-Auth": secret}
+    )
+    data = resp.json()
+    assert len(data["events"]) == 2
+    assert data["has_more"] is False
+
 
 def test_events_v1_cursor_validation(monkeypatch, tmp_path, client):
     secret = _test_secret()

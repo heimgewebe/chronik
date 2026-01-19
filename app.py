@@ -583,26 +583,50 @@ async def events_v1(
         def fetch_events(d, start, lim):
             results = []
             next_off = start
-            exhausted = True
+            has_more = False
 
-            # scan_domain handles ENOENT by yielding nothing -> consistent with empty list
+            # Scan one more than limit to detect if there are more events
             iterator = scan_domain(d, start_offset=start)
 
+            count = 0
+            # iterate allows us to consume one by one
             for offset, line in iterator:
-                next_off = offset
+                # offset is where the NEXT line starts (after reading 'line')
+
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError:
+                    # Skip corrupt lines but advance cursor
+                    next_off = offset
                     continue
 
-                results.append(item)
+                count += 1
 
-                if len(results) >= lim:
-                    # Limit reached, so we are not exhausted (or at least we stopped early)
-                    exhausted = False
+                if count > lim:
+                    # We found one more than limit!
+                    has_more = True
+                    # Do NOT update next_off for this extra item,
+                    # because we want the client to fetch it next time.
+                    # 'offset' is the start of the item *after* this extra one.
+                    # We want 'next_off' to be the start of *this* extra item.
+                    # Wait. scan_domain yields (next_offset, line).
+                    # 'next_offset' is tell() after reading 'line'.
+                    # So 'line' spans from [prev_offset, next_offset).
+                    # If we consumed 'line' (the extra one), we want to rewind next_cursor
+                    # to the start of 'line'. But we don't know the start of 'line' easily
+                    # unless we track it.
+                    # Better approach: Don't consume it?
+                    # But iterator consumes it.
+                    # Let's track `current_start_offset`.
+                    # scan_domain doesn't yield start offset.
+                    # Let's rely on the fact that for the *previous* item (the last valid one),
+                    # we updated next_off to point to the start of *this* extra item.
                     break
 
-            return results, next_off, not exhausted
+                results.append(item)
+                next_off = offset
+
+            return results, next_off, has_more
 
         events, next_cursor, has_more = await run_in_threadpool(fetch_events, dom, cursor, limit)
 
