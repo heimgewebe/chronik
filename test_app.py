@@ -695,6 +695,8 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert len(data["events"]) == 5
     assert data["next_cursor"] > 0
     assert data["has_more"] is False
+    assert data["meta"]["count"] == 5
+    assert "generated_at" in data["meta"]
 
     # 2. Fetch with limit and cursor
     resp1 = client.get(
@@ -706,6 +708,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert data1["events"][0]["payload"]["n"] == 0
     assert data1["events"][1]["payload"]["n"] == 1
     assert data1["has_more"] is True
+    assert data1["meta"]["count"] == 2
     cursor1 = data1["next_cursor"]
 
     resp2 = client.get(

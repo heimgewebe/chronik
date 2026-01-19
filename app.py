@@ -629,7 +629,11 @@ async def events_v1(
     return {
         "events": events,
         "next_cursor": next_cursor,
-        "has_more": has_more
+        "has_more": has_more,
+        "meta": {
+            "count": len(events),
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        }
     }
 
 
