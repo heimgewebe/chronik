@@ -575,9 +575,9 @@ async def events_v1(
 
     try:
         dom = _sanitize_domain(domain)
-    except HTTPException:
-        # Re-raise as 400 with detail from _sanitize_domain or explicit detail
-        raise HTTPException(status_code=400, detail="invalid domain")
+    except HTTPException as exc:
+        # Re-raise with original detail
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
 
     try:
         def fetch_events(d, start, lim):
@@ -585,46 +585,35 @@ async def events_v1(
             next_off = start
             has_more = False
 
-            # Scan one more than limit to detect if there are more events
             iterator = scan_domain(d, start_offset=start)
 
             count = 0
-            # iterate allows us to consume one by one
-            for offset, line in iterator:
-                # offset is where the NEXT line starts (after reading 'line')
 
+            # Use strict unpacking: scan_domain now yields (start, next, line)
+            for item_start, item_next, line in iterator:
                 try:
                     item = json.loads(line)
                 except json.JSONDecodeError:
-                    # Skip corrupt lines but advance cursor
-                    next_off = offset
+                    # Skip corrupt lines.
+                    # If we haven't reached limit yet, we just advance next_off past this corrupt line
+                    # so the client doesn't get stuck on it.
+                    if count < lim:
+                        next_off = item_next
                     continue
 
                 count += 1
 
                 if count > lim:
-                    # We found one more than limit!
+                    # We found a valid item BEYOND the limit.
                     has_more = True
-                    # Do NOT update next_off for this extra item,
-                    # because we want the client to fetch it next time.
-                    # 'offset' is the start of the item *after* this extra one.
-                    # We want 'next_off' to be the start of *this* extra item.
-                    # Wait. scan_domain yields (next_offset, line).
-                    # 'next_offset' is tell() after reading 'line'.
-                    # So 'line' spans from [prev_offset, next_offset).
-                    # If we consumed 'line' (the extra one), we want to rewind next_cursor
-                    # to the start of 'line'. But we don't know the start of 'line' easily
-                    # unless we track it.
-                    # Better approach: Don't consume it?
-                    # But iterator consumes it.
-                    # Let's track `current_start_offset`.
-                    # scan_domain doesn't yield start offset.
-                    # Let's rely on the fact that for the *previous* item (the last valid one),
-                    # we updated next_off to point to the start of *this* extra item.
+                    # The client should fetch THIS item next time.
+                    # So next_cursor should be the START of this extra item.
+                    next_off = item_start
                     break
 
                 results.append(item)
-                next_off = offset
+                # Client has consumed this item, so next_cursor is after it.
+                next_off = item_next
 
             return results, next_off, has_more
 

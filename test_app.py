@@ -735,19 +735,69 @@ def test_events_v1_peek_boundary(monkeypatch, tmp_path, client):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     domain = "test.peek"
 
-    # Ingest 2 events
+    # Ingest 3 events
     client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 0})
     client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 1})
+    client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 2})
 
     # Fetch with limit=2
-    # Should return 2 items, and has_more=False (because no 3rd item exists)
+    # Should return 2 items, and has_more=True (because 3rd item exists)
     resp = client.get(
         f"/v1/events?domain={domain}&limit=2",
         headers={"X-Auth": secret}
     )
     data = resp.json()
     assert len(data["events"]) == 2
-    assert data["has_more"] is False
+    assert data["has_more"] is True
+
+    next_cursor = data["next_cursor"]
+
+    # Fetch next
+    resp2 = client.get(
+        f"/v1/events?domain={domain}&limit=2&cursor={next_cursor}",
+        headers={"X-Auth": secret}
+    )
+    data2 = resp2.json()
+    assert len(data2["events"]) == 1
+    assert data2["events"][0]["payload"]["n"] == 2
+    assert data2["has_more"] is False
+
+
+def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
+    """Test that corrupt lines are skipped and don't break cursor logic."""
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    domain = "test.corrupt"
+
+    # Manually write file with corrupt line in middle
+    storage.write_payload(domain, [
+        json.dumps({"n": 0}),
+        "THIS IS NOT JSON",
+        json.dumps({"n": 1})
+    ])
+
+    # Fetch limit=1. Should get n=0.
+    resp1 = client.get(
+        f"/v1/events?domain={domain}&limit=1",
+        headers={"X-Auth": secret}
+    )
+    data1 = resp1.json()
+    assert len(data1["events"]) == 1
+    assert data1["events"][0]["n"] == 0
+    # has_more should be True because n=1 exists (skipping corrupt)
+    assert data1["has_more"] is True
+    cursor1 = data1["next_cursor"]
+
+    # Fetch next. Should skip corrupt line and get n=1.
+    resp2 = client.get(
+        f"/v1/events?domain={domain}&limit=1&cursor={cursor1}",
+        headers={"X-Auth": secret}
+    )
+    data2 = resp2.json()
+    assert len(data2["events"]) == 1
+    assert data2["events"][0]["n"] == 1
+    assert data2["has_more"] is False
 
 
 def test_events_v1_cursor_validation(monkeypatch, tmp_path, client):

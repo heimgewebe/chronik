@@ -256,11 +256,11 @@ def read_last_line(domain: str) -> str | None:
     return lines[0] if lines else None
 
 
-def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, str]]:
+def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, str]]:
     """Scan the domain file forward starting from the given byte offset.
 
     Yields:
-        (next_offset, line_str)
+        (start_offset, next_offset, line_str)
 
     If start_offset is beyond EOF, yields nothing.
     """
@@ -273,6 +273,9 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, str]]
         with _locked_open(target_path, "rb") as fh:
             fh.seek(start_offset)
             while True:
+                # Capture start offset before reading
+                current_start = fh.tell()
+
                 line = fh.readline()
                 if not line:
                     break
@@ -290,7 +293,7 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, str]]
                 if text.endswith("\n"):
                     text = text[:-1]
 
-                yield next_offset, text
+                yield current_start, next_offset, text
 
     except OSError as exc:
         if exc.errno == errno.ENOENT:
