@@ -671,24 +671,6 @@ def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path, client):
 
 
 def test_events_v1_pagination(monkeypatch, tmp_path, client):
-    from datetime import datetime, timedelta, timezone
-
-    # Mock datetime to ensure distinct timestamps for each event
-    base_dt = datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
-
-    class MockDatetime(datetime):
-        _call_count = 0
-        @classmethod
-        def now(cls, tz=None):
-            cls._call_count += 1
-            return base_dt + timedelta(seconds=cls._call_count)
-
-        @classmethod
-        def fromisoformat(cls, date_string):
-            return datetime.fromisoformat(date_string)
-
-    monkeypatch.setattr("app.datetime", MockDatetime)
-
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
@@ -696,7 +678,6 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     domain = "test.events"
 
     # Ingest 5 events
-    # Each will have a timestamp 1 second apart (12:00:01 to 12:00:05)
     for i in range(5):
         client.post(
             f"/ingest/{domain}",
@@ -747,22 +728,46 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert data3["events"][0]["payload"]["n"] == 4
     assert data3["has_more"] is False
 
-    # 3. Fetch with since
-    # Get timestamp of event #2
-    ts_event_2 = data2["events"][0]["received_at"]
 
-    # Fetch since event #2 timestamp
-    # Should exclude event #2 (<= since check)
-    # Wait, check app.py logic: if dt <= s_dt: keep = False.
-    # So if since = T2, event 2 (T2) is excluded.
-    # Event 3 (T3 > T2) is included.
-    resp_since = client.get(
-        f"/v1/events?domain={domain}&since={ts_event_2}",
+def test_events_v1_cursor_validation(monkeypatch, tmp_path, client):
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    resp = client.get(
+        "/v1/events?domain=test&cursor=-1",
         headers={"X-Auth": secret}
     )
-    data_since = resp_since.json()
-    events_since = data_since["events"]
-    # Expect 3, 4 (2 events)
-    assert len(events_since) == 2
-    assert events_since[0]["payload"]["n"] == 3
-    assert events_since[1]["payload"]["n"] == 4
+    assert resp.status_code == 400
+
+
+def test_events_v1_empty_result(monkeypatch, tmp_path, client):
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    # Empty domain (doesn't exist)
+    resp = client.get(
+        "/v1/events?domain=non.existent",
+        headers={"X-Auth": secret}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["events"] == []
+    assert data["has_more"] is False
+    assert data["next_cursor"] == 0
+
+    # Domain exists but no more events
+    domain = "test.events"
+    client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 1})
+
+    # Scan past end
+    resp = client.get(
+        f"/v1/events?domain={domain}&cursor=99999",
+        headers={"X-Auth": secret}
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["events"] == []
+    assert data["has_more"] is False
+    assert data["next_cursor"] == 99999  # Should return requested cursor if no progress

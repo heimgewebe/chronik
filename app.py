@@ -554,29 +554,33 @@ async def ingest(
 async def events_v1(
     domain: str,
     limit: int = 100,
-    since: str | None = None,
-    cursor: int | None = None,
+    cursor: int = 0,
 ):
+    """
+    Consumer pull endpoint.
+    - cursor: Byte offset pointing to the start of the next line to read. 0 = start of file.
+    - limit: Max events to return.
+
+    Returns:
+    - events: List of event objects.
+    - next_cursor: The cursor to use for the NEXT batch.
+    - has_more: True if there might be more events (limit reached). False if EOF reached.
+    """
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be >= 1")
     if limit > 2000:
         raise HTTPException(status_code=400, detail="limit must be <= 2000")
+    if cursor < 0:
+        raise HTTPException(status_code=400, detail="cursor must be >= 0")
 
     try:
         dom = _sanitize_domain(domain)
     except HTTPException:
-        raise
-
-    since_dt: datetime | None = None
-    if since:
-        since_dt = parse_iso_ts(since)
-        if since_dt is None:
-            raise HTTPException(status_code=400, detail="invalid since format")
+        # Re-raise as 400 with detail from _sanitize_domain or explicit detail
+        raise HTTPException(status_code=400, detail="invalid domain")
 
     try:
-        start_offset = cursor if cursor is not None else 0
-
-        def fetch_events(d, start, lim, s_dt):
+        def fetch_events(d, start, lim):
             results = []
             next_off = start
             exhausted = True
@@ -591,30 +595,16 @@ async def events_v1(
                 except json.JSONDecodeError:
                     continue
 
-                keep = True
-                # Strict filtering: use ONLY received_at.
-                # Only filter by time if no explicit cursor was provided.
-                if s_dt and cursor is None:
-                    ts_str = item.get("received_at") if isinstance(item, dict) else None
-                    dt = parse_iso_ts(ts_str) if ts_str else None
-
-                    # If timestamp is missing or invalid, or strictly older/equal, skip.
-                    if dt is None or dt <= s_dt:
-                        keep = False
-
-                if keep:
-                    results.append(item)
+                results.append(item)
 
                 if len(results) >= lim:
-                    # If we reached the limit, we are likely not exhausted.
-                    # Technically, we might be exactly at EOF, but we can't know without peeking.
-                    # We assume there might be more.
+                    # Limit reached, so we are not exhausted (or at least we stopped early)
                     exhausted = False
                     break
 
             return results, next_off, not exhausted
 
-        events, next_cursor, has_more = await run_in_threadpool(fetch_events, dom, start_offset, limit, since_dt)
+        events, next_cursor, has_more = await run_in_threadpool(fetch_events, dom, cursor, limit)
 
     except StorageBusyError as exc:
         raise HTTPException(status_code=429, detail="busy, try again") from exc
