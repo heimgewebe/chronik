@@ -755,6 +755,10 @@ def test_events_v1_peek_boundary(monkeypatch, tmp_path, client):
 
     next_cursor = data["next_cursor"]
 
+    # Verify next_cursor points to start of 3rd item (n=2).
+    # Assuming first two items are ~40-50 bytes each?
+    # We can check by fetching from that cursor and expecting n=2 as the first item.
+
     # Fetch next
     resp2 = client.get(
         f"/v1/events?domain={domain}&limit=2&cursor={next_cursor}",
