@@ -713,6 +713,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     data = response.json()
     assert len(data["events"]) == 5
     assert data["next_cursor"] > 0
+    assert data["has_more"] is False
 
     # 2. Fetch with limit and cursor
     resp1 = client.get(
@@ -723,6 +724,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert len(data1["events"]) == 2
     assert data1["events"][0]["payload"]["n"] == 0
     assert data1["events"][1]["payload"]["n"] == 1
+    assert data1["has_more"] is True
     cursor1 = data1["next_cursor"]
 
     resp2 = client.get(
@@ -733,6 +735,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert len(data2["events"]) == 2
     assert data2["events"][0]["payload"]["n"] == 2
     assert data2["events"][1]["payload"]["n"] == 3
+    assert data2["has_more"] is True
     cursor2 = data2["next_cursor"]
 
     resp3 = client.get(
@@ -742,6 +745,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     data3 = resp3.json()
     assert len(data3["events"]) == 1
     assert data3["events"][0]["payload"]["n"] == 4
+    assert data3["has_more"] is False
 
     # 3. Fetch with since
     # Get timestamp of event #2

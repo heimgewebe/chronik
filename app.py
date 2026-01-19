@@ -579,6 +579,8 @@ async def events_v1(
         def fetch_events(d, start, lim, s_dt):
             results = []
             next_off = start
+            exhausted = True
+
             # scan_domain handles ENOENT by yielding nothing -> consistent with empty list
             iterator = scan_domain(d, start_offset=start)
 
@@ -590,17 +592,13 @@ async def events_v1(
                     continue
 
                 keep = True
+                # Strict filtering: use ONLY received_at.
                 # Only filter by time if no explicit cursor was provided.
-                # If cursor is provided, we assume client wants the next batch regardless of time.
                 if s_dt and cursor is None:
-                    ts_str = None
-                    if isinstance(item, dict):
-                         ts_str = item.get("received_at")
-                         if not ts_str:
-                             ts_str = item.get("ts") or item.get("timestamp")
-
+                    ts_str = item.get("received_at") if isinstance(item, dict) else None
                     dt = parse_iso_ts(ts_str) if ts_str else None
-                    # If timestamp is missing or invalid, we skip it when filtering by time
+
+                    # If timestamp is missing or invalid, or strictly older/equal, skip.
                     if dt is None or dt <= s_dt:
                         keep = False
 
@@ -608,11 +606,15 @@ async def events_v1(
                     results.append(item)
 
                 if len(results) >= lim:
+                    # If we reached the limit, we are likely not exhausted.
+                    # Technically, we might be exactly at EOF, but we can't know without peeking.
+                    # We assume there might be more.
+                    exhausted = False
                     break
 
-            return results, next_off
+            return results, next_off, not exhausted
 
-        events, next_cursor = await run_in_threadpool(fetch_events, dom, start_offset, limit, since_dt)
+        events, next_cursor, has_more = await run_in_threadpool(fetch_events, dom, start_offset, limit, since_dt)
 
     except StorageBusyError as exc:
         raise HTTPException(status_code=429, detail="busy, try again") from exc
@@ -623,7 +625,8 @@ async def events_v1(
 
     return {
         "events": events,
-        "next_cursor": next_cursor
+        "next_cursor": next_cursor,
+        "has_more": has_more
     }
 
 

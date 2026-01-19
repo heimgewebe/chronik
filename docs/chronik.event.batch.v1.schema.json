@@ -11,8 +11,12 @@
     "next_cursor": {
       "type": "integer",
       "description": "Byte offset cursor for the next batch."
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "True if there are potentially more events to fetch."
     }
   },
-  "required": ["events", "next_cursor"],
+  "required": ["events", "next_cursor", "has_more"],
   "additionalProperties": false
 }
