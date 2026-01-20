@@ -54,6 +54,21 @@ curl -X POST "http://localhost:8788/ingest/example.com" \
      -d '{"event": "deploy", "status": "success"}'
 ```
 
+### `GET /v1/events` (Consumer Pull)
+Empfohlener Endpunkt für Consumer (Heimlern, Leitstand), um Events stapelweise und robust abzurufen.
+
+| Eigenschaft    | Beschreibung |
+|----------------|--------------|
+| Methode        | `GET` |
+| Query-Parameter| `domain` (Pflicht); `limit` (max 2000, default 100); `cursor` (Byte-Offset, default 0). |
+| Antwort        | JSON-Objekt mit `events` (Liste von `base.event` Objekten), `next_cursor` (Integer oder null bei EOF), `has_more` (Boolean), `meta` (Count/Timestamp). |
+
+### `GET /v1/tail` (deprecated)
+Legacy-Endpunkt, um die letzten N Events zu lesen. Sollte durch `/v1/events` ersetzt werden.
+
+### `GET /v1/latest` (deprecated)
+Legacy-Endpunkt, um das allerletzte Event zu lesen. Sollte durch `/v1/events` ersetzt werden.
+
 ### `GET /health`
 * **Header** `X-Auth`: muss dem Wert von `CHRONIK_TOKEN` entsprechen.
 * **Antwort**: `{ "status": "ok" }`. Kann ohne Request-Body abgefragt werden.

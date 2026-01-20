@@ -647,7 +647,7 @@ async def events_v1(
     }
 
 
-@app.get("/v1/latest", dependencies=[Depends(_require_auth_dep)])
+@app.get("/v1/latest", dependencies=[Depends(_require_auth_dep)], deprecated=True)
 async def latest_v1(domain: str, unwrap: int = 0):
     try:
         dom = _sanitize_domain(domain)
@@ -675,7 +675,7 @@ async def latest_v1(domain: str, unwrap: int = 0):
         raise HTTPException(status_code=500, detail="data corruption") from exc
 
 
-@app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)])
+@app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)], deprecated=True)
 async def tail_v1(
     domain: str,
     limit: int = 200,
