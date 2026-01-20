@@ -812,6 +812,68 @@ def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
     assert data2["next_cursor"] is None
 
 
+def test_events_v1_corrupt_line_at_limit_boundary(monkeypatch, tmp_path, client):
+    """Test corrupt line handling specifically at the limit boundary."""
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    domain = "test.corrupt_boundary"
+
+    # Sequence:
+    # 1. Valid (n=0)
+    # 2. Corrupt
+    # 3. Valid (n=1)
+
+    item0 = {"domain": "test.corrupt-boundary", "received_at": "T0", "payload": {"n": 0}}
+    item1 = {"domain": "test.corrupt-boundary", "received_at": "T1", "payload": {"n": 1}}
+
+    # Domain in filename matches but domain inside payload must match too or ingest might complain
+    # (though scan_domain reads raw lines so mismatch in payload content shouldn't break scan unless validation runs on read).
+    # Wait, the failure was 400 Bad Request.
+    # Because domain="test.corrupt_boundary" contains underscore, which is invalid.
+    domain = "test.corrupt-boundary"
+
+    storage.write_payload(domain, [
+        json.dumps(item0),
+        "BAD_JSON",
+        json.dumps(item1)
+    ])
+
+    # Fetch limit=1.
+    # Should get n=0.
+    # Logic: Read n=0 (count=1). Limit not reached yet.
+    # Read BAD_JSON. Count stays 1. next_off moves past BAD_JSON.
+    # Read n=1 (count=2). Limit exceeded.
+    # has_more = True. next_off rewinds to start of n=1.
+
+    resp = client.get(
+        f"/v1/events?domain={domain}&limit=1",
+        headers={"X-Auth": secret}
+    )
+    if resp.status_code != 200:
+        print(resp.text)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert len(data["events"]) == 1
+    assert data["events"][0]["payload"]["n"] == 0
+    assert data["has_more"] is True
+
+    # Next fetch should get n=1 (skipping BAD_JSON effectively because previous call scanned past it but stopped at n=1)
+    # Wait, if previous call scanned past BAD_JSON, does next_cursor point after BAD_JSON?
+    # Yes, because we rewind to start of n=1.
+    # So next call starts at n=1. BAD_JSON is skipped.
+
+    cursor = data["next_cursor"]
+    resp2 = client.get(
+        f"/v1/events?domain={domain}&limit=1&cursor={cursor}",
+        headers={"X-Auth": secret}
+    )
+    data2 = resp2.json()
+    assert len(data2["events"]) == 1
+    assert data2["events"][0]["payload"]["n"] == 1
+    assert data2["has_more"] is False
+
+
 def test_events_v1_cursor_validation(monkeypatch, tmp_path, client):
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)

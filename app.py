@@ -591,12 +591,13 @@ async def events_v1(
 
             # Use strict unpacking: scan_domain now yields (start, next, line)
             for item_start, item_next, line in iterator:
+                # Default: we consume this line (valid or not), so next_cursor advances past it
+                next_off = item_next
+
                 try:
                     stored_item = json.loads(line)
                 except json.JSONDecodeError:
-                    # Skip corrupt lines.
-                    if count < lim:
-                        next_off = item_next
+                    # Skip corrupt lines but we already advanced next_off
                     continue
 
                 count += 1
@@ -610,8 +611,6 @@ async def events_v1(
                     break
 
                 results.append(stored_item)
-                # Client has consumed this item, so next_cursor is after it.
-                next_off = item_next
 
             return results, next_off, has_more
 
