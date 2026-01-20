@@ -705,10 +705,9 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     )
     data1 = resp1.json()
     assert len(data1["events"]) == 2
-    # Verify base.event structure: wrapper -> data -> original payload
-    assert data1["events"][0]["kind"] == "base.event"
-    assert data1["events"][0]["data"]["n"] == 0
-    assert data1["events"][1]["data"]["n"] == 1
+    # Verify stored envelope structure
+    assert data1["events"][0]["payload"]["n"] == 0
+    assert data1["events"][1]["payload"]["n"] == 1
     assert data1["has_more"] is True
     assert data1["meta"]["count"] == 2
     cursor1 = data1["next_cursor"]
@@ -719,8 +718,8 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     )
     data2 = resp2.json()
     assert len(data2["events"]) == 2
-    assert data2["events"][0]["data"]["n"] == 2
-    assert data2["events"][1]["data"]["n"] == 3
+    assert data2["events"][0]["payload"]["n"] == 2
+    assert data2["events"][1]["payload"]["n"] == 3
     assert data2["has_more"] is True
     cursor2 = data2["next_cursor"]
 
@@ -730,7 +729,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     )
     data3 = resp3.json()
     assert len(data3["events"]) == 1
-    assert data3["events"][0]["data"]["n"] == 4
+    assert data3["events"][0]["payload"]["n"] == 4
     assert data3["has_more"] is False
     assert data3["next_cursor"] is None
 
@@ -766,7 +765,7 @@ def test_events_v1_peek_boundary(monkeypatch, tmp_path, client):
     )
     data2 = resp2.json()
     assert len(data2["events"]) == 1
-    assert data2["events"][0]["data"]["n"] == 2
+    assert data2["events"][0]["payload"]["n"] == 2
     assert data2["has_more"] is False
     assert data2["next_cursor"] is None
 
@@ -796,7 +795,7 @@ def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
     )
     data1 = resp1.json()
     assert len(data1["events"]) == 1
-    assert data1["events"][0]["data"]["n"] == 0
+    assert data1["events"][0]["payload"]["n"] == 0
     # has_more should be True because n=1 exists (skipping corrupt)
     assert data1["has_more"] is True
     cursor1 = data1["next_cursor"]
@@ -808,7 +807,7 @@ def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
     )
     data2 = resp2.json()
     assert len(data2["events"]) == 1
-    assert data2["events"][0]["data"]["n"] == 1
+    assert data2["events"][0]["payload"]["n"] == 1
     assert data2["has_more"] is False
     assert data2["next_cursor"] is None
 

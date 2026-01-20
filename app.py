@@ -609,19 +609,7 @@ async def events_v1(
                     next_off = item_start
                     break
 
-                # Map stored envelope to canonical base.event
-                base_event = {
-                    "kind": "base.event",
-                    "version": 1,
-                    "id": str(uuid.uuid4()),  # Generate fresh ID for the view
-                    "meta": {
-                        "occurred_at": stored_item.get("received_at"),
-                        "producer": stored_item.get("domain", d),
-                    },
-                    "data": stored_item.get("payload", stored_item),
-                }
-
-                results.append(base_event)
+                results.append(stored_item)
                 # Client has consumed this item, so next_cursor is after it.
                 next_off = item_next
 
