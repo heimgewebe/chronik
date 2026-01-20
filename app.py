@@ -564,7 +564,7 @@ async def events_v1(
     Returns:
     - events: List of event objects.
     - next_cursor: The cursor to use for the NEXT batch.
-    - has_more: True if there might be more events (limit reached). False if EOF reached.
+    - has_more: True if there is at least one more valid event after this batch. False if EOF reached.
     """
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be >= 1")

@@ -780,10 +780,14 @@ def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
     domain = "test.corrupt"
 
     # Manually write file with corrupt line in middle
+    # We must wrap items in envelopes to match ingest behavior
+    item0 = {"domain": domain, "received_at": "2023-01-01T12:00:00Z", "payload": {"n": 0}}
+    item1 = {"domain": domain, "received_at": "2023-01-01T12:00:01Z", "payload": {"n": 1}}
+
     storage.write_payload(domain, [
-        json.dumps({"n": 0}),
+        json.dumps(item0),
         "THIS IS NOT JSON",
-        json.dumps({"n": 1})
+        json.dumps(item1)
     ])
 
     # Fetch limit=1. Should get n=0.
@@ -793,7 +797,7 @@ def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
     )
     data1 = resp1.json()
     assert len(data1["events"]) == 1
-    assert data1["events"][0]["n"] == 0
+    assert data1["events"][0]["payload"]["n"] == 0
     # has_more should be True because n=1 exists (skipping corrupt)
     assert data1["has_more"] is True
     cursor1 = data1["next_cursor"]
@@ -805,7 +809,7 @@ def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
     )
     data2 = resp2.json()
     assert len(data2["events"]) == 1
-    assert data2["events"][0]["n"] == 1
+    assert data2["events"][0]["payload"]["n"] == 1
     assert data2["has_more"] is False
     assert data2["next_cursor"] is None
 
@@ -851,4 +855,4 @@ def test_events_v1_empty_result(monkeypatch, tmp_path, client):
     data = resp.json()
     assert data["events"] == []
     assert data["has_more"] is False
-    assert data["next_cursor"] is None  # Should return requested cursor if no progress
+    assert data["next_cursor"] is None
