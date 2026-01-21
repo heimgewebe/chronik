@@ -162,6 +162,47 @@ def get_lock_path(target_path: Path) -> Path:
 
 
 @contextmanager
+def _safe_open_read(target_path: Path) -> Iterator:
+    """Securely open a file for reading without following symlinks (O_NOFOLLOW).
+    Does NOT acquire a file lock.
+    """
+    if target_path.parent != DATA_DIR:
+        raise StorageError("invalid target path: wrong parent directory")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise StorageError("platform lacks O_NOFOLLOW")
+    flags |= os.O_NOFOLLOW
+
+    # Defense-in-depth: always use trusted DATA_DIR for dirfd
+    dirfd = os.open(str(DATA_DIR), os.O_RDONLY)
+    try:
+        fd = os.open(
+            target_path.name,
+            flags,
+            0o600,
+            dir_fd=dirfd,
+        )
+        try:
+            fh = os.fdopen(fd, "rb")
+        except Exception:
+            os.close(fd)
+            raise
+        with fh:
+            yield fh
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            logger.warning(
+                "symlink attempt rejected (safe read)",
+                extra={"file": str(target_path)},
+            )
+            raise StorageError("invalid target (symlink)") from exc
+        raise
+    finally:
+        os.close(dirfd)
+
+
+@contextmanager
 def _locked_open(target_path: Path, mode: str) -> Iterator:
     """Context manager to securely open a file with locking.
     Handles FileLock, O_NOFOLLOW, O_CLOEXEC, and error mapping.
@@ -273,12 +314,8 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
     # Writers append atomically (mostly), so worst case is a partial read at EOF,
     # which will likely be handled as a corrupt line or ignored.
     try:
-        # Resolve path safely but skip _locked_open
-        if target_path.parent != DATA_DIR:
-             raise StorageError("invalid target path: wrong parent directory")
-
-        # Standard open in binary mode
-        with open(target_path, "rb") as fh:
+        # Use safe open to prevent symlink attacks, but no file lock
+        with _safe_open_read(target_path) as fh:
             fh.seek(start_offset)
             while True:
                 # Capture start offset before reading
