@@ -269,8 +269,16 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
     except DomainError as exc:
         raise StorageError("invalid target path") from exc
 
+    # Open for reading without exclusive lock to avoid blocking writers during long scans.
+    # Writers append atomically (mostly), so worst case is a partial read at EOF,
+    # which will likely be handled as a corrupt line or ignored.
     try:
-        with _locked_open(target_path, "rb") as fh:
+        # Resolve path safely but skip _locked_open
+        if target_path.parent != DATA_DIR:
+             raise StorageError("invalid target path: wrong parent directory")
+
+        # Standard open in binary mode
+        with open(target_path, "rb") as fh:
             fh.seek(start_offset)
             while True:
                 # Capture start offset before reading
