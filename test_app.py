@@ -693,9 +693,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert response.status_code == 200
     data = response.json()
     assert len(data["events"]) == 5
-    # next_cursor should be an int (offset) even if has_more is False, to allow resuming later
-    assert data["next_cursor"] is not None
-    assert data["next_cursor"] > 0
+    assert data["next_cursor"] is None
     assert data["has_more"] is False
     assert data["meta"]["count"] == 5
     assert "generated_at" in data["meta"]
@@ -733,7 +731,7 @@ def test_events_v1_pagination(monkeypatch, tmp_path, client):
     assert len(data3["events"]) == 1
     assert data3["events"][0]["payload"]["n"] == 4
     assert data3["has_more"] is False
-    assert data3["next_cursor"] is not None
+    assert data3["next_cursor"] is None
 
 def test_events_v1_peek_boundary(monkeypatch, tmp_path, client):
     """Test behavior when exactly limit items are available."""
@@ -769,7 +767,7 @@ def test_events_v1_peek_boundary(monkeypatch, tmp_path, client):
     assert len(data2["events"]) == 1
     assert data2["events"][0]["payload"]["n"] == 2
     assert data2["has_more"] is False
-    assert data2["next_cursor"] is not None
+    assert data2["next_cursor"] is None
 
 
 def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
@@ -811,7 +809,7 @@ def test_events_v1_corrupt_line_handling(monkeypatch, tmp_path, client):
     assert len(data2["events"]) == 1
     assert data2["events"][0]["payload"]["n"] == 1
     assert data2["has_more"] is False
-    assert data2["next_cursor"] is not None
+    assert data2["next_cursor"] is None
 
 
 def test_events_v1_corrupt_line_at_limit_boundary(monkeypatch, tmp_path, client):
@@ -902,7 +900,7 @@ def test_events_v1_empty_result(monkeypatch, tmp_path, client):
     data = resp.json()
     assert data["events"] == []
     assert data["has_more"] is False
-    assert data["next_cursor"] == 0
+    assert data["next_cursor"] is None
 
     # Domain exists but no more events
     domain = "test.events"
@@ -917,4 +915,4 @@ def test_events_v1_empty_result(monkeypatch, tmp_path, client):
     data = resp.json()
     assert data["events"] == []
     assert data["has_more"] is False
-    assert data["next_cursor"] == 99999
+    assert data["next_cursor"] is None
