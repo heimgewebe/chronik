@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.heimgewebe.org/contracts/events/heimgeist.self_state.snapshot.v1.schema.json",
+  "$id": "https://heimgewebe/contracts/events/heimgeist.self_state.snapshot.v1.schema.json",
   "title": "MIRROR: Heimgeist Self-State Snapshot Event V1",
   "description": "Mirror of metarepo contract. Chronik validates events; bundle artifacts are rejected.",
   "type": "object",
