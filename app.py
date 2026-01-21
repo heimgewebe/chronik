@@ -627,6 +627,7 @@ async def events_v1(
         "events": events,
         "next_cursor": next_cursor,
         "has_more": has_more,
+        "limit": limit,
         "meta": {
             "count": len(events),
             "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
