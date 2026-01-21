@@ -2,9 +2,13 @@
 
 ## Ingest
 
-### POST /ingest/:domain/:kind
+### POST /v1/ingest
 
-Accepts NDJSON or single JSON payload. Wraps it in a standard envelope and appends to storage.
+Accepts NDJSON or single JSON payload. Wraps it in a standard envelope and appends to storage. The domain can be specified via the `domain` query parameter or within the payload.
+
+### POST /ingest/:domain (Deprecated)
+
+Legacy endpoint. Use `/v1/ingest` instead.
 
 ## Reading Events
 
