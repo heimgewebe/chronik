@@ -1,21 +1,15 @@
-# Contracts and API Semantics
+# Contracts and Schemas
 
-This directory contains local documentation and notes.
+This directory contains schemas and documentation defining the interfaces (contracts) for the system.
 
-**Canonical Contracts** are located in the `heimgewebe/metarepo` repository under `contracts/`.
+## Source of Truth
 
-This repository does **not** contain canonical schema definitions. Any schemas found here are strictly for local development or documentation purposes and should not be treated as the Single Source of Truth (SSOT).
+**The Canonical Source of Truth (SSOT) is the `metarepo`.**
 
-## API Contracts
+*   Schemas found in `docs/*.schema.json` within this repository are **mirrors** intended for local development, validation, and testing logic.
+*   While they strive to be up-to-date, they should not be treated as the authoritative definition.
+*   The `$id` fields in these local mirrors are kept canonical (pointing to `heimgewebe/contracts/...`) to ensure that validation logic behaves consistently with production environments.
 
-- `chronik.event.batch.v1`: Defines the response format for `GET /v1/events`.
-  See: `https://github.com/heimgewebe/metarepo/tree/main/contracts/chronik/event.batch.v1.schema.json`
+## Event Contracts
 
-## Domain Semantics
-
-Chronik stores events in domains. While the API accepts arbitrary valid domain strings (sanitized to alphanumeric, dots, dashes), consumers should adhere to the following conventions to ensure semantic stability:
-
-- **Format**: `dotted.notation` (e.g., `knowledge.observatory`, `heimgeist.insight`).
-- **Case**: Always lowercase.
-- **Mapping**: Domains typically map to specific event types or aggregate streams defined in `metarepo/contracts/consumers.yaml`.
-- **Cursor**: The `cursor` returned by `/v1/events` is a **Byte Offset**. Clients must persist this integer to resume consumption reliably using the `heimlern.ingest.state.v1` contract.
+See `event-contracts.md` for a detailed list of supported events and their requirements.

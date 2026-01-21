@@ -625,7 +625,7 @@ async def events_v1(
 
     return {
         "events": events,
-        "next_cursor": next_cursor if has_more else None,
+        "next_cursor": next_cursor,
         "has_more": has_more,
         "meta": {
             "count": len(events),
