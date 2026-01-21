@@ -288,6 +288,12 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
                 if not line:
                     break
 
+                # Guard against partial writes: Only process complete lines ending with newline.
+                # If we are at EOF and the line doesn't end with \n, it's likely being written.
+                # We stop here and don't yield this line or advance cursor past it.
+                if not line.endswith(b'\n'):
+                    break
+
                 # Current position is the start of the next line
                 next_offset = fh.tell()
 
@@ -297,7 +303,7 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
                 except UnicodeDecodeError:
                     text = line.decode("utf-8", errors="replace")
 
-                # Remove trailing newline if present (matching read_tail behavior)
+                # Remove trailing newline (we know it exists now)
                 if text.endswith("\n"):
                     text = text[:-1]
 

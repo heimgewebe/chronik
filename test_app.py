@@ -18,10 +18,6 @@ import storage
 
 @pytest.fixture
 def client(monkeypatch):
-    # Ensure a token is set so the app can start (though we patch per test)
-    # Actually, we should probably set the env before TestClient if we want to be safe,
-    # but the app.py reads env at runtime now in _get_secret.
-    # However, to avoid global state issues, we use a fixture.
     with TestClient(app) as c:
         yield c
 
@@ -817,7 +813,6 @@ def test_events_v1_corrupt_line_at_limit_boundary(monkeypatch, tmp_path, client)
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
-    domain = "test.corrupt_boundary"
 
     # Sequence:
     # 1. Valid (n=0)
@@ -872,6 +867,7 @@ def test_events_v1_corrupt_line_at_limit_boundary(monkeypatch, tmp_path, client)
     assert len(data2["events"]) == 1
     assert data2["events"][0]["payload"]["n"] == 1
     assert data2["has_more"] is False
+    assert data2["next_cursor"] is None
 
 
 def test_events_v1_cursor_validation(monkeypatch, tmp_path, client):
@@ -916,3 +912,74 @@ def test_events_v1_empty_result(monkeypatch, tmp_path, client):
     assert data["events"] == []
     assert data["has_more"] is False
     assert data["next_cursor"] is None
+
+
+def test_events_v1_partial_line_at_eof(monkeypatch, tmp_path, client):
+    """Test that partial lines (no newline) at EOF are not consumed."""
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    domain = "test.partial"
+
+    # 1. Write one complete line and one partial line (manually)
+    fpath = tmp_path / "test.partial.jsonl"
+    # Write canonical envelopes
+    item0 = {"domain": domain, "received_at": "T0", "payload": {"n": 0}}
+    item1 = {"domain": domain, "received_at": "T1", "payload": {"n": 1}}
+
+    with open(fpath, "wb") as f:
+        f.write(json.dumps(item0).encode("utf-8") + b"\n")
+        f.write(json.dumps(item1).encode("utf-8")) # No newline!
+
+    # 2. Fetch. Should get only item0.
+    resp = client.get(
+        f"/v1/events?domain={domain}",
+        headers={"X-Auth": secret}
+    )
+    data = resp.json()
+    assert len(data["events"]) == 1
+    assert data["events"][0]["payload"]["n"] == 0
+    assert data["has_more"] is False
+
+    # cursor is next_cursor.
+    # To resume, we'd need a separate 'resume_cursor' or calculate it.
+    # For this test, we calculate expected offset manually.
+    cursor = len(json.dumps(item0).encode("utf-8") + b"\n")
+
+    # 3. Append newline to file
+    with open(fpath, "ab") as f:
+        f.write(b"\n")
+
+    # 4. Fetch again from calculated cursor. Should get item1.
+    resp2 = client.get(
+        f"/v1/events?domain={domain}&cursor={cursor}",
+        headers={"X-Auth": secret}
+    )
+    data2 = resp2.json()
+    assert len(data2["events"]) == 1
+    assert data2["events"][0]["payload"]["n"] == 1
+
+
+def test_events_v1_idempotency(monkeypatch, tmp_path, client):
+    """Test that repeated calls with same cursor return same data."""
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    domain = "test.idem"
+
+    client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 0})
+    client.post(f"/ingest/{domain}", headers={"X-Auth": secret}, json={"n": 1})
+
+    # Call 1
+    resp1 = client.get(f"/v1/events?domain={domain}", headers={"X-Auth": secret})
+    data1 = resp1.json()
+
+    # Call 2
+    resp2 = client.get(f"/v1/events?domain={domain}", headers={"X-Auth": secret})
+    data2 = resp2.json()
+
+    # Compare fields excluding generated_at
+    assert data1["events"] == data2["events"]
+    assert data1["next_cursor"] == data2["next_cursor"]
+    assert data1["has_more"] == data2["has_more"]
+    assert data1["meta"]["count"] == data2["meta"]["count"]
