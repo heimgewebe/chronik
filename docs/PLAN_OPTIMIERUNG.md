@@ -4,25 +4,26 @@ Dieser Plan basiert auf einer Architektur- und Code-Evaluierung und definiert Ma
 
 ## 1. Wartbarkeit & Code-Qualität (Kurzfristig)
 
-Die Priorität liegt auf der Entkopplung der monolithischen Verarbeitungslogik und der Modernisierung der Validierung.
+Die Priorität liegt auf der Entkopplung der monolithischen Verarbeitungslogik und der Modernisierung der Validierung unter Wahrung der Contracts-First-Strategie.
 
 ### 1.1 Modularisierung der Ingest-Logik
 Die Funktion `_process_items` in `app.py` vereint aktuell Validierung, Normalisierung, Provenance-Checks, Qualitätsberechnung und Retention-Logik.
-**Maßnahme:** Aufspaltung in dedizierte Komponenten:
+**Maßnahme:** Aufspaltung in dedizierte Komponenten/Stages (keine komplexe Klassenarchitektur):
 - `IngestValidator`: Kapselt Schema- und Provenance-Prüfungen.
-- `QualityAssessor`: Isoliert die Logik aus `quality.py` und deren Anwendung.
-- `RetentionPolicy`: Kapselt die TTL-Berechnung.
+- `QualityPipelineStage`: Wendet die Logik aus `quality.py` an.
+- `RetentionService`: Kapselt die TTL-Berechnung (nutzt intern `retention.RetentionPolicy`).
 
-### 1.2 Einsatz von Pydantic
+### 1.2 Einsatz von Pydantic (als Adapter)
 Aktuell erfolgt die Input-Validierung teilweise manuell oder über `jsonschema`.
-**Maßnahme:** Nutzung von Pydantic-Modellen für Request-Bodies in FastAPI.
-- Vorteile: Automatische Generierung von OpenAPI-Doku, präzisere Fehlermeldungen, weniger Boilerplate-Code in `app.py`.
+**Maßnahme:** Nutzung von Pydantic-Modellen für die HTTP-Schicht (DX, OpenAPI).
+- **Wichtig:** JSON Schema/Contracts bleiben die kanonische "Single Source of Truth". Pydantic dient lediglich als Adapter für die HTTP-Schnittstelle und darf die Schema-Validierung nicht ersetzen oder aufweichen.
+- Vorteile: Automatische Generierung von OpenAPI-Doku, präzisere 400/422 Fehlermeldungen.
 
 ### 1.3 Test-Automatisierung & CI
-Entgegen der Evaluierung existieren bereits umfangreiche Tests im Ordner `tests/` (z.B. Integrity, Schema, Quality).
+Im Ordner `tests/` existiert bereits eine umfangreiche Testsuite.
 **Maßnahme:**
-- Sicherstellen, dass diese Tests in einer CI-Pipeline (z.B. GitHub Actions) bei jedem Push ausgeführt werden.
-- Erweiterung der Tests um Szenarien für die neuen Module (nach Refactoring).
+- **CI prüfen & ergänzen:** Sicherstellen, dass die Tests (`pytest`) und Linter (`ruff`, `mypy`) in den GitHub Actions Workflows bei jedem Push laufen.
+- **Golden Fixtures:** Einführung von "Golden Tests" (Snapshot-Tests), die sicherstellen, dass Refactorings (siehe 1.1) keine unbeabsichtigten Änderungen an den persistierten JSONL-Zeilen bewirken.
 
 ### 1.4 Konfigurationsmanagement
 **Maßnahme:** Einführung einer zentralen `Settings`-Klasse (z.B. mit `pydantic-settings`), um `os.getenv`-Aufrufe zu bündeln und typisiert bereitzustellen.
@@ -32,29 +33,36 @@ Entgegen der Evaluierung existieren bereits umfangreiche Tests im Ordner `tests/
 ### 2.1 Audit-Logging
 **Maßnahme:** Einführung eines strukturierten Audit-Logs (JSON-Format) für Ingest-Entscheidungen.
 - Protokollierung von: `timestamp`, `request_id`, `domain`, `action` (ACCEPTED/REJECTED), `reason`, `client_ip` (anonymisiert).
-- Dies ergänzt das bestehende Request-Logging.
 
-### 2.2 Differenzierteres Fehler-Handling
+### 2.2 Auth & Abuse Protection
+Gemäß ADR-0002 ist `X-Auth` verpflichtend.
+**Maßnahme:** Härtung der Authentifizierung:
+- **Rate Limiting:** Konsequente Anwendung von Limits (SlowAPI) zum Schutz vor Brute-Force/DoS.
+- **Trennung:** Klare Unterscheidung zwischen 401 (Missing/Invalid Token) und 403 (Forbidden).
+- **Token:** Vorbereitung für Token-Rotation oder Multi-Token-Support (optional).
+
+### 2.3 Differenzierteres Fehler-Handling
 **Maßnahme:** Klare Trennung von Client-Fehlern (Validierung -> 400/422) und Server-Fehlern (Storage -> 500/507).
-- Sicherstellen, dass Storage-Exceptions (`StorageError`) nicht unmaskiert an den Client durchgereicht werden, aber im Server-Log mit Stacktrace erscheinen.
+- Storage-Exceptions (`StorageError`) dürfen nicht unmaskiert an den Client gelangen.
 
 ## 3. Performance & Skalierbarkeit (Langfristig / Bei Bedarf)
 
-Die aktuelle Architektur (File-based, FileLock) ist für das MVP angemessen (ADR-0002). Optimierungen erfolgen nur bei messbaren Engpässen.
+Die aktuelle Architektur (File-based, FileLock) ist für das MVP angemessen (ADR-0002). Optimierungen erfolgen messwertgetrieben.
 
 ### 3.1 Verzeichnis-Sharding
-Sollte die Anzahl der Domains stark steigen (> 10.000), kann das flache `data/`-Verzeichnis zum Flaschenhals werden.
+Sollte die Anzahl der Domains stark steigen (> 10.000, messwertgetrieben), kann das flache `data/`-Verzeichnis zum Flaschenhals werden.
 **Maßnahme (Optional):** Einführung einer Verzeichnisstruktur basierend auf Domain-Präfixen (z.B. `data/h/heimgeist.jsonl`).
 
 ### 3.2 Asynchrones Dateimanagement
-Aktuell nutzt `storage.py` synchrones I/O innerhalb von `run_in_threadpool`.
-**Maßnahme (Optional):** Evaluierung von `aiofiles` für echte asynchrone Dateioperationen, falls der Threadpool limitiert. Hinweis: `FileLock` ist synchron, was eine vollständige Umstellung erschwert.
+Aktuell nutzt `storage.py` synchrones I/O innerhalb von `run_in_threadpool`. Da `FileLock` synchron ist, bringt `aiofiles` allein keinen vollen Async-Gewinn.
+**Maßnahme (Optional):** Monitoring der I/O-Last im Threadpool. Nur bei Engpässen Umstellung auf asynchrone Patterns prüfen.
 
 ### 3.3 Query-Erweiterungen
-**Maßnahme:** Erweiterung der `/v1/tail` API um Zeitfilter (`since`, `until`) und eventuell einfache Typ-Filter, um Clients das Parsen unnötiger Daten zu ersparen.
+**Maßnahme:** Erweiterung der `/v1/tail` API um Zeitfilter (`since`, `until`).
+- **Semantik:** Filter beziehen sich strikt auf `received_at` (Server-Empfangszeit), um Eindeutigkeit zu gewährleisten. `occurred_at` (Event-Zeit) bleibt eine optionale, sekundäre Dimension.
 
 ## 4. Abgrenzung (Out of Scope)
 
-Folgende Punkte aus der Evaluierung werden **nicht** umgesetzt, da sie den Architektur-Entscheidungen widersprechen:
-- **Datenbank-Backend:** Gemäß ADR-0002 bleibt Chronik dateibasiert. Komplexere Abfragen gehören in nachgelagerte Systeme (Data Lake / Warehouse).
-- **Edit/Delete-API:** Chronik ist ein Append-Only Log ("Wahrheit zum Empfangszeitpunkt"). Korrekturen erfolgen durch neue Events ("Compensating Transactions").
+Folgende Punkte werden **nicht** umgesetzt:
+- **Datenbank-Backend:** Gemäß ADR-0002 bleibt Chronik dateibasiert.
+- **Edit/Delete-API:** Chronik ist ein Append-Only Log. Korrekturen erfolgen durch Kompensations-Events.
