@@ -550,6 +550,46 @@ async def ingest(
     return PlainTextResponse("ok", status_code=202)
 
 
+def _fetch_events_helper(d: str, start: int, lim: int):
+    """Synchronous helper to fetch events from storage.
+
+    This function isolates the file I/O and iteration logic from the async
+    FastAPI endpoint handler. It is designed to be run in a threadpool.
+    """
+    results = []
+    next_off = start
+    has_more = False
+
+    iterator = scan_domain(d, start_offset=start)
+
+    count = 0
+
+    # Use strict unpacking: scan_domain now yields (start, next, line)
+    for item_start, item_next, line in iterator:
+        # Default: we consume this line (valid or not), so next_cursor advances past it
+        next_off = item_next
+
+        try:
+            stored_item = json.loads(line)
+        except json.JSONDecodeError:
+            # Skip corrupt lines but we already advanced next_off
+            continue
+
+        count += 1
+
+        if count > lim:
+            # We found a valid item BEYOND the limit.
+            has_more = True
+            # The client should fetch THIS item next time.
+            # So next_cursor should be the START of this extra item.
+            next_off = item_start
+            break
+
+        results.append(stored_item)
+
+    return results, next_off, has_more
+
+
 @app.get("/v1/events", dependencies=[Depends(_require_auth_dep)])
 async def events_v1(
     domain: str,
@@ -580,42 +620,7 @@ async def events_v1(
         raise HTTPException(status_code=400, detail=exc.detail) from exc
 
     try:
-        def fetch_events(d, start, lim):
-            results = []
-            next_off = start
-            has_more = False
-
-            iterator = scan_domain(d, start_offset=start)
-
-            count = 0
-
-            # Use strict unpacking: scan_domain now yields (start, next, line)
-            for item_start, item_next, line in iterator:
-                # Default: we consume this line (valid or not), so next_cursor advances past it
-                next_off = item_next
-
-                try:
-                    stored_item = json.loads(line)
-                except json.JSONDecodeError:
-                    # Skip corrupt lines but we already advanced next_off
-                    continue
-
-                count += 1
-
-                if count > lim:
-                    # We found a valid item BEYOND the limit.
-                    has_more = True
-                    # The client should fetch THIS item next time.
-                    # So next_cursor should be the START of this extra item.
-                    next_off = item_start
-                    break
-
-                results.append(stored_item)
-
-            return results, next_off, has_more
-
-        events, next_cursor, has_more = await run_in_threadpool(fetch_events, dom, cursor, limit)
-
+        events, next_cursor, has_more = await run_in_threadpool(_fetch_events_helper, dom, cursor, limit)
     except StorageBusyError as exc:
         raise HTTPException(status_code=429, detail="busy, try again") from exc
     except StorageError as exc:

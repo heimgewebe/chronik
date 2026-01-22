@@ -36,7 +36,7 @@ Retrieve events for a given domain using a robust, cursor-based pagination mecha
 ```
 
 *   `next_cursor`: An integer representing the byte offset for the next page. Always returned (even at EOF).
-*   `has_more`: Boolean indicating if more events *might* be available (specifically, if the `limit` was reached). If `false`, you have reached the end of the known valid stream.
+*   `has_more`: Boolean indicating if at least one more **valid** event exists after this batch. If `false`, you have reached the end of the known valid stream.
 *   `limit`: The limit used for this request.
 *   **Partial Lines**: If the file ends with a partial line (missing newline), it is strictly ignored until a newline is appended.
 
