@@ -625,7 +625,7 @@ async def events_v1(
         raise HTTPException(status_code=429, detail="busy, try again") from exc
     except StorageError as exc:
         if "invalid target" in str(exc):
-             raise HTTPException(status_code=400, detail="invalid domain") from exc
+            raise HTTPException(status_code=400, detail="invalid domain") from exc
         raise HTTPException(status_code=500, detail="storage error") from exc
 
     return {

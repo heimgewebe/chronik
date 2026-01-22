@@ -6,7 +6,7 @@
 
 Accepts NDJSON or single JSON payload. Wraps it in a standard envelope and appends to storage. The domain can be specified via the `domain` query parameter or within the payload.
 
-### POST /ingest/:domain (Deprecated)
+### POST /ingest/{domain} (Deprecated)
 
 Legacy endpoint. Use `/v1/ingest` instead.
 
@@ -17,7 +17,7 @@ Legacy endpoint. Use `/v1/ingest` instead.
 Retrieve events for a given domain using a robust, cursor-based pagination mechanism.
 
 **Parameters:**
-*   `domain` (required): The domain to read from (e.g., `heimgeist.self_state.snapshot`).
+*   `domain` (required): The domain to read from (e.g., `heimgeist.self-state.snapshot`).
 *   `limit` (optional, default 100): Maximum number of events to return.
 *   `cursor` (optional, default 0): The byte offset to start reading from.
 
