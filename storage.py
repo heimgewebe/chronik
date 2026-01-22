@@ -10,7 +10,7 @@ import re
 from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final, Iterable, Iterator
+from typing import Final, Iterable, Iterator, Tuple
 
 from filelock import FileLock, Timeout
 
@@ -27,6 +27,7 @@ __all__ = [
     "write_payload",
     "read_tail",
     "read_last_line",
+    "scan_domain",
     "list_domains",
     "get_lock_path",
     "FILENAME_RE",
@@ -161,6 +162,47 @@ def get_lock_path(target_path: Path) -> Path:
 
 
 @contextmanager
+def _safe_open_read(target_path: Path) -> Iterator:
+    """Securely open a file for reading without following symlinks (O_NOFOLLOW).
+    Does NOT acquire a file lock.
+    """
+    if target_path.parent != DATA_DIR:
+        raise StorageError("invalid target path: wrong parent directory")
+
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise StorageError("platform lacks O_NOFOLLOW")
+    flags |= os.O_NOFOLLOW
+
+    # Defense-in-depth: always use trusted DATA_DIR for dirfd
+    dirfd = os.open(str(DATA_DIR), os.O_RDONLY)
+    try:
+        fd = os.open(
+            target_path.name,
+            flags,
+            0o600,
+            dir_fd=dirfd,
+        )
+        try:
+            fh = os.fdopen(fd, "rb")
+        except Exception:
+            os.close(fd)
+            raise
+        with fh:
+            yield fh
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            logger.warning(
+                "symlink attempt rejected (safe read)",
+                extra={"file": str(target_path)},
+            )
+            raise StorageError("invalid target (symlink)") from exc
+        raise
+    finally:
+        os.close(dirfd)
+
+
+@contextmanager
 def _locked_open(target_path: Path, mode: str) -> Iterator:
     """Context manager to securely open a file with locking.
     Handles FileLock, O_NOFOLLOW, O_CLOEXEC, and error mapping.
@@ -253,6 +295,61 @@ def read_last_line(domain: str) -> str | None:
     """
     lines = read_tail(domain, 1)
     return lines[0] if lines else None
+
+
+def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, str]]:
+    """Scan the domain file forward starting from the given byte offset.
+
+    Yields:
+        (start_offset, next_offset, line_str)
+
+    If start_offset is beyond EOF, yields nothing.
+    """
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    # Open for reading without exclusive lock to avoid blocking writers during long scans.
+    # Writers append atomically (mostly), so worst case is a partial read at EOF,
+    # which will likely be handled as a corrupt line or ignored.
+    try:
+        # Use safe open to prevent symlink attacks, but no file lock
+        with _safe_open_read(target_path) as fh:
+            fh.seek(start_offset)
+            while True:
+                # Capture start offset before reading
+                current_start = fh.tell()
+
+                line = fh.readline()
+                if not line:
+                    break
+
+                # Guard against partial writes: Only process complete lines ending with newline.
+                # If we are at EOF and the line doesn't end with \n, it's likely being written.
+                # We stop here and don't yield this line or advance cursor past it.
+                if not line.endswith(b'\n'):
+                    break
+
+                # Current position is the start of the next line
+                next_offset = fh.tell()
+
+                # Decode
+                try:
+                    text = line.decode("utf-8")
+                except UnicodeDecodeError:
+                    text = line.decode("utf-8", errors="replace")
+
+                # Remove trailing newline (we know it exists now)
+                if text.endswith("\n"):
+                    text = text[:-1]
+
+                yield current_start, next_offset, text
+
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return
+        raise StorageError("read error") from exc
 
 
 def list_domains(prefix: str = "") -> list[str]:

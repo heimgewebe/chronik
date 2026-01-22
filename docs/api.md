@@ -1,82 +1,49 @@
-# API-Handbuch
+# Chronik API
 
-Dieses Dokument beschreibt die HTTP-Schnittstelle des Chronik-Ingest-Dienstes im Detail.
+## Ingest
 
-## Übersicht
-* Basis-URL: `http://<host>:<port>` (Standard-Port 8788)
-* Authentifizierung: Verpflichtender Header `X-Auth` mit dem Wert aus `CHRONIK_TOKEN`
-* Datenformat: JSON bzw. Newline-Delimited JSON (NDJSON)
-* OpenAPI/Swagger: Automatisch unter `/docs` (Swagger UI) bzw. `/openapi.json` verfügbar
+### POST /v1/ingest
 
-## Endpunkte
-### `POST /v1/ingest`
-Zentraler Ingest-Endpunkt, der JSON-Objekte, Arrays oder NDJSON entgegennimmt. Die Domain kann über den Query-Parameter `domain` oder über das Feld `domain` im ersten Objekt mitgeliefert werden.
+Accepts NDJSON or single JSON payload. Wraps it in a standard envelope and appends to storage. The domain can be specified via the `domain` query parameter or within the payload.
 
-| Eigenschaft    | Beschreibung |
-|----------------|--------------|
-| Methode        | `POST` |
-| Pfadparameter  | keine |
-| Query-Parameter| `domain` (optional) – Ziel-Domain; wird in Kleinbuchstaben umgewandelt und muss die FQDN-Regeln erfüllen (siehe Abschnitt "Fehlerfälle" zur Domain-Validierung) |
-| Header         | `Content-Type: application/json` **oder** `Content-Type: application/x-ndjson`; `X-Auth: <token>` (Pflicht). |
-| Request-Body   | **JSON:** Objekt oder Array von Objekten. **NDJSON:** Zeilenweise JSON-Objekte (`\n`-getrennt); leere Zeilen werden ignoriert. Für jedes Objekt wird ein Feld `domain` ergänzt, falls es fehlt. Optionales Feld `summary` darf max. 500 Zeichen lang sein. |
-| Antwort        | `202 Accepted` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen u. a. `400 invalid json/invalid ndjson/invalid payload/domain must be specified ...`, falsche Authentifizierung `401 unauthorized`, fehlende Länge `411 length required`, zu große Payload `413 payload too large`, falscher Content-Type `415 unsupported content-type`, zu lange Summary `422 summary too long (max 500)`, Rate-Limit `429 too many requests`, Platzmangel `507 insufficient storage`. |
+### POST /ingest/{domain} (Deprecated)
 
-#### Beispiel-Requests
-```bash
-curl -X POST "http://localhost:8788/v1/ingest?domain=example.com" \
-     -H "Content-Type: application/json" \
-     -H "X-Auth: ${CHRONIK_TOKEN}" \
-     -d '{"event": "deploy", "status": "success"}'
+Legacy endpoint. Use `/v1/ingest` instead.
+
+## Reading Events
+
+### GET /v1/events
+
+Retrieve events for a given domain using a robust, cursor-based pagination mechanism.
+
+**Parameters:**
+*   `domain` (required): The domain to read from (e.g., `heimgeist.self-state.snapshot`).
+*   `limit` (optional, default 100): Maximum number of events to return.
+*   `cursor` (optional, default 0): The byte offset to start reading from.
+
+**Response:**
+```json
+{
+  "events": [ ... ],
+  "next_cursor": 12345,
+  "has_more": true,
+  "limit": 100,
+  "meta": {
+      "count": 10,
+      "generated_at": "..."
+  }
+}
 ```
 
-```bash
-http POST :8788/v1/ingest \
-    domain==service.internal \
-    event=deploy status=success X-Auth:${CHRONIK_TOKEN}
-```
+*   `next_cursor`: An integer representing the byte offset for the next page. Always returned (even at EOF).
+*   `has_more`: Boolean indicating if at least one more **valid** event exists after this batch. If `false`, you have reached the end of the known valid stream.
+*   `limit`: The limit used for this request.
+*   **Partial Lines**: If the file ends with a partial line (missing newline), it is strictly ignored until a newline is appended.
 
-### `POST /ingest/{domain}` (deprecated)
-Frühere Variante, die weiterhin unterstützt wird. Die Domain wird im Pfad angegeben; der Endpunkt ist als veraltet markiert und sollte durch `/v1/ingest` ersetzt werden.
+## Legacy Endpoints (Deprecated)
 
-| Eigenschaft    | Beschreibung |
-|----------------|--------------|
-| Methode        | `POST` |
-| Pfadparameter  | `domain` – wird in Kleinbuchstaben umgewandelt und muss den FQDN-Regeln entsprechen |
-| Header         | `Content-Type: application/json`; `X-Auth: <token>` (Pflicht). |
-| Request-Body   | JSON-Objekt oder Array aus Objekten. Jedes Objekt erhält automatisch das Feld `domain`, sofern es fehlt. Optionales Feld `summary` darf max. 500 Zeichen lang sein. |
-| Antwort        | `202 Accepted` (Text: `ok`) bei Erfolg. Fehlerhafte Eingaben erzeugen `400 invalid json/invalid payload/domain mismatch`, falsche Authentifizierung `401 unauthorized`, fehlende Länge `411 length required`, zu große Payload `413 payload too large`, zu lange Summary `422 summary too long (max 500)`, Rate-Limit `429 too many requests`, Platzmangel `507 insufficient storage`. |
+### GET /v1/tail (Deprecated)
+Use `/v1/events` instead.
 
-#### Beispiel-Request
-```bash
-curl -X POST "http://localhost:8788/ingest/example.com" \
-     -H "Content-Type: application/json" \
-     -H "X-Auth: ${CHRONIK_TOKEN}" \
-     -d '{"event": "deploy", "status": "success"}'
-```
-
-### `GET /health`
-* **Header** `X-Auth`: muss dem Wert von `CHRONIK_TOKEN` entsprechen.
-* **Antwort**: `{ "status": "ok" }`. Kann ohne Request-Body abgefragt werden.
-
-### `GET /version`
-* **Header** `X-Auth`: muss dem Wert von `CHRONIK_TOKEN` entsprechen.
-* **Antwort**: `{ "version": "<wert>" }`. Der Wert entspricht der Konstante `VERSION` bzw. der Umgebungsvariablen `CHRONIK_VERSION`.
-
-#### Fehlerfälle
-| Status | Detail                         | Ursache |
-|--------|--------------------------------|---------|
-| 400    | `invalid domain`               | Domain verletzt das erlaubte Namensschema |
-| 400    | `invalid json` / `invalid ndjson` | Request-Body ist kein gültiges UTF-8/JSON bzw. NDJSON |
-| 400    | `invalid payload`              | JSON ist kein Objekt/Array aus Objekten bzw. enthält ungültige Domains |
-| 400    | `domain mismatch`              | Eingebettete `domain` unterscheidet sich von der Pfad-/Query-Domain |
-| 400    | `domain must be specified via query or payload` | Bei `/v1/ingest` fehlt die Domain sowohl in Query als auch im ersten Objekt |
-| 401    | `unauthorized`                 | Header `X-Auth` fehlt oder stimmt nicht |
-| 411    | `length required`              | `Content-Length`-Header fehlt |
-| 413    | `payload too large`            | Payload überschreitet 1 MiB |
-| 415    | `unsupported content-type`     | Content-Type ist weder JSON noch NDJSON |
-| 422    | `summary too long (max 500)`   | Feld `summary` überschreitet 500 Zeichen |
-| 429    | `too many requests`            | Rate-Limit überschritten |
-| 507    | `insufficient storage`         | Beim Schreiben nicht genug Speicherplatz |
-
-## Datenpersistenz
-Alle Requests werden in Domain-spezifischen JSONL-Dateien gespeichert. Der Dateiname leitet sich aus der Domain ab (`<domain>.jsonl`) und wird nur bei extrem langen Domains mit einem 8-stelligen SHA-Suffix gekürzt. Jede Zeile repräsentiert eine Payload als JSON-String.
+### GET /v1/latest (Deprecated)
+Use `/v1/events` with `limit=1` (and iterate backwards if needed, though `/v1/events` is forward-only currently).

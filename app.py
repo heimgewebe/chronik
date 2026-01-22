@@ -32,6 +32,7 @@ from storage import (
     StorageBusyError,
     read_tail,
     read_last_line,
+    scan_domain,
     list_domains,
     sanitize_domain,
     write_payload,
@@ -549,7 +550,97 @@ async def ingest(
     return PlainTextResponse("ok", status_code=202)
 
 
-@app.get("/v1/latest", dependencies=[Depends(_require_auth_dep)])
+def _fetch_events_helper(d: str, start: int, lim: int):
+    """Synchronous helper to fetch events from storage.
+
+    This function isolates the file I/O and iteration logic from the async
+    FastAPI endpoint handler. It is designed to be run in a threadpool.
+    """
+    results = []
+    next_off = start
+    has_more = False
+
+    iterator = scan_domain(d, start_offset=start)
+
+    count = 0
+
+    # Use strict unpacking: scan_domain now yields (start, next, line)
+    for item_start, item_next, line in iterator:
+        # Default: we consume this line (valid or not), so next_cursor advances past it
+        next_off = item_next
+
+        try:
+            stored_item = json.loads(line)
+        except json.JSONDecodeError:
+            # Skip corrupt lines but we already advanced next_off
+            continue
+
+        count += 1
+
+        if count > lim:
+            # We found a valid item BEYOND the limit.
+            has_more = True
+            # The client should fetch THIS item next time.
+            # So next_cursor should be the START of this extra item.
+            next_off = item_start
+            break
+
+        results.append(stored_item)
+
+    return results, next_off, has_more
+
+
+@app.get("/v1/events", dependencies=[Depends(_require_auth_dep)])
+async def events_v1(
+    domain: str,
+    limit: int = 100,
+    cursor: int = 0,
+):
+    """
+    Consumer pull endpoint.
+    - cursor: Byte offset pointing to the start of the next line to read. 0 = start of file.
+    - limit: Max events to return.
+
+    Returns:
+    - events: List of event objects.
+    - next_cursor: The cursor to use for the NEXT batch.
+    - has_more: True if there is at least one more valid event after this batch. False if EOF reached.
+    """
+    if limit < 1:
+        raise HTTPException(status_code=400, detail="limit must be >= 1")
+    if limit > 2000:
+        raise HTTPException(status_code=400, detail="limit must be <= 2000")
+    if cursor < 0:
+        raise HTTPException(status_code=400, detail="cursor must be >= 0")
+
+    try:
+        dom = _sanitize_domain(domain)
+    except HTTPException as exc:
+        # Re-raise with original detail
+        raise HTTPException(status_code=400, detail=exc.detail) from exc
+
+    try:
+        events, next_cursor, has_more = await run_in_threadpool(_fetch_events_helper, dom, cursor, limit)
+    except StorageBusyError as exc:
+        raise HTTPException(status_code=429, detail="busy, try again") from exc
+    except StorageError as exc:
+        if "invalid target" in str(exc):
+            raise HTTPException(status_code=400, detail="invalid domain") from exc
+        raise HTTPException(status_code=500, detail="storage error") from exc
+
+    return {
+        "events": events,
+        "next_cursor": next_cursor,
+        "has_more": has_more,
+        "limit": limit,
+        "meta": {
+            "count": len(events),
+            "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        }
+    }
+
+
+@app.get("/v1/latest", dependencies=[Depends(_require_auth_dep)], deprecated=True)
 async def latest_v1(domain: str, unwrap: int = 0):
     try:
         dom = _sanitize_domain(domain)
@@ -577,7 +668,7 @@ async def latest_v1(domain: str, unwrap: int = 0):
         raise HTTPException(status_code=500, detail="data corruption") from exc
 
 
-@app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)])
+@app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)], deprecated=True)
 async def tail_v1(
     domain: str,
     limit: int = 200,
