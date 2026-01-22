@@ -34,3 +34,7 @@ Chronik ist ein einfacher Ingest-Dienst, der auf Python und FastAPI basiert. Die
 ## Design-Entscheidungen
 
 Die wichtigsten Architekturentscheidungen sind in den [Architectural Decision Records (ADRs)](adr/README.md) dokumentiert.
+
+## Weiterentwicklung
+
+Geplante Optimierungen und Erweiterungen sind im [Optimierungsplan](PLAN_OPTIMIERUNG.md) festgehalten.
