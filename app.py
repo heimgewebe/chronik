@@ -308,10 +308,13 @@ def _validate_body_size(req: Request) -> None:
     raise HTTPException(status_code=411, detail="length required")
 
 
-async def _read_body_with_limit(request: Request, limit: int) -> bytes:
+async def _read_body_as_utf8(request: Request, limit: int) -> str:
     """
-    Reads the request body, respecting the limit.
+    Reads the request body, respecting the limit, and decodes it as UTF-8.
+    Chronik treats request bodies as UTF-8 regardless of Content-Type charset.
+
     Raises HTTPException(413) if limit is exceeded.
+    Raises UnicodeError if body is not valid UTF-8.
     """
     data = bytearray()
     # Starlette's request.stream() yields chunks
@@ -319,7 +322,7 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
         if len(data) + len(chunk) > limit:
             raise HTTPException(status_code=413, detail="payload too large")
         data.extend(chunk)
-    return bytes(data)
+    return data.decode("utf-8")
 
 
 def _process_items(items: list[Any], dom: str) -> list[str]:
@@ -475,9 +478,8 @@ async def ingest_v1(
     content_type = request.headers.get("content-type", "").lower()
 
     try:
-        raw = await _read_body_with_limit(request, MAX_PAYLOAD_SIZE)
-        body = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
+        body = await _read_body_as_utf8(request, MAX_PAYLOAD_SIZE)
+    except UnicodeError as exc:
         raise HTTPException(status_code=400, detail="invalid encoding") from exc
 
     items = []
@@ -537,9 +539,13 @@ async def ingest(
 
     # JSON parsen
     try:
-        raw = await _read_body_with_limit(request, MAX_PAYLOAD_SIZE)
-        obj = json.loads(raw.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        body = await _read_body_as_utf8(request, MAX_PAYLOAD_SIZE)
+    except UnicodeError as exc:
+        raise HTTPException(status_code=400, detail="invalid encoding") from exc
+
+    try:
+        obj = json.loads(body)
+    except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid json") from exc
 
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
