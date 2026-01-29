@@ -308,7 +308,7 @@ def _validate_body_size(req: Request) -> None:
     raise HTTPException(status_code=411, detail="length required")
 
 
-async def _read_body_with_limit(request: Request, limit: int) -> bytes:
+async def _read_body_with_limit(request: Request, limit: int) -> bytes | bytearray:
     """
     Reads the request body, respecting the limit.
     Raises HTTPException(413) if limit is exceeded.
@@ -319,7 +319,7 @@ async def _read_body_with_limit(request: Request, limit: int) -> bytes:
         if len(data) + len(chunk) > limit:
             raise HTTPException(status_code=413, detail="payload too large")
         data.extend(chunk)
-    return bytes(data)
+    return data
 
 
 def _process_items(items: list[Any], dom: str) -> list[str]:
