@@ -43,7 +43,10 @@ DEFAULT_SOURCES_URL = "https://github.com/heimgewebe/metarepo/releases/download/
 
 # Concurrency limit for integrity aggregation to prevent threadpool starvation.
 # Default is 20, which is safe for standard Starlette/AnyIO threadpools.
-INTEGRITY_CONCURRENCY_LIMIT = int(os.getenv("CHRONIK_INTEGRITY_CONCURRENCY", "20"))
+try:
+    INTEGRITY_CONCURRENCY_LIMIT = int(os.getenv("CHRONIK_INTEGRITY_CONCURRENCY", "20"))
+except ValueError:
+    INTEGRITY_CONCURRENCY_LIMIT = 20
 
 def get_current_utc_str() -> str:
     """Return current UTC time in strict ISO8601 format (Z-suffix)."""
@@ -376,34 +379,50 @@ class IntegrityManager:
 
         found_any = False
 
-        # Use a semaphore to limit concurrency, preventing resource exhaustion
-        sem = asyncio.Semaphore(INTEGRITY_CONCURRENCY_LIMIT)
-
+        # Use bounded task creation to prevent memory overhead for large N
         async def _bounded_process(dom):
-            async with sem:
-                return await run_in_threadpool(self._process_domain_state_sync, dom)
+            return await run_in_threadpool(self._process_domain_state_sync, dom)
 
-        tasks = [_bounded_process(dom) for dom in domains]
-        results = await asyncio.gather(*tasks)
+        pending = set()
+        it = iter(domains)
 
-        for payload in results:
-            if not payload:
-                continue
+        def _fill_tasks():
+            while len(pending) < INTEGRITY_CONCURRENCY_LIMIT:
+                try:
+                    dom = next(it)
+                except StopIteration:
+                    return
+                task = asyncio.create_task(_bounded_process(dom))
+                pending.add(task)
 
-            status = payload["status"]
-            # Update total status
-            severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
-            if not found_any:
-                # First item initializes status
-                worst_severity = severity
-                total_status = status
-                found_any = True
-            else:
-                if severity > worst_severity:
-                    worst_severity = severity
-                    total_status = status
+        _fill_tasks()
 
-            repos.append(payload)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                try:
+                    payload = t.result()
+                    if not payload:
+                        continue
+
+                    status = payload["status"]
+                    # Update total status
+                    severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
+                    if not found_any:
+                        # First item initializes status
+                        worst_severity = severity
+                        total_status = status
+                        found_any = True
+                    else:
+                        if severity > worst_severity:
+                            worst_severity = severity
+                            total_status = status
+
+                    repos.append(payload)
+                except Exception as exc:
+                    logger.debug("Aggregate task failed: %s", exc)
+
+            _fill_tasks()
 
         # Sort repos by name for deterministic output
         repos.sort(key=lambda x: x.get("repo", ""))
