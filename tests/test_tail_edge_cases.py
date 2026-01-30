@@ -1,7 +1,5 @@
-
 import pytest
 import storage
-import os
 
 @pytest.fixture
 def mock_storage(monkeypatch, tmp_path):
@@ -75,3 +73,15 @@ def test_exact_limit_match_with_newline(mock_storage):
 
     # Should get "2", "3"
     assert lines == ["2", "3"]
+
+def test_limit_zero_or_negative(mock_storage):
+    """Test limit <= 0 returns empty list immediately."""
+    domain = "limit-zero"
+    path = storage.safe_target_path(domain)
+
+    with open(path, "wb") as f:
+        f.write(b"content")
+
+    with storage._locked_open(path, "rb") as fh:
+        assert storage._tail_impl(fh, limit=0) == []
+        assert storage._tail_impl(fh, limit=-1) == []
