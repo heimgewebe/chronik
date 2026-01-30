@@ -407,22 +407,39 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
         chunks.append(chunk)
         newline_count += chunk.count(b'\n')
 
-        # We need (limit) newlines to ensure we have (limit) lines,
-        # plus maybe one more if the last line doesn't end in newline?
-        # Standard approach: split lines, check count.
-
-        # Optimization: verify we have enough newlines before decoding fully?
-        # But decoding partial UTF-8 is risky.
-        # However, newlines (0x0A) are safe in UTF-8.
-        # We need strictly more than 'limit' newlines to ensure the oldest line
-        # we captured is complete and not a partial cut-off (which could have
-        # corrupt multi-byte chars at the start).
-        # Note: If we reach the start of the file (pointer == 0), the loop
-        # terminates naturally, which is also a safe state (no partial prefix).
-        if newline_count > limit:
+        # We need (limit) newlines to ensure we have (limit) lines.
+        # If the file ends with a newline, we need limit+1 newlines to capture the
+        # full preceding line. If it doesn't, we still want a buffer zone.
+        # "limit + 1" is a safe heuristic to avoid partial line issues at the cut point.
+        if newline_count >= limit + 1:
             break
 
-    buffer = b"".join(reversed(chunks))
+    # Construct buffer from chunks, but only keep what's needed.
+    # chunks are in reverse file order: [EndChunk, PrevChunk, ...]
+    needed = limit + 1
+    kept_chunks: list[bytes] = []
+
+    for chunk in chunks:
+        count = chunk.count(b'\n')
+        if needed > 0:
+            if count < needed:
+                kept_chunks.append(chunk)
+                needed -= count
+            else:
+                # This chunk contains the cut point.
+                # We need the LAST 'needed' newlines from this chunk.
+                # rsplit will give us 'needed + 1' parts; the first part is the unwanted prefix.
+                parts = chunk.rsplit(b'\n', needed)
+                # Join the parts we want (restoring the newlines)
+                suffix = b'\n'.join(parts[1:])
+                kept_chunks.append(suffix)
+                needed = 0
+                # We don't need any more chunks (they are further back in the file)
+                break
+        else:
+            break
+
+    buffer = b"".join(reversed(kept_chunks))
 
     # Decode everything we have collected
     try:
