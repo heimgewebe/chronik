@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import secrets
 import time
 import uuid
@@ -225,6 +226,9 @@ provenance_validation_failures = Counter(
 )
 
 
+_METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
+
+
 def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
     """Sanitize a value for use as a Prometheus metric label.
     
@@ -248,8 +252,7 @@ def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
         value = value[:max_length]
     
     # Replace problematic characters (keep alphanumeric, dots, dashes, underscores)
-    import re
-    sanitized = re.sub(r'[^a-zA-Z0-9._-]', '_', value)
+    sanitized = _METRIC_LABEL_SANITIZER.sub('_', value)
     
     # Ensure it's not empty after sanitization
     if not sanitized or sanitized == '_' * len(sanitized):
