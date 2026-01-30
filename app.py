@@ -337,9 +337,13 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         return lines
 
     # Hoist invariants out of loop
-    domain_label = _sanitize_metric_label(dom)
+    # We assume these flags are request-invariant (env vars/settings)
+    # If they ever become dynamic per-item, this hoisting must be reverted.
     is_provenance_enforced = _is_provenance_enforced()
     is_quality_enabled = _is_quality_enabled()
+
+    # Pre-compute label to prevent label pollution/entropy
+    domain_label = _sanitize_metric_label(dom)
 
     # Normalisieren & validieren
     for entry in items:
@@ -414,7 +418,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         # This allows us to see which domains produce events without type fields
         metrics_event_type = event_type if event_type else f"domain.{dom}"
         
-        # Sanitize for metrics to prevent label cardinality explosion
+        # Sanitize for metrics to prevent label pollution/entropy
         event_type_for_metrics = _sanitize_metric_label(metrics_event_type)
         
         ttl_days = get_ttl_for_event(retention_event_type)
