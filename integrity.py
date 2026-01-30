@@ -41,6 +41,10 @@ def normalize_status(value: Any) -> str:
 
 DEFAULT_SOURCES_URL = "https://github.com/heimgewebe/metarepo/releases/download/integrity/sources.v1.json"
 
+# Concurrency limit for integrity aggregation to prevent threadpool starvation.
+# Default is 20, which is safe for standard Starlette/AnyIO threadpools.
+INTEGRITY_CONCURRENCY_LIMIT = int(os.getenv("CHRONIK_INTEGRITY_CONCURRENCY", "20"))
+
 def get_current_utc_str() -> str:
     """Return current UTC time in strict ISO8601 format (Z-suffix)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -373,7 +377,7 @@ class IntegrityManager:
         found_any = False
 
         # Use a semaphore to limit concurrency, preventing resource exhaustion
-        sem = asyncio.Semaphore(20)
+        sem = asyncio.Semaphore(INTEGRITY_CONCURRENCY_LIMIT)
 
         async def _bounded_process(dom):
             async with sem:
@@ -443,5 +447,5 @@ class IntegrityManager:
             return payload
         except Exception as exc:
             # Log at debug level to avoid spamming, but allow inspection
-            logger.debug(f"Failed to process integrity domain {dom}: {exc}")
+            logger.debug("Failed to process integrity domain %s: %s", dom, exc)
             return None
