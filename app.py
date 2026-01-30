@@ -46,6 +46,7 @@ from validation import (
     prewarm_validators,
     validate_insights_daily_payload,
 )
+from quality import compute_signal_strength, compute_completeness
 from integrity import IntegrityManager
 
 # --- Runtime constants & logging ---
@@ -389,7 +390,6 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         # 1c. Compute quality markers (if enabled) - but don't mutate payload
         quality_meta = None
         if _is_quality_enabled():
-            from quality import compute_signal_strength, compute_completeness
             signal_strength = compute_signal_strength(normalized)
             completeness = compute_completeness(normalized)
             quality_meta = {
