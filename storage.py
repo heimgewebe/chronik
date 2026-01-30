@@ -394,7 +394,8 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
     # We want to collect 'limit' logical lines.
 
     # We'll build up a buffer of bytes from the end.
-    buffer = bytearray()
+    chunks: list[bytes] = []
+    newline_count = 0
     pointer = file_size
 
     while len(lines) < limit and pointer > 0:
@@ -403,10 +404,9 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
         fh.seek(pointer)
         chunk = fh.read(read_size)
 
-        # Prepend chunk to buffer
-        buffer[0:0] = chunk
+        chunks.append(chunk)
+        newline_count += chunk.count(b'\n')
 
-        # Count newlines in buffer to see if we have enough
         # We need (limit) newlines to ensure we have (limit) lines,
         # plus maybe one more if the last line doesn't end in newline?
         # Standard approach: split lines, check count.
@@ -419,8 +419,10 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
         # corrupt multi-byte chars at the start).
         # Note: If we reach the start of the file (pointer == 0), the loop
         # terminates naturally, which is also a safe state (no partial prefix).
-        if buffer.count(b'\n') > limit:
+        if newline_count > limit:
             break
+
+    buffer = b"".join(reversed(chunks))
 
     # Decode everything we have collected
     try:
