@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone, timedelta
-from typing import Any
+from typing import Any, Iterable
 
 import httpx
 from starlette.concurrency import run_in_threadpool
@@ -372,36 +372,19 @@ class IntegrityManager:
 
         found_any = False
 
-        for dom in domains:
-            try:
-                line = await run_in_threadpool(read_last_line, dom)
-                if not line:
-                    continue
+        # Use batch processing to reduce task creation overhead
+        chunk_size = 50
+        tasks = []
+        for i in range(0, len(domains), chunk_size):
+            batch = domains[i:i + chunk_size]
+            tasks.append(run_in_threadpool(self._process_batch_sync, batch))
 
-                item = json.loads(line)
+        results_lists = await asyncio.gather(*tasks)
 
-                payload = item.get("payload", {})
-                # Make a copy to avoid side-effects on the stored dict if reused
-                payload = payload.copy()
-
-                # Check kind in wrapper (Canonical)
-                if item.get("kind") == "integrity.summary.published.v1":
-                    pass # Canonical path
-                # Backward compatibility: check payload.kind/type if wrapper.kind missing
-                elif payload.get("kind") == "integrity.summary.published.v1":
-                    payload["legacy"] = True
-                elif payload.get("type") == "integrity.summary.published.v1":
-                    payload["legacy"] = True
-                # Optional: wrapper type fallback
-                elif item.get("type") == "integrity.summary.published.v1":
-                    payload["legacy"] = True
-                else:
-                    # Junk or unrelated event
-                    continue
-
-                status = normalize_status(payload.get("status", "UNCLEAR"))
-                payload["status"] = status
-
+        # Flatten list of lists
+        for chunk_results in results_lists:
+            for payload in chunk_results:
+                status = payload["status"]
                 # Update total status
                 severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
                 if not found_any:
@@ -416,9 +399,6 @@ class IntegrityManager:
 
                 repos.append(payload)
 
-            except Exception:
-                continue
-
         # Sort repos by name for deterministic output
         repos.sort(key=lambda x: x.get("repo", ""))
 
@@ -427,3 +407,46 @@ class IntegrityManager:
             "total_status": total_status,
             "repos": repos
         }
+
+    def _process_batch_sync(self, domains_chunk: Iterable[str]) -> list[dict[str, Any]]:
+        """Process a batch of domains synchronously."""
+        results = []
+        for dom in domains_chunk:
+            res = self._process_domain_state_sync(dom)
+            if res:
+                results.append(res)
+        return results
+
+    def _process_domain_state_sync(self, dom: str) -> dict[str, Any] | None:
+        """Process a single domain synchronously."""
+        try:
+            line = read_last_line(dom)
+            if not line:
+                return None
+
+            item = json.loads(line)
+
+            payload = item.get("payload", {})
+            # Make a copy to avoid side-effects on the stored dict if reused
+            payload = payload.copy()
+
+            # Check kind in wrapper (Canonical)
+            if item.get("kind") == "integrity.summary.published.v1":
+                pass # Canonical path
+            # Backward compatibility: check payload.kind/type if wrapper.kind missing
+            elif payload.get("kind") == "integrity.summary.published.v1":
+                payload["legacy"] = True
+            elif payload.get("type") == "integrity.summary.published.v1":
+                payload["legacy"] = True
+            # Optional: wrapper type fallback
+            elif item.get("type") == "integrity.summary.published.v1":
+                payload["legacy"] = True
+            else:
+                # Junk or unrelated event
+                return None
+
+            status = normalize_status(payload.get("status", "UNCLEAR"))
+            payload["status"] = status
+            return payload
+        except Exception:
+            return None
