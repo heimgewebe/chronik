@@ -383,6 +383,9 @@ def list_domains(prefix: str = "") -> list[str]:
 
 def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
     """Efficiently read the last `limit` lines from a binary file handle."""
+    if limit <= 0:
+        return []
+
     fh.seek(0, 2)
     file_size = fh.tell()
 
@@ -394,7 +397,7 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
     # We want to collect 'limit' logical lines.
 
     # We'll build up a buffer of bytes from the end.
-    chunks: list[bytes] = []
+    chunks: list[tuple[bytes, int]] = []
     newline_count = 0
     pointer = file_size
 
@@ -404,8 +407,9 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
         fh.seek(pointer)
         chunk = fh.read(read_size)
 
-        chunks.append(chunk)
-        newline_count += chunk.count(b'\n')
+        count = chunk.count(b'\n')
+        chunks.append((chunk, count))
+        newline_count += count
 
         # We need (limit) newlines to ensure we have (limit) lines.
         # If the file ends with a newline, we need limit+1 newlines to capture the
@@ -419,22 +423,26 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
     needed = limit + 1
     kept_chunks: list[bytes] = []
 
-    for chunk in chunks:
-        count = chunk.count(b'\n')
+    for chunk, count in chunks:
         if needed > 0:
             if count < needed:
                 kept_chunks.append(chunk)
                 needed -= count
             else:
                 # This chunk contains the cut point.
-                # We need the LAST 'needed' newlines from this chunk.
-                # rsplit will give us 'needed + 1' parts; the first part is the unwanted prefix.
-                parts = chunk.rsplit(b'\n', needed)
-                # Join the parts we want (restoring the newlines)
-                suffix = b'\n'.join(parts[1:])
+                # We need the (needed)-th newline from the end of this chunk.
+                cut = len(chunk)
+                for _ in range(needed):
+                    cut = chunk.rfind(b"\n", 0, cut)
+                    if cut == -1:
+                        # Should not happen if count >= needed
+                        break
+
+                # Keep everything AFTER that newline
+                suffix = chunk[cut + 1 :]
                 kept_chunks.append(suffix)
                 needed = 0
-                # We don't need any more chunks (they are further back in the file)
+                # We don't need any more chunks
                 break
         else:
             break
