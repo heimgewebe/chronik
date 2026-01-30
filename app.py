@@ -336,6 +336,11 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         logger.warning("empty payload array received", extra={"domain": dom})
         return lines
 
+    # Hoist invariants out of loop
+    domain_label = _sanitize_metric_label(dom)
+    is_provenance_enforced = _is_provenance_enforced()
+    is_quality_enabled = _is_quality_enabled()
+
     # Normalisieren & validieren
     for entry in items:
         if not isinstance(entry, dict):
@@ -367,12 +372,10 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
                     raise HTTPException(status_code=400, detail="domain mismatch")
         
         # 1b. Provenance validation (if enabled)
-        if _is_provenance_enforced():
+        if is_provenance_enforced:
             try:
                 validate_provenance(normalized, strict=True)
             except ProvenanceError as exc:
-                # Sanitize domain for metrics to prevent label cardinality explosion
-                domain_label = _sanitize_metric_label(dom)
                 provenance_validation_failures.labels(domain=domain_label).inc()
                 events_rejected_total.labels(domain=domain_label, reason="provenance").inc()
                 logger.warning(
@@ -389,15 +392,13 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         
         # 1c. Compute quality markers (if enabled) - but don't mutate payload
         quality_meta = None
-        if _is_quality_enabled():
+        if is_quality_enabled:
             signal_strength = compute_signal_strength(normalized)
             completeness = compute_completeness(normalized)
             quality_meta = {
                 "signal_strength": signal_strength.value if hasattr(signal_strength, 'value') else signal_strength,
                 "completeness": completeness,
             }
-            # Sanitize domain for metrics to prevent label cardinality explosion
-            domain_label = _sanitize_metric_label(dom)
             events_signal_strength.labels(domain=domain_label, signal_strength=quality_meta["signal_strength"]).inc()
         
         # 1d. Compute retention metadata
@@ -415,7 +416,6 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         
         # Sanitize for metrics to prevent label cardinality explosion
         event_type_for_metrics = _sanitize_metric_label(metrics_event_type)
-        domain_label = _sanitize_metric_label(dom)
         
         ttl_days = get_ttl_for_event(retention_event_type)
         received_dt = datetime.now(timezone.utc)
