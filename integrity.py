@@ -4,7 +4,7 @@ import logging
 import os
 import re
 from datetime import datetime, timezone, timedelta
-from typing import Any, Iterable
+from typing import Any
 
 import httpx
 from starlette.concurrency import run_in_threadpool
@@ -372,32 +372,34 @@ class IntegrityManager:
 
         found_any = False
 
-        # Use batch processing to reduce task creation overhead
-        chunk_size = 50
-        tasks = []
-        for i in range(0, len(domains), chunk_size):
-            batch = domains[i:i + chunk_size]
-            tasks.append(run_in_threadpool(self._process_batch_sync, batch))
+        # Use a semaphore to limit concurrency, preventing resource exhaustion
+        sem = asyncio.Semaphore(20)
 
-        results_lists = await asyncio.gather(*tasks)
+        async def _bounded_process(dom):
+            async with sem:
+                return await run_in_threadpool(self._process_domain_state_sync, dom)
 
-        # Flatten list of lists
-        for chunk_results in results_lists:
-            for payload in chunk_results:
-                status = payload["status"]
-                # Update total status
-                severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
-                if not found_any:
-                    # First item initializes status
+        tasks = [_bounded_process(dom) for dom in domains]
+        results = await asyncio.gather(*tasks)
+
+        for payload in results:
+            if not payload:
+                continue
+
+            status = payload["status"]
+            # Update total status
+            severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
+            if not found_any:
+                # First item initializes status
+                worst_severity = severity
+                total_status = status
+                found_any = True
+            else:
+                if severity > worst_severity:
                     worst_severity = severity
                     total_status = status
-                    found_any = True
-                else:
-                    if severity > worst_severity:
-                        worst_severity = severity
-                        total_status = status
 
-                repos.append(payload)
+            repos.append(payload)
 
         # Sort repos by name for deterministic output
         repos.sort(key=lambda x: x.get("repo", ""))
@@ -407,15 +409,6 @@ class IntegrityManager:
             "total_status": total_status,
             "repos": repos
         }
-
-    def _process_batch_sync(self, domains_chunk: Iterable[str]) -> list[dict[str, Any]]:
-        """Process a batch of domains synchronously."""
-        results = []
-        for dom in domains_chunk:
-            res = self._process_domain_state_sync(dom)
-            if res:
-                results.append(res)
-        return results
 
     def _process_domain_state_sync(self, dom: str) -> dict[str, Any] | None:
         """Process a single domain synchronously."""
@@ -448,5 +441,7 @@ class IntegrityManager:
             status = normalize_status(payload.get("status", "UNCLEAR"))
             payload["status"] = status
             return payload
-        except Exception:
+        except Exception as exc:
+            # Log at debug level to avoid spamming, but allow inspection
+            logger.debug(f"Failed to process integrity domain {dom}: {exc}")
             return None
