@@ -94,6 +94,13 @@ class IntegrityManager:
                 logger.warning("No integrity sources found or invalid source data")
                 return
 
+            sem = asyncio.Semaphore(INTEGRITY_CONCURRENCY_LIMIT)
+
+            async def _bounded_fetch(repo, url):
+                async with sem:
+                    await self._fetch_and_update(client, repo, url)
+
+            tasks = []
             for source in sources.get("sources", []):
                 if not source.get("enabled", True):
                     continue
@@ -103,7 +110,10 @@ class IntegrityManager:
                 if not repo or not url:
                     continue
 
-                await self._fetch_and_update(client, repo, url)
+                tasks.append(_bounded_fetch(repo, url))
+
+            if tasks:
+                await asyncio.gather(*tasks)
 
     async def fetch_sources(self, client: httpx.AsyncClient = None) -> dict[str, Any] | None:
         """Load sources from override or URL."""
