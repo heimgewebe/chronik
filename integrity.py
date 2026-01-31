@@ -119,6 +119,9 @@ class IntegrityManager:
                     continue
 
                 # Dedupe key is repo
+                # Ensure Last-Wins semantics for both value AND scheduling order
+                if repo in unique_sources:
+                    del unique_sources[repo]
                 unique_sources[repo] = url
 
             tasks = []
@@ -134,10 +137,10 @@ class IntegrityManager:
                 for res in results:
                     if isinstance(res, asyncio.CancelledError):
                         raise res
-                    # Other exceptions are already logged in _bounded_fetch,
-                    # but if something escaped (e.g. semaphore error), log it here.
+                    # Other exceptions are usually logged in _bounded_fetch.
+                    # If something escaped (e.g. semaphore error), log it as debug to avoid noise/double-logging.
                     elif isinstance(res, Exception):
-                        logger.error("Integrity sync task failed unexpectedly: %s", res, exc_info=True)
+                        logger.debug("Integrity sync task raised unexpectedly: %s", res, exc_info=True)
 
     async def fetch_sources(self, client: httpx.AsyncClient = None) -> dict[str, Any] | None:
         """Load sources from override or URL."""
