@@ -12,6 +12,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
@@ -125,9 +126,11 @@ def reload_retention_policies() -> list[RetentionPolicy]:
     """
     global _RETENTION_POLICIES
     _RETENTION_POLICIES = None
+    get_ttl_for_event.cache_clear()
     return load_retention_policies(force_reload=True)
 
 
+@lru_cache(maxsize=1024)
 def get_ttl_for_event(event_type: str) -> int:
     """Get TTL in days for a given event type.
     
