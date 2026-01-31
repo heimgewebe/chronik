@@ -41,6 +41,13 @@ def normalize_status(value: Any) -> str:
 
 DEFAULT_SOURCES_URL = "https://github.com/heimgewebe/metarepo/releases/download/integrity/sources.v1.json"
 
+# Concurrency limit for integrity aggregation to prevent threadpool starvation.
+# Default is 20, which is safe for standard Starlette/AnyIO threadpools.
+try:
+    INTEGRITY_CONCURRENCY_LIMIT = int(os.getenv("CHRONIK_INTEGRITY_CONCURRENCY", "20"))
+except ValueError:
+    INTEGRITY_CONCURRENCY_LIMIT = 20
+
 def get_current_utc_str() -> str:
     """Return current UTC time in strict ISO8601 format (Z-suffix)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -372,52 +379,50 @@ class IntegrityManager:
 
         found_any = False
 
-        for dom in domains:
-            try:
-                line = await run_in_threadpool(read_last_line, dom)
-                if not line:
-                    continue
+        # Use bounded task creation to prevent memory overhead for large N
+        async def _bounded_process(dom):
+            return await run_in_threadpool(self._process_domain_state_sync, dom)
 
-                item = json.loads(line)
+        pending = set()
+        it = iter(domains)
 
-                payload = item.get("payload", {})
-                # Make a copy to avoid side-effects on the stored dict if reused
-                payload = payload.copy()
+        def _fill_tasks():
+            while len(pending) < INTEGRITY_CONCURRENCY_LIMIT:
+                try:
+                    dom = next(it)
+                except StopIteration:
+                    return
+                task = asyncio.create_task(_bounded_process(dom))
+                pending.add(task)
 
-                # Check kind in wrapper (Canonical)
-                if item.get("kind") == "integrity.summary.published.v1":
-                    pass # Canonical path
-                # Backward compatibility: check payload.kind/type if wrapper.kind missing
-                elif payload.get("kind") == "integrity.summary.published.v1":
-                    payload["legacy"] = True
-                elif payload.get("type") == "integrity.summary.published.v1":
-                    payload["legacy"] = True
-                # Optional: wrapper type fallback
-                elif item.get("type") == "integrity.summary.published.v1":
-                    payload["legacy"] = True
-                else:
-                    # Junk or unrelated event
-                    continue
+        _fill_tasks()
 
-                status = normalize_status(payload.get("status", "UNCLEAR"))
-                payload["status"] = status
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for t in done:
+                try:
+                    payload = t.result()
+                    if not payload:
+                        continue
 
-                # Update total status
-                severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
-                if not found_any:
-                    # First item initializes status
-                    worst_severity = severity
-                    total_status = status
-                    found_any = True
-                else:
-                    if severity > worst_severity:
+                    status = payload["status"]
+                    # Update total status
+                    severity = STATUS_SEVERITY.get(status, 100) # Unknown = super bad
+                    if not found_any:
+                        # First item initializes status
                         worst_severity = severity
                         total_status = status
+                        found_any = True
+                    else:
+                        if severity > worst_severity:
+                            worst_severity = severity
+                            total_status = status
 
-                repos.append(payload)
+                    repos.append(payload)
+                except Exception as exc:
+                    logger.debug("Aggregate task failed: %s", exc)
 
-            except Exception:
-                continue
+            _fill_tasks()
 
         # Sort repos by name for deterministic output
         repos.sort(key=lambda x: x.get("repo", ""))
@@ -427,3 +432,39 @@ class IntegrityManager:
             "total_status": total_status,
             "repos": repos
         }
+
+    def _process_domain_state_sync(self, dom: str) -> dict[str, Any] | None:
+        """Process a single domain synchronously."""
+        try:
+            line = read_last_line(dom)
+            if not line:
+                return None
+
+            item = json.loads(line)
+
+            payload = item.get("payload", {})
+            # Make a copy to avoid side-effects on the stored dict if reused
+            payload = payload.copy()
+
+            # Check kind in wrapper (Canonical)
+            if item.get("kind") == "integrity.summary.published.v1":
+                pass # Canonical path
+            # Backward compatibility: check payload.kind/type if wrapper.kind missing
+            elif payload.get("kind") == "integrity.summary.published.v1":
+                payload["legacy"] = True
+            elif payload.get("type") == "integrity.summary.published.v1":
+                payload["legacy"] = True
+            # Optional: wrapper type fallback
+            elif item.get("type") == "integrity.summary.published.v1":
+                payload["legacy"] = True
+            else:
+                # Junk or unrelated event
+                return None
+
+            status = normalize_status(payload.get("status", "UNCLEAR"))
+            payload["status"] = status
+            return payload
+        except Exception as exc:
+            # Log at debug level to avoid spamming, but allow inspection
+            logger.debug("Failed to process integrity domain %s: %s", dom, exc)
+            return None
