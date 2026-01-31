@@ -526,7 +526,7 @@ async def ingest_v1(
             )
         dom = _sanitize_domain(first_item_domain)
 
-    lines_to_write = _process_items(items, dom)
+    lines_to_write = await run_in_threadpool(_process_items, items, dom)
     await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines_to_write)
     return PlainTextResponse("ok", status_code=202)
 
@@ -557,7 +557,7 @@ async def ingest(
 
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
     items = obj if isinstance(obj, list) else [obj]
-    lines = _process_items(items, dom)
+    lines = await run_in_threadpool(_process_items, items, dom)
     await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines)
 
     return PlainTextResponse("ok", status_code=202)
