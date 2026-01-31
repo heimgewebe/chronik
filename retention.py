@@ -12,6 +12,7 @@ from __future__ import annotations
 import fnmatch
 import logging
 import os
+from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Final
@@ -70,6 +71,9 @@ def load_retention_policies(force_reload: bool = False) -> list[RetentionPolicy]
     
     if _RETENTION_POLICIES is not None and not force_reload:
         return _RETENTION_POLICIES
+
+    if force_reload:
+        get_ttl_for_event.cache_clear()
     
     if not RETENTION_CONFIG_PATH.exists():
         logger.warning(f"Retention config not found at {RETENTION_CONFIG_PATH}, using defaults")
@@ -128,6 +132,7 @@ def reload_retention_policies() -> list[RetentionPolicy]:
     return load_retention_policies(force_reload=True)
 
 
+@lru_cache(maxsize=1024)
 def get_ttl_for_event(event_type: str) -> int:
     """Get TTL in days for a given event type.
     
