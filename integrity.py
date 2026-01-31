@@ -101,7 +101,7 @@ class IntegrityManager:
                     try:
                         await self._fetch_and_update(client, repo, url)
                     except Exception as exc:
-                        logger.error(f"Unexpected error syncing integrity source {repo}: {exc}")
+                        logger.warning("Integrity source sync failed for %s: %s", repo, exc, exc_info=True)
 
             tasks = []
             for source in sources.get("sources", []):
