@@ -98,7 +98,10 @@ class IntegrityManager:
 
             async def _bounded_fetch(repo, url):
                 async with sem:
-                    await self._fetch_and_update(client, repo, url)
+                    try:
+                        await self._fetch_and_update(client, repo, url)
+                    except Exception as exc:
+                        logger.error(f"Unexpected error syncing integrity source {repo}: {exc}")
 
             tasks = []
             for source in sources.get("sources", []):
@@ -110,7 +113,7 @@ class IntegrityManager:
                 if not repo or not url:
                     continue
 
-                tasks.append(_bounded_fetch(repo, url))
+                tasks.append(asyncio.create_task(_bounded_fetch(repo, url)))
 
             if tasks:
                 await asyncio.gather(*tasks)
