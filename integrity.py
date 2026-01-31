@@ -100,10 +100,15 @@ class IntegrityManager:
                 async with sem:
                     try:
                         await self._fetch_and_update(client, repo, url)
+                    except asyncio.CancelledError:
+                        raise
                     except Exception as exc:
+                        # Log error but don't crash loop (best effort)
                         logger.warning("Integrity source sync failed for %s: %s", repo, exc, exc_info=True)
 
-            tasks = []
+            # Deduplicate sources by repo to prevent race conditions (Last-Wins)
+            # We iterate in order, so later entries overwrite earlier ones.
+            unique_sources = {}
             for source in sources.get("sources", []):
                 if not source.get("enabled", True):
                     continue
@@ -113,10 +118,26 @@ class IntegrityManager:
                 if not repo or not url:
                     continue
 
+                # Dedupe key is repo
+                unique_sources[repo] = url
+
+            tasks = []
+            for repo, url in unique_sources.items():
                 tasks.append(asyncio.create_task(_bounded_fetch(repo, url)))
 
             if tasks:
-                await asyncio.gather(*tasks)
+                # Use return_exceptions=True to ensure one crash (outside try/except)
+                # doesn't cancel others, preserving best-effort.
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Check for critical errors (CancelledError must propagate)
+                for res in results:
+                    if isinstance(res, asyncio.CancelledError):
+                        raise res
+                    # Other exceptions are already logged in _bounded_fetch,
+                    # but if something escaped (e.g. semaphore error), log it here.
+                    elif isinstance(res, Exception):
+                        logger.error("Integrity sync task failed unexpectedly: %s", res, exc_info=True)
 
     async def fetch_sources(self, client: httpx.AsyncClient = None) -> dict[str, Any] | None:
         """Load sources from override or URL."""
