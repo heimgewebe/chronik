@@ -71,6 +71,9 @@ def load_retention_policies(force_reload: bool = False) -> list[RetentionPolicy]
     
     if _RETENTION_POLICIES is not None and not force_reload:
         return _RETENTION_POLICIES
+
+    if force_reload:
+        get_ttl_for_event.cache_clear()
     
     if not RETENTION_CONFIG_PATH.exists():
         logger.warning(f"Retention config not found at {RETENTION_CONFIG_PATH}, using defaults")
@@ -126,7 +129,6 @@ def reload_retention_policies() -> list[RetentionPolicy]:
     """
     global _RETENTION_POLICIES
     _RETENTION_POLICIES = None
-    get_ttl_for_event.cache_clear()
     return load_retention_policies(force_reload=True)
 
 
