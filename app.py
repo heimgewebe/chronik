@@ -48,6 +48,7 @@ from validation import (
 )
 from quality import compute_signal_strength, compute_completeness
 from integrity import IntegrityManager
+import ops
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
@@ -149,6 +150,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
+app.include_router(ops.router)
 
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 

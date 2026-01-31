@@ -1,0 +1,23 @@
+INFO:     Started server process [3472]
+INFO:     Waiting for application startup.
+INFO:validation:validators pre-warmed successfully
+INFO:integrity:Integrity sync loop started
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+ERROR:integrity:Failed to fetch integrity sources from https://github.com/heimgewebe/metarepo/releases/download/integrity/sources.v1.json:
+WARNING:integrity:No integrity sources found or invalid source data
+INFO:chronik:access request_id="9e39f465-e078-4c90-aded-e4c959510ade" method="GET" path="/ops" status="200" duration_ms="1"
+INFO:     127.0.0.1:37166 - "GET /ops HTTP/1.1" 200 OK
+INFO:chronik:access request_id="2e6b7b2d-2765-40ba-a4be-6de8b55cf6da" method="POST" path="/api/ops/audit" status="200" duration_ms="1"
+INFO:     127.0.0.1:37166 - "POST /api/ops/audit HTTP/1.1" 200 OK
+INFO:chronik:access request_id="db224c87-7ea1-4e95-9c6a-d9196c6d3e58" method="GET" path="/ops" status="200" duration_ms="0"
+INFO:     127.0.0.1:54242 - "GET /ops HTTP/1.1" 200 OK
+INFO:chronik:access request_id="81e6df92-bb12-4592-af12-0a1627781a02" method="POST" path="/api/ops/audit" status="200" duration_ms="0"
+INFO:     127.0.0.1:54242 - "POST /api/ops/audit HTTP/1.1" 200 OK
+INFO:chronik:access request_id="212c403b-4dfa-4728-a3e3-7a2d0ecb8131" method="POST" path="/api/ops/routine/preview" status="200" duration_ms="1"
+INFO:     127.0.0.1:54242 - "POST /api/ops/routine/preview HTTP/1.1" 200 OK
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+INFO:integrity:Integrity sync loop cancelled during sleep
+INFO:     Application shutdown complete.
+INFO:     Finished server process [3472]
