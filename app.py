@@ -725,7 +725,9 @@ def _process_tail_lines(
                     last_seen_dt = dt
         except json.JSONDecodeError:
             dropped += 1
-            logger.warning("dropped corrupt line", extra={"domain": dom})
+
+    if dropped > 0:
+        logger.warning(f"dropped {dropped} corrupt lines", extra={"domain": dom})
 
     return results, dropped, last_seen_dt
 
