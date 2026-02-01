@@ -9,7 +9,7 @@ import secrets
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, NoReturn
 
 from contextlib import asynccontextmanager
 
@@ -450,7 +450,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
     return lines
 
 
-def _raise_storage_http_exception(exc: StorageError) -> None:
+def _raise_storage_http_exception(exc: StorageError) -> NoReturn:
     """Map storage errors to HTTP exceptions."""
     if isinstance(exc, StorageFullError):
         raise HTTPException(status_code=507, detail="insufficient storage") from exc
@@ -459,8 +459,9 @@ def _raise_storage_http_exception(exc: StorageError) -> None:
 
     # Fallback for other storage errors (e.g. symlinks, invalid paths)
     # We assume most are client errors (bad domain/path), but some might be internal
-    if "invalid target" in str(exc) or "invalid target path" in str(exc):
-            raise HTTPException(status_code=400, detail="invalid target") from exc
+    msg = str(exc).lower()
+    if "invalid target" in msg or "invalid target path" in msg:
+        raise HTTPException(status_code=400, detail="invalid target") from exc
     raise HTTPException(status_code=500, detail="storage error") from exc
 
 
