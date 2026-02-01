@@ -697,8 +697,8 @@ async def latest_v1(domain: str, unwrap: int = 0):
 
 def _process_tail_lines(
     lines: list[str], since_dt: datetime | None, dom: str
-) -> tuple[list[dict], int, datetime | None]:
-    """Helper to process tail lines synchronously in a threadpool."""
+) -> tuple[list[Any], int, datetime | None]:
+    """CPU-bound parsing; run in threadpool."""
     results = []
     dropped = 0
     last_seen_dt: datetime | None = None
@@ -727,7 +727,7 @@ def _process_tail_lines(
             dropped += 1
 
     if dropped > 0:
-        logger.warning(f"dropped {dropped} corrupt lines", extra={"domain": dom})
+        logger.warning("dropped corrupt lines: %d", dropped, extra={"domain": dom})
 
     return results, dropped, last_seen_dt
 
