@@ -465,6 +465,15 @@ def _write_lines_to_storage_wrapper(dom: str, lines: list[str]) -> None:
         raise HTTPException(status_code=500, detail="storage error") from exc
 
 
+def _process_and_write_combined(dom: str, items: list[Any]) -> None:
+    """Helper to run both processing and writing in a single threadpool task.
+
+    This reduces context switching overhead compared to running them separately.
+    """
+    lines_to_write = _process_items(items, dom)
+    _write_lines_to_storage_wrapper(dom, lines_to_write)
+
+
 @app.post(
     "/v1/ingest",
     # Dependency order matters: auth FIRST, then size check.
@@ -526,8 +535,7 @@ async def ingest_v1(
             )
         dom = _sanitize_domain(first_item_domain)
 
-    lines_to_write = await run_in_threadpool(_process_items, items, dom)
-    await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines_to_write)
+    await run_in_threadpool(_process_and_write_combined, dom, items)
     return PlainTextResponse("ok", status_code=202)
 
 
@@ -557,8 +565,7 @@ async def ingest(
 
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
     items = obj if isinstance(obj, list) else [obj]
-    lines = await run_in_threadpool(_process_items, items, dom)
-    await run_in_threadpool(_write_lines_to_storage_wrapper, dom, lines)
+    await run_in_threadpool(_process_and_write_combined, dom, items)
 
     return PlainTextResponse("ok", status_code=202)
 
