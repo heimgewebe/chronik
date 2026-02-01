@@ -450,19 +450,18 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
     return lines
 
 
-def _write_lines_to_storage_wrapper(dom: str, lines: list[str]) -> None:
-    try:
-        write_payload(dom, lines)
-    except StorageFullError as exc:
+def _raise_storage_http_exception(exc: StorageError) -> None:
+    """Map storage errors to HTTP exceptions."""
+    if isinstance(exc, StorageFullError):
         raise HTTPException(status_code=507, detail="insufficient storage") from exc
-    except StorageBusyError as exc:
+    if isinstance(exc, StorageBusyError):
         raise HTTPException(status_code=429, detail="busy, try again") from exc
-    except StorageError as exc:
-        # Fallback for other storage errors (e.g. symlinks, invalid paths)
-        # We assume most are client errors (bad domain/path), but some might be internal
-        if "invalid target" in str(exc) or "invalid target path" in str(exc):
-             raise HTTPException(status_code=400, detail="invalid target") from exc
-        raise HTTPException(status_code=500, detail="storage error") from exc
+
+    # Fallback for other storage errors (e.g. symlinks, invalid paths)
+    # We assume most are client errors (bad domain/path), but some might be internal
+    if "invalid target" in str(exc) or "invalid target path" in str(exc):
+            raise HTTPException(status_code=400, detail="invalid target") from exc
+    raise HTTPException(status_code=500, detail="storage error") from exc
 
 
 def _process_and_write_combined(dom: str, items: list[Any]) -> None:
@@ -471,7 +470,7 @@ def _process_and_write_combined(dom: str, items: list[Any]) -> None:
     This reduces context switching overhead compared to running them separately.
     """
     lines_to_write = _process_items(items, dom)
-    _write_lines_to_storage_wrapper(dom, lines_to_write)
+    write_payload(dom, lines_to_write)
 
 
 @app.post(
@@ -535,7 +534,11 @@ async def ingest_v1(
             )
         dom = _sanitize_domain(first_item_domain)
 
-    await run_in_threadpool(_process_and_write_combined, dom, items)
+    try:
+        await run_in_threadpool(_process_and_write_combined, dom, items)
+    except StorageError as exc:
+        _raise_storage_http_exception(exc)
+
     return PlainTextResponse("ok", status_code=202)
 
 
@@ -565,7 +568,10 @@ async def ingest(
 
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
     items = obj if isinstance(obj, list) else [obj]
-    await run_in_threadpool(_process_and_write_combined, dom, items)
+    try:
+        await run_in_threadpool(_process_and_write_combined, dom, items)
+    except StorageError as exc:
+        _raise_storage_http_exception(exc)
 
     return PlainTextResponse("ok", status_code=202)
 
