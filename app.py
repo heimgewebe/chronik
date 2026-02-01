@@ -695,6 +695,47 @@ async def latest_v1(domain: str, unwrap: int = 0):
         raise HTTPException(status_code=500, detail="data corruption") from exc
 
 
+def _process_tail_lines(
+    lines: list[str], since_dt: datetime | None, dom: str
+) -> tuple[list[Any], int, datetime | None]:
+    """CPU-bound parsing; run in threadpool."""
+    results: list[Any] = []
+    dropped = 0
+    last_seen_dt: datetime | None = None
+
+    for line in lines:
+        try:
+            item = json.loads(line)
+
+            ts_str = None
+            if isinstance(item, dict):
+                ts_str = item.get("ts") or item.get("timestamp")
+
+            dt = None
+            if isinstance(ts_str, str):
+                dt = parse_iso_ts(ts_str)
+
+            if since_dt and (dt is None or dt <= since_dt):
+                continue
+
+            results.append(item)
+
+            if dt is not None:
+                if last_seen_dt is None or dt > last_seen_dt:
+                    last_seen_dt = dt
+        except json.JSONDecodeError:
+            dropped += 1
+
+    if dropped > 0:
+        logger.warning(
+            "dropped corrupt lines: %d",
+            dropped,
+            extra={"domain": dom, "dropped": dropped},
+        )
+
+    return results, dropped, last_seen_dt
+
+
 @app.get("/v1/tail", dependencies=[Depends(_require_auth_dep)], deprecated=True)
 async def tail_v1(
     domain: str,
@@ -726,33 +767,9 @@ async def tail_v1(
         # read_tail returns [] on ENOENT, so StorageError means something else
         raise HTTPException(status_code=500, detail="storage error") from exc
 
-    results = []
-    dropped = 0
-    last_seen_dt: datetime | None = None
-
-    for line in lines:
-        try:
-            item = json.loads(line)
-
-            ts_str = None
-            if isinstance(item, dict):
-                ts_str = item.get("ts") or item.get("timestamp")
-
-            dt = None
-            if isinstance(ts_str, str):
-                dt = parse_iso_ts(ts_str)
-
-            if since_dt and (dt is None or dt <= since_dt):
-                continue
-
-            results.append(item)
-
-            if dt is not None:
-                if last_seen_dt is None or dt > last_seen_dt:
-                    last_seen_dt = dt
-        except json.JSONDecodeError:
-            dropped += 1
-            logger.warning("dropped corrupt line", extra={"domain": dom})
+    results, dropped, last_seen_dt = await run_in_threadpool(
+        _process_tail_lines, lines, since_dt, dom
+    )
 
     headers = {
         "X-Chronik-Lines-Returned": str(len(results)),
