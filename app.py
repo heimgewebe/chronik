@@ -460,7 +460,7 @@ def _raise_storage_http_exception(exc: StorageError) -> NoReturn:
     # Fallback for other storage errors (e.g. symlinks, invalid paths)
     # We assume most are client errors (bad domain/path), but some might be internal
     msg = str(exc).lower()
-    if "invalid target" in msg or "invalid target path" in msg:
+    if "invalid target" in msg:
         raise HTTPException(status_code=400, detail="invalid target") from exc
     raise HTTPException(status_code=500, detail="storage error") from exc
 
