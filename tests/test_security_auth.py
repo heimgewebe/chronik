@@ -42,6 +42,16 @@ def test_auth_multiple_tokens_newline(client, monkeypatch):
     response = client.get("/health", headers={"X-Auth": "token-a"})
     assert response.status_code == 200
 
+def test_auth_multiple_tokens_crlf(client, monkeypatch):
+    # CRLF compatibility test
+    monkeypatch.setenv("CHRONIK_TOKEN", "win-token1\r\nwin-token2")
+
+    response = client.get("/health", headers={"X-Auth": "win-token1"})
+    assert response.status_code == 200
+
+    response = client.get("/health", headers={"X-Auth": "win-token2"})
+    assert response.status_code == 200
+
 def test_auth_multiple_tokens_mixed_and_whitespace(client, monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", "  token1 , token2\ntoken3, ")
 

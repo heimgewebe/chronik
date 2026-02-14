@@ -233,7 +233,7 @@ provenance_validation_failures = Counter(
 
 
 _METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
-_TOKEN_SPLITTER = re.compile(r'[,\n]')
+_TOKEN_SPLITTER = re.compile(r'[,\r\n]')
 
 
 def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
