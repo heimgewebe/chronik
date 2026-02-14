@@ -81,6 +81,25 @@ def test_auth_duplicate_tokens(client, monkeypatch):
     response = client.get("/health", headers={"X-Auth": "other"})
     assert response.status_code == 200
 
+def test_auth_dynamic_token_rotation_no_restart(client, monkeypatch):
+    # Verifies that the cache invalidates correctly when the environment changes.
+
+    # 1. Start with one token
+    monkeypatch.setenv("CHRONIK_TOKEN", "token1")
+    assert client.get("/health", headers={"X-Auth": "token1"}).status_code == 200
+    assert client.get("/health", headers={"X-Auth": "token2"}).status_code == 401
+
+    # 2. Rotate to two tokens
+    monkeypatch.setenv("CHRONIK_TOKEN", "token1,token2")
+    # Cache should invalidate and recognize both
+    assert client.get("/health", headers={"X-Auth": "token1"}).status_code == 200
+    assert client.get("/health", headers={"X-Auth": "token2"}).status_code == 200
+
+    # 3. Remove old token
+    monkeypatch.setenv("CHRONIK_TOKEN", "token2")
+    assert client.get("/health", headers={"X-Auth": "token1"}).status_code == 401
+    assert client.get("/health", headers={"X-Auth": "token2"}).status_code == 200
+
 def test_auth_no_tokens_configured(client, monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", "")
     response = client.get("/health", headers={"X-Auth": "any"})

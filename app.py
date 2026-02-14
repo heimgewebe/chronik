@@ -155,15 +155,28 @@ VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 _METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
 _TOKEN_SPLITTER = re.compile(r'[,\r\n]')
 
+# Cache for parsed tokens to avoid regex splitting on every request.
+_VALID_TOKENS_CACHE: tuple[str, ...] | None = None
+_RAW_TOKEN_ENV_CACHE: str | None = None
+
 
 def _get_valid_tokens() -> tuple[str, ...]:
     """Retrieves a deterministic tuple of valid tokens from the environment.
     Supports multiple tokens separated by commas, newlines, or carriage returns.
     Duplicates are removed while preserving original order.
+    Results are cached to minimize per-request overhead.
     """
+    global _VALID_TOKENS_CACHE, _RAW_TOKEN_ENV_CACHE
     raw = os.environ.get("CHRONIK_TOKEN", "")
+
+    # Return cached version if environment hasn't changed.
+    if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
+        return _VALID_TOKENS_CACHE
+
     if not raw:
-        return ()
+        _VALID_TOKENS_CACHE = ()
+        _RAW_TOKEN_ENV_CACHE = raw
+        return _VALID_TOKENS_CACHE
 
     seen: set[str] = set()
     valid: list[str] = []
@@ -172,7 +185,10 @@ def _get_valid_tokens() -> tuple[str, ...]:
         if tok and tok not in seen:
             valid.append(tok)
             seen.add(tok)
-    return tuple(valid)
+
+    _VALID_TOKENS_CACHE = tuple(valid)
+    _RAW_TOKEN_ENV_CACHE = raw
+    return _VALID_TOKENS_CACHE
 
 
 @app.middleware("http")
