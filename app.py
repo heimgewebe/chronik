@@ -152,6 +152,9 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
 
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
+_METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
+_TOKEN_SPLITTER = re.compile(r'[,\r\n]')
+
 
 def _get_valid_tokens() -> tuple[str, ...]:
     """Retrieves a deterministic tuple of valid tokens from the environment.
@@ -239,10 +242,6 @@ provenance_validation_failures = Counter(
     "Events rejected due to missing provenance",
     ["domain"],
 )
-
-
-_METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
-_TOKEN_SPLITTER = re.compile(r'[,\r\n]')
 
 
 def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
