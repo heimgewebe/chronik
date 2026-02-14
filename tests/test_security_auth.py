@@ -72,6 +72,16 @@ def test_auth_empty_token_in_list_ignored(client, monkeypatch):
     response = client.get("/health", headers={"X-Auth": "secret1"})
     assert response.status_code == 200
 
+def test_auth_duplicate_tokens(client, monkeypatch):
+    # Duplicates should be handled gracefully (deduplicated)
+    monkeypatch.setenv("CHRONIK_TOKEN", "dup,dup,other")
+
+    response = client.get("/health", headers={"X-Auth": "dup"})
+    assert response.status_code == 200
+
+    response = client.get("/health", headers={"X-Auth": "other"})
+    assert response.status_code == 200
+
 def test_auth_no_tokens_configured(client, monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", "")
     response = client.get("/health", headers={"X-Auth": "any"})

@@ -153,14 +153,23 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
 
-def _get_valid_tokens() -> set[str]:
-    """Retrieves the set of valid tokens from the environment.
-    Supports multiple tokens separated by commas or newlines.
+def _get_valid_tokens() -> tuple[str, ...]:
+    """Retrieves a deterministic tuple of valid tokens from the environment.
+    Supports multiple tokens separated by commas, newlines, or carriage returns.
+    Duplicates are removed while preserving original order.
     """
     raw = os.environ.get("CHRONIK_TOKEN", "")
     if not raw:
-        return set()
-    return {t.strip() for t in _TOKEN_SPLITTER.split(raw) if t.strip()}
+        return ()
+
+    seen: set[str] = set()
+    valid: list[str] = []
+    for t in _TOKEN_SPLITTER.split(raw):
+        tok = t.strip()
+        if tok and tok not in seen:
+            valid.append(tok)
+            seen.add(tok)
+    return tuple(valid)
 
 
 @app.middleware("http")
