@@ -9,6 +9,7 @@ import secrets
 import time
 import uuid
 from datetime import datetime, timezone
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Final, NoReturn
 
 from contextlib import asynccontextmanager
@@ -158,6 +159,7 @@ _TOKEN_SPLITTER = re.compile(r'[,\r\n]')
 # Cache for parsed tokens to avoid regex splitting on every request.
 _VALID_TOKENS_CACHE: tuple[str, ...] | None = None
 _RAW_TOKEN_ENV_CACHE: str | None = None
+_TOKEN_CACHE_LOCK = Lock()
 
 
 def _get_valid_tokens() -> tuple[str, ...]:
@@ -169,26 +171,31 @@ def _get_valid_tokens() -> tuple[str, ...]:
     global _VALID_TOKENS_CACHE, _RAW_TOKEN_ENV_CACHE
     raw = os.environ.get("CHRONIK_TOKEN", "")
 
-    # Return cached version if environment hasn't changed.
+    # Fast path: Return cached version if environment hasn't changed.
     if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
         return _VALID_TOKENS_CACHE
 
-    if not raw:
-        _VALID_TOKENS_CACHE = ()
+    with _TOKEN_CACHE_LOCK:
+        # Re-check inside lock to avoid race conditions.
+        if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
+            return _VALID_TOKENS_CACHE
+
+        if not raw:
+            _VALID_TOKENS_CACHE = ()
+            _RAW_TOKEN_ENV_CACHE = raw
+            return _VALID_TOKENS_CACHE
+
+        seen: set[str] = set()
+        valid: list[str] = []
+        for t in _TOKEN_SPLITTER.split(raw):
+            tok = t.strip()
+            if tok and tok not in seen:
+                valid.append(tok)
+                seen.add(tok)
+
+        _VALID_TOKENS_CACHE = tuple(valid)
         _RAW_TOKEN_ENV_CACHE = raw
         return _VALID_TOKENS_CACHE
-
-    seen: set[str] = set()
-    valid: list[str] = []
-    for t in _TOKEN_SPLITTER.split(raw):
-        tok = t.strip()
-        if tok and tok not in seen:
-            valid.append(tok)
-            seen.add(tok)
-
-    _VALID_TOKENS_CACHE = tuple(valid)
-    _RAW_TOKEN_ENV_CACHE = raw
-    return _VALID_TOKENS_CACHE
 
 
 @app.middleware("http")
