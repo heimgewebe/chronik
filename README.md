@@ -80,7 +80,7 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 ## Konfigurations- und Umgebungsvariablen
 | Variable               | Pflicht | Standard | Beschreibung |
 |------------------------|:-------:|----------|--------------|
-| `CHRONIK_TOKEN`      |  ja     | ``       | Shared-Secret. Jeder Request muss den Header `X-Auth` mit exakt diesem Wert enthalten. |
+| `CHRONIK_TOKEN`      |  ja     | ``       | Shared-Secret(s). Jeder Request muss den Header `X-Auth` mit einem der hier hinterlegten Werte enthalten. Mehrere Tokens können durch Komma oder Zeilenumbruch getrennt werden. |
 | `CHRONIK_DATA_DIR`   | nein    | `data`   | Zielverzeichnis für die pro Domain erzeugten JSONL-Dateien. Wird beim Start erstellt, falls nicht vorhanden. |
 | `CHRONIK_MAX_BODY`   | nein    | `1048576`| Maximale Größe des Request-Bodys in Bytes (Standard 1&nbsp;MiB). |
 | `CHRONIK_LOCK_TIMEOUT`| nein   | `30`     | Timeout in Sekunden beim Schreiben (FileLock). |
@@ -174,7 +174,7 @@ Events haben definierte TTLs basierend auf Event-Typ (konfigurierbar in `config/
     - `422`: Validierungsfehler (z. B. summary zu lang).
     - `429`: Rate Limit oder Lock Timeout.
     - `507`: Speicher voll.
-* Rotierendes Secret: Wird `CHRONIK_TOKEN` geändert, muss der neue Wert zeitgleich bei allen Clients hinterlegt werden.
+* Rotierendes Secret: Durch die Unterstützung mehrerer Tokens in `CHRONIK_TOKEN` kann eine unterbrechungsfreie Rotation erfolgen (altes und neues Token gleichzeitig hinterlegen).
 * Rate-Limits & Locks: Bei hohem Traffic liefert der Dienst `429` mitsamt `Retry-After` sowie `X-RateLimit-*`. Wenn ein Lock nicht rechtzeitig frei wird, antwortet die API mit `503 lock timeout`.
 
 ## Entwicklung & Tests

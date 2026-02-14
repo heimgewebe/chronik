@@ -9,6 +9,7 @@ import secrets
 import time
 import uuid
 from datetime import datetime, timezone
+from threading import Lock
 from typing import TYPE_CHECKING, Any, Final, NoReturn
 
 from contextlib import asynccontextmanager
@@ -152,10 +153,49 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
 
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
+_METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
+_TOKEN_SPLITTER = re.compile(r'[,\r\n]')
 
-def _get_secret() -> str | None:
-    # Runtime lookup (no import-time hard dependency)
-    return os.environ.get("CHRONIK_TOKEN")
+# Cache for parsed tokens to avoid regex splitting on every request.
+_VALID_TOKENS_CACHE: tuple[str, ...] | None = None
+_RAW_TOKEN_ENV_CACHE: str | None = None
+_TOKEN_CACHE_LOCK = Lock()
+
+
+def _get_valid_tokens() -> tuple[str, ...]:
+    """Retrieves a deterministic tuple of valid tokens from the environment.
+    Supports multiple tokens separated by commas, newlines, or carriage returns.
+    Duplicates are removed while preserving original order.
+    Results are cached to minimize per-request overhead.
+    """
+    global _VALID_TOKENS_CACHE, _RAW_TOKEN_ENV_CACHE
+    raw = os.environ.get("CHRONIK_TOKEN", "")
+
+    # Fast path: Return cached version if environment hasn't changed.
+    if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
+        return _VALID_TOKENS_CACHE
+
+    with _TOKEN_CACHE_LOCK:
+        # Re-check inside lock to avoid race conditions.
+        if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
+            return _VALID_TOKENS_CACHE
+
+        if not raw:
+            _VALID_TOKENS_CACHE = ()
+            _RAW_TOKEN_ENV_CACHE = raw
+            return _VALID_TOKENS_CACHE
+
+        seen: set[str] = set()
+        valid: list[str] = []
+        for t in _TOKEN_SPLITTER.split(raw):
+            tok = t.strip()
+            if tok and tok not in seen:
+                valid.append(tok)
+                seen.add(tok)
+
+        _VALID_TOKENS_CACHE = tuple(valid)
+        _RAW_TOKEN_ENV_CACHE = raw
+        return _VALID_TOKENS_CACHE
 
 
 @app.middleware("http")
@@ -227,9 +267,6 @@ provenance_validation_failures = Counter(
 )
 
 
-_METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
-
-
 def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
     """Sanitize a value for use as a Prometheus metric label.
     
@@ -270,12 +307,24 @@ def _sanitize_domain(domain: str) -> str:
 
 
 def _require_auth(x_auth: str) -> None:
-    secret = _get_secret()
-    if not secret:
+    valid_tokens = _get_valid_tokens()
+    if not valid_tokens:
         # Misconfigured server: auth is required but no secret is configured.
         # Use 500 to avoid leaking auth behavior details.
         raise HTTPException(status_code=500, detail="server misconfigured")
-    if not x_auth or not secrets.compare_digest(x_auth, secret):
+
+    if not x_auth:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    # Use a loop to check all valid tokens to reduce timing leaks.
+    # While checking all tokens takes slightly longer than short-circuiting,
+    # it helps hide which specific token (or if any) matched based on response time.
+    match_found = False
+    for token in valid_tokens:
+        if secrets.compare_digest(x_auth, token):
+            match_found = True
+
+    if not match_found:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 
