@@ -153,9 +153,14 @@ app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
 VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 
 
-def _get_secret() -> str | None:
-    # Runtime lookup (no import-time hard dependency)
-    return os.environ.get("CHRONIK_TOKEN")
+def _get_valid_tokens() -> set[str]:
+    """Retrieves the set of valid tokens from the environment.
+    Supports multiple tokens separated by commas or newlines.
+    """
+    raw = os.environ.get("CHRONIK_TOKEN", "")
+    if not raw:
+        return set()
+    return {t.strip() for t in _TOKEN_SPLITTER.split(raw) if t.strip()}
 
 
 @app.middleware("http")
@@ -228,6 +233,7 @@ provenance_validation_failures = Counter(
 
 
 _METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
+_TOKEN_SPLITTER = re.compile(r'[,\n]')
 
 
 def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
@@ -270,12 +276,25 @@ def _sanitize_domain(domain: str) -> str:
 
 
 def _require_auth(x_auth: str) -> None:
-    secret = _get_secret()
-    if not secret:
+    valid_tokens = _get_valid_tokens()
+    if not valid_tokens:
         # Misconfigured server: auth is required but no secret is configured.
         # Use 500 to avoid leaking auth behavior details.
         raise HTTPException(status_code=500, detail="server misconfigured")
-    if not x_auth or not secrets.compare_digest(x_auth, secret):
+
+    if not x_auth:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+    # Use a loop to check all valid tokens to mitigate timing leaks.
+    # While checking all tokens takes slightly longer than short-circuiting,
+    # it prevents an attacker from guessing which token is being matched
+    # based on response time.
+    match_found = False
+    for token in valid_tokens:
+        if secrets.compare_digest(x_auth, token):
+            match_found = True
+
+    if not match_found:
         raise HTTPException(status_code=401, detail="unauthorized")
 
 

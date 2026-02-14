@@ -21,6 +21,11 @@ uvicorn app:app --host 0.0.0.0 --port 8788
 
 ## Sicherheit
 * Token regelmäßig rotieren und nur über TLS-geschützte Verbindungen übertragen.
+* **Token-Rotation**: `CHRONIK_TOKEN` unterstützt mehrere, durch Komma oder Zeilenumbruch getrennte Tokens. Dies ermöglicht eine unterbrechungsfreie Rotation:
+    1. Neues Token generieren.
+    2. Neues Token zusätzlich zu den bestehenden Tokens in `CHRONIK_TOKEN` aufnehmen (z.B. `CHRONIK_TOKEN=altes_token,neues_token`).
+    3. Clients auf das neue Token umstellen.
+    4. Altes Token aus `CHRONIK_TOKEN` entfernen.
 * Datenverzeichnis vor unbefugtem Zugriff schützen (Filesystem-Rechte, Verschlüsselung).
 * Eingehende Domains werden validiert; zusätzliche Allow-/Deny-Listen können vorgeschaltet werden.
 
@@ -31,7 +36,7 @@ uvicorn app:app --host 0.0.0.0 --port 8788
 ## Fehlerbehebung
 | Symptom                        | Maßnahme |
 |--------------------------------|----------|
-| `401 unauthorized`             | Token-Header prüfen, Abgleich mit `CHRONIK_TOKEN`. |
+| `401 unauthorized`             | Token-Header prüfen, Abgleich mit den in `CHRONIK_TOKEN` konfigurierten Werten. |
 | `400 invalid domain`           | Domain-Format prüfen. Nur Kleinbuchstaben, Ziffern und `-` erlaubt. |
 | `400 invalid json`             | Payload auf gültiges JSON prüfen. Sonderzeichen ggf. escapen. |
 | Keine neuen Dateien unter `data`| Schreibrechte des Prozesses und Pfadkonfiguration kontrollieren. |
