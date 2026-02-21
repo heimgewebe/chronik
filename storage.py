@@ -363,9 +363,9 @@ def list_domains(prefix: str = "") -> list[str]:
     results = []
     try:
         for entry in os.scandir(DATA_DIR):
-            if not entry.is_file():
-                continue
             name = entry.name
+            if name.startswith(".") or not entry.is_file():
+                continue
             if not FILENAME_RE.fullmatch(name):
                 continue
             if prefix and not name.startswith(prefix):
