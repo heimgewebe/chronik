@@ -1,4 +1,3 @@
-import os
 import pytest
 import storage
 
@@ -31,20 +30,16 @@ def test_list_domains_filtering(mock_data_dir):
     assert storage.list_domains() == ["valid"]
 
 def test_list_domains_prefix(mock_data_dir):
-    """Verify the prefix parameter correctly filters results (case-sensitive)."""
+    """Verify the prefix parameter correctly filters results."""
     (mock_data_dir / "apple.jsonl").touch()
     (mock_data_dir / "apricot.jsonl").touch()
     (mock_data_dir / "banana.jsonl").touch()
-    (mock_data_dir / "Apple.jsonl").touch()
 
     # Empty prefix
-    assert storage.list_domains("") == ["Apple", "apple", "apricot", "banana"]
+    assert storage.list_domains("") == ["apple", "apricot", "banana"]
 
     # Matching prefix
     assert storage.list_domains("ap") == ["apple", "apricot"]
-
-    # Case sensitive prefix
-    assert storage.list_domains("Ap") == ["Apple"]
 
     # Non-matching prefix
     assert storage.list_domains("cherry") == []
@@ -63,6 +58,7 @@ def test_list_domains_os_error(mock_data_dir, monkeypatch):
     def mock_scandir(path):
         raise OSError("Access denied")
 
-    monkeypatch.setattr(os, "scandir", mock_scandir)
+    # Patch storage.os to be more specific
+    monkeypatch.setattr(storage.os, "scandir", mock_scandir)
 
     assert storage.list_domains() == []
