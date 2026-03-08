@@ -49,7 +49,7 @@ def compute_signal_strength(payload: dict) -> SignalStrength:
     # ID field is also valuable
     has_id = "id" in payload or "event_id" in payload
     
-    score = sum([has_kind, has_timestamp, has_source, has_data, has_id])
+    score = has_kind + has_timestamp + has_source + has_data + has_id
     
     if score >= 4:
         return SignalStrength.HIGH
