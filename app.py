@@ -385,12 +385,6 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
         logger.warning("empty payload array received", extra={"domain": dom})
         return lines
 
-    # Hoist invariants out of loop
-    # We assume these flags are request-invariant (env vars/settings)
-    # If they ever become dynamic per-item, this hoisting must be reverted.
-    is_provenance_enforced = _is_provenance_enforced()
-    is_quality_enabled = _is_quality_enabled()
-
     # Pre-compute label to prevent label pollution/entropy
     domain_label = _sanitize_metric_label(dom)
 
@@ -400,6 +394,9 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             raise HTTPException(status_code=400, detail="invalid payload")
 
         normalized = dict(entry)
+
+        is_provenance_enforced = _is_provenance_enforced()
+        is_quality_enabled = _is_quality_enabled()
 
         # 1. Validation & Normalization logic per domain
         if dom == "insights.daily":
