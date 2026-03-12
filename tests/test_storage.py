@@ -62,3 +62,27 @@ def test_list_domains_os_error(mock_data_dir, monkeypatch):
     monkeypatch.setattr(storage.os, "scandir", mock_scandir)
 
     assert storage.list_domains() == []
+
+def test_read_last_line_nonexistent(mock_data_dir):
+    """Verify it returns None for a non-existent domain."""
+    assert storage.read_last_line("nonexistent") is None
+
+def test_read_last_line_empty(mock_data_dir):
+    """Verify it returns None for an empty file."""
+    (mock_data_dir / "empty.jsonl").touch()
+    assert storage.read_last_line("empty") is None
+
+def test_read_last_line_single_line(mock_data_dir):
+    """Verify it returns the single line from a file."""
+    storage.write_payload("single", ["{\"line\": 1}"])
+    assert storage.read_last_line("single") == "{\"line\": 1}"
+
+def test_read_last_line_multiple_lines(mock_data_dir):
+    """Verify it returns the last line from a multi-line file."""
+    storage.write_payload("multiple", ["{\"line\": 1}", "{\"line\": 2}"])
+    assert storage.read_last_line("multiple") == "{\"line\": 2}"
+
+def test_read_last_line_invalid_domain(mock_data_dir):
+    """Verify it raises StorageError for an invalid domain name."""
+    with pytest.raises(storage.StorageError, match="invalid target path"):
+        storage.read_last_line("domain with spaces")
