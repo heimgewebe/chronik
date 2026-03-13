@@ -149,8 +149,7 @@ class IntegrityManager:
             # Check if it's a file path
             if os.path.exists(self.override):
                 try:
-                    with open(self.override, "r") as f:
-                        data = json.load(f)
+                    data = await run_in_threadpool(self._read_json_file, self.override)
                     logger.info(f"Loaded integrity sources from file: {self.override}")
                     return self._validate_sources_data(data)
                 except Exception as exc:
@@ -186,6 +185,10 @@ class IntegrityManager:
         except Exception as exc:
             logger.error(f"Failed to fetch integrity sources from {self.sources_url}: {exc}")
             return None
+
+    def _read_json_file(self, filepath: str) -> Any:
+        with open(filepath, "r") as f:
+            return json.load(f)
 
     def _validate_sources_data(self, data: Any) -> dict[str, Any] | None:
         """Validate the sources data structure."""
