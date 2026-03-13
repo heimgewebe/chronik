@@ -84,5 +84,5 @@ def test_read_last_line_multiple_lines(mock_data_dir):
 
 def test_read_last_line_invalid_domain(mock_data_dir):
     """Verify it raises StorageError for an invalid domain name."""
-    with pytest.raises(storage.StorageError, match="invalid target path"):
+    with pytest.raises(storage.StorageError, match="invalid target"):
         storage.read_last_line("domain with spaces")
