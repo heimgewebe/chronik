@@ -246,3 +246,26 @@ def test_integrity_legacy_payload_type(client, monkeypatch, tmp_path):
     assert repo in repos
     assert repos[repo]["status"] == "OK"
     assert repos[repo]["legacy"] is True
+
+@pytest.mark.asyncio
+async def test_integrity_sources_override_file(tmp_path, monkeypatch):
+    from integrity import IntegrityManager
+
+    override_file = tmp_path / "sources.json"
+    data = {
+        "apiVersion": "integrity.sources.v1",
+        "generated_at": "2023-01-01T00:00:00Z",
+        "sources": [
+            {"repo": "test/repo", "summary_url": "https://example.com/summary.json", "enabled": True}
+        ]
+    }
+    override_file.write_text(json.dumps(data), encoding="utf-8")
+
+    monkeypatch.setenv("INTEGRITY_SOURCES_OVERRIDE", str(override_file))
+
+    manager = IntegrityManager()
+    result = await manager.fetch_sources()
+
+    assert result is not None
+    assert "sources" in result
+    assert result["sources"][0]["repo"] == "test/repo"

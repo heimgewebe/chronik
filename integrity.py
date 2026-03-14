@@ -187,7 +187,7 @@ class IntegrityManager:
             return None
 
     def _read_json_file(self, filepath: str) -> Any:
-        with open(filepath, "r") as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             return json.load(f)
 
     def _validate_sources_data(self, data: Any) -> dict[str, Any] | None:
