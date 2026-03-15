@@ -1,10 +1,8 @@
 import json
 from datetime import datetime, timezone
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-# Note: We import app inside the test functions or use a runner to mock dependencies
-# because fastapi and other packages might be missing in the environment.
+# Importing from app inside the tests keeps patching simple and avoids unnecessary module side effects.
 
 def test_process_tail_lines_with_malformed_json():
     """
