@@ -54,6 +54,7 @@ from integrity import IntegrityManager
 MAX_PAYLOAD_SIZE: Final[int] = int(
     os.getenv("CHRONIK_MAX_BODY") or str(1024 * 1024)
 )
+MAX_RID_LENGTH: Final[int] = 128
 RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
 
 # Provenance enforcement: set to "1" to require provenance fields
@@ -200,7 +201,9 @@ def _get_valid_tokens() -> tuple[str, ...]:
 
 @app.middleware("http")
 async def request_id_logging(request: Request, call_next):
-    rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    raw_rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    # Sanitize to prevent log injection and limit length
+    rid = _METRIC_LABEL_SANITIZER.sub("_", raw_rid)[:MAX_RID_LENGTH]
     start = time.perf_counter()
     # Falls im Handler ein Fehler hochgeht, loggen wir konservativ 500
     status = 500
