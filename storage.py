@@ -185,7 +185,7 @@ def _safe_open_read(target_path: Path) -> Iterator:
         )
         try:
             fh = os.fdopen(fd, "rb")
-        except Exception:
+        except OSError:
             os.close(fd)
             raise
         with fh:
@@ -248,7 +248,7 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
                 )
                 try:
                     fh = os.fdopen(fd, py_mode, encoding=encoding)
-                except Exception:
+                except OSError:
                     os.close(fd)
                     raise
                 with fh:
