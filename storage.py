@@ -392,16 +392,12 @@ def _tail_impl(fh, limit: int, chunk_size: int = 65536) -> list[str]:
     if file_size == 0:
         return []
 
-    lines: list[str] = []
-    # If the file has data, the last byte might be a newline or not.
-    # We want to collect 'limit' logical lines.
-
     # We'll build up a buffer of bytes from the end.
     chunks: list[tuple[bytes, int]] = []
     newline_count = 0
     pointer = file_size
 
-    while len(lines) < limit and pointer > 0:
+    while pointer > 0:
         read_size = min(chunk_size, pointer)
         pointer -= read_size
         fh.seek(pointer)
