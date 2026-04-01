@@ -452,7 +452,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             signal_strength = compute_signal_strength(normalized)
             completeness = compute_completeness(normalized)
             quality_meta = {
-                "signal_strength": signal_strength.value if hasattr(signal_strength, 'value') else signal_strength,
+                "signal_strength": signal_strength.value,
                 "completeness": completeness,
             }
             events_signal_strength.labels(domain=domain_label, signal_strength=quality_meta["signal_strength"]).inc()
@@ -761,7 +761,11 @@ def _process_tail_lines(
 
             ts_str = None
             if isinstance(item, dict):
-                ts_str = item.get("ts") or item.get("timestamp")
+                ts_str = (
+                    item.get("received_at")
+                    or item.get("ts")
+                    or item.get("timestamp")
+                )
 
             dt = None
             if isinstance(ts_str, str):

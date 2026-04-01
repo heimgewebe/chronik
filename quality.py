@@ -116,7 +116,7 @@ def add_quality_markers(payload: dict) -> dict:
     
     # Add quality metadata
     enriched["quality"] = {
-        "signal_strength": signal_strength.value if hasattr(signal_strength, 'value') else signal_strength,
+        "signal_strength": signal_strength.value,
         "completeness": completeness,
     }
     
