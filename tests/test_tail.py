@@ -178,6 +178,39 @@ def test_tail_concurrency_lock(client, auth_header, monkeypatch):
     assert response.status_code == 429
     assert "busy" in response.text
 
+def test_tail_since_filter_canonical_wrappers(client, auth_header):
+    """Regression test: since= must filter by received_at in canonical wrapper format.
+
+    Before the bugfix, _process_tail_lines only checked ts/timestamp at the
+    wrapper level. Canonical wrappers store the envelope timestamp in received_at,
+    so ALL events were silently dropped when since= was used with canonical data.
+    """
+    domain = f"test-since-canonical-{secrets.token_hex(4)}"
+
+    # Write pre-formatted canonical wrappers (as produced by _process_items)
+    wrappers = [
+        {"domain": domain, "received_at": "2023-01-01T10:00:00Z", "payload": {"id": 1}},
+        {"domain": domain, "received_at": "2023-01-01T11:00:00Z", "payload": {"id": 2}},
+        {"domain": domain, "received_at": "2023-01-01T12:00:00Z", "payload": {"id": 3}},
+    ]
+    storage.write_payload(domain, [json.dumps(w) for w in wrappers])
+
+    # since=10:30 -> only wrappers 2 and 3 should be returned
+    response = client.get(
+        f"/v1/tail?domain={domain}&since=2023-01-01T10:30:00Z", headers=auth_header
+    )
+    assert response.status_code == 200
+    results = response.json()
+    assert len(results) == 2
+    assert results[0]["payload"]["id"] == 2
+    assert results[1]["payload"]["id"] == 3
+
+    # X-Chronik-Last-Seen-TS must reflect the newest received_at that was returned
+    last_seen = response.headers["X-Chronik-Last-Seen-TS"]
+    assert "2023-01-01" in last_seen
+    assert "12:00:00" in last_seen
+
+
 def test_tail_invalid_domain_traversal(client, auth_header):
     # Test invalid domain (path traversal)
     response = client.get("/v1/tail?domain=../invalid", headers=auth_header)
