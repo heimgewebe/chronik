@@ -1,23 +1,33 @@
+import importlib
 import sys
 from unittest.mock import MagicMock, patch
 
-# Mock 'limits' before importing slowapi_compat to avoid ModuleNotFoundError
-mock_limits = MagicMock()
-if "limits" not in sys.modules:
-    sys.modules["limits"] = mock_limits
+def get_isolated_slowapi_compat():
+    """Import slowapi_compat in an isolated environment with mocked limits."""
+    # Mock limits module
+    mock_limits = MagicMock()
 
-import slowapi_compat
+    # Use patch.dict to safely modify sys.modules only during the import
+    with patch.dict(sys.modules, {"limits": mock_limits}):
+        # Force a reload of the module to ensure it picks up the mock
+        if "slowapi_compat" in sys.modules:
+            del sys.modules["slowapi_compat"]
+
+        module = importlib.import_module("slowapi_compat")
+        importlib.reload(module)
+        return module
 
 
 def test_patch_rate_limit_item_adds_missing_attributes():
     """Test that missing attributes are correctly added to RateLimitItem."""
+    slowapi_compat = get_isolated_slowapi_compat()
 
     class FakeRateLimitItem:
         def __str__(self):
             return "1 per minute"
 
-    # Patch the reference in the module we are testing
-    with patch("slowapi_compat.RateLimitItem", FakeRateLimitItem):
+    # Patch the reference in the isolated module
+    with patch.object(slowapi_compat, "RateLimitItem", FakeRateLimitItem):
         slowapi_compat.patch_rate_limit_item()
 
         assert hasattr(FakeRateLimitItem, "error_message")
@@ -31,12 +41,14 @@ def test_patch_rate_limit_item_adds_missing_attributes():
 
 def test_patch_rate_limit_item_respects_existing_attributes():
     """Test that existing attributes are not overwritten by the patch."""
+    slowapi_compat = get_isolated_slowapi_compat()
 
     class FakeRateLimitItem:
         error_message = "custom message"
         limit = "custom limit"
 
-    with patch("slowapi_compat.RateLimitItem", FakeRateLimitItem):
+    # Patch the reference in the isolated module
+    with patch.object(slowapi_compat, "RateLimitItem", FakeRateLimitItem):
         slowapi_compat.patch_rate_limit_item()
 
         assert FakeRateLimitItem.error_message == "custom message"
