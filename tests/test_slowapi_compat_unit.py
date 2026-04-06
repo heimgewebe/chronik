@@ -13,9 +13,7 @@ def get_isolated_slowapi_compat():
         if "slowapi_compat" in sys.modules:
             del sys.modules["slowapi_compat"]
 
-        module = importlib.import_module("slowapi_compat")
-        importlib.reload(module)
-        return module
+        return importlib.import_module("slowapi_compat")
 
 
 def test_patch_rate_limit_item_adds_missing_attributes():
