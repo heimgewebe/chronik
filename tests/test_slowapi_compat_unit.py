@@ -2,12 +2,13 @@ import importlib
 import sys
 import types
 from contextlib import contextmanager
-from unittest.mock import patch
 
 @contextmanager
 def isolated_slowapi_compat_import(mock_limits_module):
     """Context manager to import slowapi_compat in an isolated environment."""
-    # Store original state
+    # Store original state and presence
+    had_slowapi_compat = "slowapi_compat" in sys.modules
+    had_limits = "limits" in sys.modules
     original_slowapi_compat = sys.modules.get("slowapi_compat")
     original_limits = sys.modules.get("limits")
 
@@ -24,10 +25,11 @@ def isolated_slowapi_compat_import(mock_limits_module):
         # Restore original state or clean up
         if "slowapi_compat" in sys.modules:
             del sys.modules["slowapi_compat"]
-        if original_slowapi_compat:
+
+        if had_slowapi_compat:
             sys.modules["slowapi_compat"] = original_slowapi_compat
 
-        if original_limits:
+        if had_limits:
             sys.modules["limits"] = original_limits
         elif "limits" in sys.modules:
             del sys.modules["limits"]
