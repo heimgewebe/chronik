@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -158,51 +157,46 @@ VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
 _METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
 _TOKEN_SPLITTER = re.compile(r'[,\r\n]')
 
-# Cache for parsed token hashes to avoid expensive hashing/splitting on every request.
-# Stores a tuple of SHA-256 hex digests.
-_VALID_TOKEN_HASHES_CACHE: tuple[str, ...] | None = None
+# Cache for parsed tokens to avoid regex splitting on every request.
+_VALID_TOKENS_CACHE: tuple[str, ...] | None = None
 _RAW_TOKEN_ENV_CACHE: str | None = None
 _TOKEN_CACHE_LOCK = Lock()
 
 
-def _get_valid_token_hashes() -> tuple[str, ...]:
-    """Retrieves a deterministic tuple of hashed valid tokens from the environment.
+def _get_valid_tokens() -> tuple[str, ...]:
+    """Retrieves a deterministic tuple of valid tokens from the environment.
     Supports multiple tokens separated by commas, newlines, or carriage returns.
-    Tokens are hashed using SHA-256 to mitigate timing attacks during comparison.
     Duplicates are removed while preserving original order.
     Results are cached to minimize per-request overhead.
     """
-    global _VALID_TOKEN_HASHES_CACHE, _RAW_TOKEN_ENV_CACHE
+    global _VALID_TOKENS_CACHE, _RAW_TOKEN_ENV_CACHE
     raw = os.environ.get("CHRONIK_TOKEN", "")
 
     # Fast path: Return cached version if environment hasn't changed.
-    if _VALID_TOKEN_HASHES_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
-        return _VALID_TOKEN_HASHES_CACHE
+    if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
+        return _VALID_TOKENS_CACHE
 
     with _TOKEN_CACHE_LOCK:
         # Re-check inside lock to avoid race conditions.
-        if _VALID_TOKEN_HASHES_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
-            return _VALID_TOKEN_HASHES_CACHE
+        if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
+            return _VALID_TOKENS_CACHE
 
         if not raw:
-            _VALID_TOKEN_HASHES_CACHE = ()
+            _VALID_TOKENS_CACHE = ()
             _RAW_TOKEN_ENV_CACHE = raw
-            return _VALID_TOKEN_HASHES_CACHE
+            return _VALID_TOKENS_CACHE
 
         seen: set[str] = set()
-        valid_hashes: list[str] = []
+        valid: list[str] = []
         for t in _TOKEN_SPLITTER.split(raw):
             tok = t.strip()
             if tok and tok not in seen:
-                # Store SHA-256 hash to enable constant-time comparison of secrets
-                # even when user-provided input has different length.
-                h = hashlib.sha256(tok.encode()).hexdigest()
-                valid_hashes.append(h)
+                valid.append(tok)
                 seen.add(tok)
 
-        _VALID_TOKEN_HASHES_CACHE = tuple(valid_hashes)
+        _VALID_TOKENS_CACHE = tuple(valid)
         _RAW_TOKEN_ENV_CACHE = raw
-        return _VALID_TOKEN_HASHES_CACHE
+        return _VALID_TOKENS_CACHE
 
 
 @app.middleware("http")
@@ -316,8 +310,8 @@ def _sanitize_domain(domain: str) -> str:
 
 
 def _require_auth(x_auth: str) -> None:
-    valid_token_hashes = _get_valid_token_hashes()
-    if not valid_token_hashes:
+    valid_tokens = _get_valid_tokens()
+    if not valid_tokens:
         # Misconfigured server: auth is required but no secret is configured.
         # Use 500 to avoid leaking auth behavior details.
         raise HTTPException(status_code=500, detail="server misconfigured")
@@ -325,16 +319,10 @@ def _require_auth(x_auth: str) -> None:
     if not x_auth:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    # Hash the user input to enable constant-time comparison via compare_digest
-    # regardless of input length vs secret length.
-    x_auth_hash = hashlib.sha256(x_auth.encode()).hexdigest()
-
-    # Use a loop to check all valid tokens to reduce timing leaks.
-    # While checking all tokens takes slightly longer than short-circuiting,
-    # it helps hide which specific token (or if any) matched based on response time.
+    # Check all configured tokens without early exit to reduce trivial timing differences.
     match_found = False
-    for token_hash in valid_token_hashes:
-        if secrets.compare_digest(x_auth_hash, token_hash):
+    for token in valid_tokens:
+        if secrets.compare_digest(x_auth, token):
             match_found = True
 
     if not match_found:
