@@ -319,9 +319,7 @@ def _require_auth(x_auth: str) -> None:
     if not x_auth:
         raise HTTPException(status_code=401, detail="unauthorized")
 
-    # Use a loop to check all valid tokens to reduce timing leaks.
-    # While checking all tokens takes slightly longer than short-circuiting,
-    # it helps hide which specific token (or if any) matched based on response time.
+    # Check all configured tokens without early exit to reduce trivial timing differences.
     match_found = False
     for token in valid_tokens:
         if secrets.compare_digest(x_auth, token):
