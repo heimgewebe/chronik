@@ -178,6 +178,7 @@ Events haben definierte TTLs basierend auf Event-Typ (konfigurierbar in `config/
 * Rate-Limits & Locks: Bei hohem Traffic liefert der Dienst `429` mitsamt `Retry-After` sowie `X-RateLimit-*`. Wenn ein Lock nicht rechtzeitig frei wird, antwortet die API mit `503 lock timeout`.
 
 ## Entwicklung & Tests
+* One-Command-Validierung: `make validate-local` oder direkt `./scripts/validate-local.sh`. Der Befehl richtet/aktualisiert `.venv`, führt `pytest -q` aus und prüft hermetisch `/health`, `/version`, `POST /v1/ingest?domain=agent.ledger` sowie `/v1/events` gegen ein temporäres `CHRONIK_DATA_DIR`.
 * Formatierung: Standard Python Code-Formatierung (z. B. `black`) kann verwendet werden.
 * Tests: Für die API können `pytest`-basierte Tests oder Integrationstests mit `httpx` genutzt werden.
 * **API /v1/latest:** Der Endpoint `/v1/latest` gibt den letzten Log-Eintrag zurück (standardmäßig als Wrapper mit `domain`, `received_at`, `payload`). Mit `?unwrap=1` kann direkt das innere Payload-Objekt angefordert werden.
