@@ -1,0 +1,25 @@
+{
+  "schema_version": "agent-run-event.v0",
+  "event_id": "01JZ0000000000000000000002",
+  "kind": "agent.run.blocked",
+  "ts": "2026-07-02T12:10:00Z",
+  "source": {
+    "repo": "heimgewebe/grabowski",
+    "component": "grabowski",
+    "run_id": "run-20260702-121000"
+  },
+  "subject": {
+    "repo": "heimgewebe/chronik",
+    "branch": "docs/agent-run-v0",
+    "head": "a44965d"
+  },
+  "trust_tier": "declared",
+  "status": "active",
+  "caused_by": [],
+  "evidence_refs": ["local-run:run-20260702-121000"],
+  "data": {
+    "result": "blocked",
+    "blocker_code": "missing-consumer-view",
+    "summary": "Producer integration is blocked until a consumer view exists."
+  }
+}

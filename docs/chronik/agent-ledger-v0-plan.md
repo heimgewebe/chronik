@@ -230,6 +230,7 @@ Umfang:
 - Kausalitäts-Cardinality
 - Redaction-Allow-List
 - drei Beispiel-Events: started, completed, blocked
+- Contract-Seam: [`agent-run-event-v0.md`](agent-run-event-v0.md) und [`agent-run-event-v0.schema.json`](agent-run-event-v0.schema.json)
 
 Akzeptanzkriterium:
 

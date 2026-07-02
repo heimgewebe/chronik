@@ -1,0 +1,25 @@
+{
+  "schema_version": "agent-run-event.v0",
+  "event_id": "01JZ0000000000000000000001",
+  "kind": "agent.run.completed",
+  "ts": "2026-07-02T12:05:00Z",
+  "source": {
+    "repo": "heimgewebe/grabowski",
+    "component": "grabowski",
+    "run_id": "run-20260702-120000"
+  },
+  "subject": {
+    "repo": "heimgewebe/chronik",
+    "branch": "docs/agent-run-v0",
+    "head": "a44965d"
+  },
+  "trust_tier": "declared",
+  "status": "active",
+  "caused_by": ["01JZ0000000000000000000000"],
+  "evidence_refs": ["github-pr:heimgewebe/chronik#193"],
+  "data": {
+    "result": "completed",
+    "duration_ms": 300000,
+    "summary": "Local validation readiness completed."
+  }
+}
