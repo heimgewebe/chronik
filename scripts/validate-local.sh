@@ -19,11 +19,13 @@ export CHRONIK_DATA_DIR="$TMP_DATA_DIR"
 
 ./.venv/bin/python - <<'PY'
 import os
+import re
 from fastapi.testclient import TestClient
 from app import app
 
-TOKEN = os.environ["CHRONIK_TOKEN"].split(",", 1)[0].strip()
-headers = {"X-Auth": TOKEN}
+TOKENS = [token.strip() for token in re.split(r"[,\n]+", os.environ["CHRONIK_TOKEN"]) if token.strip()]
+assert TOKENS, "CHRONIK_TOKEN produced no usable token"
+headers = {"X-Auth": TOKENS[0]}
 client = TestClient(app)
 
 health = client.get("/health", headers=headers)
