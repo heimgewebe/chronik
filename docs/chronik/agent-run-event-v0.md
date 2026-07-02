@@ -3,6 +3,7 @@
 Status: draft
 Domain: `agent.ledger`
 Schema: [`agent-run-event-v0.schema.json`](agent-run-event-v0.schema.json)
+Outbox helper: `python -m tools.chronik_outbox`
 
 ## These / Antithese / Synthese
 
@@ -72,6 +73,24 @@ Grenzen:
 
 Wenn `status` den Wert `corrected` hat, muss `corrects` mindestens eine alte Event-ID enthalten.
 
+## Lokaler Outbox-Prototyp
+
+`tools.chronik_outbox` stellt einen lokalen, producer-agnostischen Prototyp bereit:
+
+```bash
+python -m tools.chronik_outbox --state-root /tmp/chronik-state append tests/fixtures/agent-ledger/agent-run-completed.v0.json
+python -m tools.chronik_outbox --state-root /tmp/chronik-state status
+CHRONIK_TOKEN=dev python -m tools.chronik_outbox --state-root /tmp/chronik-state flush --base-url http://localhost:8788
+python -m tools.chronik_outbox --state-root /tmp/chronik-state compact
+```
+
+Regeln:
+
+- `append` validiert gegen das v0-Schema und schreibt eine JSONL-Datei pro Producer/Run.
+- `flush` sendet an `POST /v1/ingest?domain=agent.ledger` und erstellt ein Receipt.
+- `compact` entfernt nur Dateien, für die ein Flush-Receipt existiert.
+- Kein Agentenlauf darf vom Outbox-Prototyp abhängig werden.
+
 ## Beispiele
 
 Gültige Beispiele liegen unter:
@@ -85,7 +104,7 @@ Gültige Beispiele liegen unter:
 - keine PR-Events
 - keine Review-Finding-Events
 - keine Bureau-Claim-Events
-- keine Outbox-Implementierung
+- keine echte Producer-Integration
 - keine Runtime-Validierung in `app.py`
 
 Dieser Contract ist ein Validierungsseam für die nächsten Schritte, nicht bereits der nächste Schritt selbst.
