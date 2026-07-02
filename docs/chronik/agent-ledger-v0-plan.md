@@ -1,539 +1,349 @@
-# Chronik Agent Ledger v0 – Ausbauplan
+# Chronik Agent Ledger v0 – Minimalplan
 
-Status: draft
+Status: review-ready
 Zielrepo: `heimgewebe/chronik`
 Branch: `docs/chronik-agent-ledger-v0-plan`
 Erstellt: 2026-07-02
 
 ## 0. These / Antithese / Synthese
 
-**These:** Chronik kann langfristig zur zeitlichen Infrastruktur des Heimgewebe-Agentensystems werden: ein kausales Betriebsgedächtnis, das Agentenläufe, Repo-Änderungen, Review-Findings, Bureau-Claims, Bundle-Artefakte und spätere Korrekturen nachvollziehbar verbindet.
+**These:** Chronik kann langfristig zur zeitlichen Infrastruktur des Heimgewebe-Agentensystems werden: ein kausales Betriebsgedächtnis für Agentenläufe, Repo-Arbeit, Reviews und Evidence-Referenzen.
 
-**Antithese:** Eine harte Integration wäre aktuell nicht gerechtfertigt. Der Dienst läuft lokal nicht als `chronik.service`, Port `8788` ist nicht sichtbar, ein lokaler Testlauf scheitert ohne eingerichtete Dependencies, es gibt kein rLens-Bundle und keine aktive Grabowski-Kopplung. Wer jetzt alles fest verdrahtet, baut kein Gedächtnis, sondern einen dekorativen Fehlerverstärker.
+**Antithese:** Eine breite Integration ist aktuell nicht gerechtfertigt. Chronik ist lokal noch nicht als Dienst etabliert, ein reproduzierbarer Testpfad fehlt, es gibt kein Chronik-rLens-Bundle und noch keinen belegten Consumer. Mehr Producer ohne Leser erzeugen nur höflich sortierten Lärm.
 
-**Synthese:** Chronik wird nicht durch mehr Logging wertvoll, sondern durch eine reversible, fail-soft und konsumentengetriebene Entwicklung: erst Outbox, minimale Eventfamilien, Kausalbezüge und eine konkrete Consumer-View; erst danach stärkere Kopplung.
+**Synthese:** v0 muss kleiner werden: erst Readiness, dann ein enges `agent.run.*`-Eventformat, dann eine Consumer-View mit Demo-Daten, danach genau ein realer Producer. Chronik wird nur ausgebaut, wenn diese Historie eine Entscheidung nachweislich verbessert.
 
-## 1. Zielbild
+## 1. Zielbild und Nicht-Ziele
 
-Chronik soll vom leichten Append-only-Ingest zu einem **Causality Ledger** für das Heimgewebe-Agentenökosystem wachsen.
+Chronik soll nicht „mehr Logs“ sammeln, sondern eine kleine, rekonstruierbare Zeitspur liefern:
 
-Nicht Ziel:
+> Was ist wann durch wen passiert, wodurch ist es belegt, worauf bezog es sich, und hat diese Vergangenheit später eine bessere Entscheidung ermöglicht?
 
-> Chronik speichert möglichst viele Events.
+Nicht-Ziele für v0:
 
-Ziel:
+- keine breite Eventfamilie jenseits `agent.run.*`
+- keine harte Runtime-Abhängigkeit für Grabowski, Bureau oder andere Agenten
+- keine Leitstand-UI
+- keine semantische Auswertung
+- keine metarepo-weite Contractmigration
+- keine Duplikation von Vibe-Lab-, GitHub-, Bureau- oder Grabowski-Langtexten
 
-> Chronik beantwortet: Was ist wann durch wen passiert, wodurch wurde es belegt, was folgte daraus, welche frühere Ursache oder Entscheidung hängt daran, und welche wiederkehrende Reibung wird sichtbar?
+## 2. Delta zu bestehenden Logs
 
-Chronik bleibt dabei **nicht** Orchestrator, Planner, Dashboard oder semantische Deutungsschicht.
+Chronik lohnt sich nur, wenn es etwas leistet, das bestehende Logs nicht leisten.
 
-Rollenabgrenzung:
+Bestehende Logs und Run-Cards zeigen meist **was lokal passiert ist**. Chronik v0 soll nur die dünne, maschinenlesbare Querreferenz liefern:
 
-| Organ | Aufgabe | Chronik-Beziehung |
-|---|---|---|
-| Grabowski | Ausführung, Repo-/Systemoperationen | erzeugt Lauf- und Ergebnisereignisse; liest relevante Vorgeschichte |
-| Bureau | Claims, Aufgabenaufnahme, Plan-/Statuslogik | erzeugt Claim-/Taskereignisse; nutzt Chronik für Laufhistorie |
-| Vibe-Lab | Evidence, Experimente, Run-Cards | bleibt Primärort für Belege; Chronik verweist auf Evidence |
-| rLens/Lenskit | Kontextpakete, Repo-Lesbarkeit | erzeugt Bundle-/Freshness-Events; Chronik verweist auf Bundle-Artefakte |
-| semantAH / heimlern | Bedeutung, Muster, Lernen | spätere Konsumenten, nicht v0-Abhängigkeit |
-| Leitstand | Sichtbarkeit, Lagebild | spätere View-Oberfläche, nicht v0-Abhängigkeit |
+- ein Lauf begann, endete oder blockierte
+- mit welchem Repo, Branch, Head und Run-Kontext
+- mit welcher kurzen Ergebnis- oder Blockerklasse
+- mit stabilen Evidence-Referenzen statt kopierten Belegen
+- mit Kausalbezug auf auslösende Events, sofern vorhanden
 
-Merksatz: Chronik ist die Zeitachse, nicht das Gehirn. Ein Gehirn mit Tagebuch ist nützlich; ein Tagebuch, das glaubt, es sei ein Gehirn, wird schnell Romanfigur.
+Wenn diese View keine spätere Entscheidung verbessert, wird v0 eingefroren. Ein Tagebuch, das niemand liest, ist nur Staub mit Datum.
 
-## 2. Alternative Sinnachse
+## 3. v0-Scope
 
-Die Leitfrage wird bewusst verschoben:
-
-Nicht: **Wie integrieren wir Chronik stärker?**
-
-Sondern: **Welche Systemereignisse dürfen nicht länger ohne rekonstruierbare Zeitspur geschehen?**
-
-Dadurch entsteht eine andere Priorität: Nicht jedes Repo soll sofort nach Chronik schreiben. Zuerst werden jene Ereignisse erfasst, bei denen fehlende Erinnerung realen Schaden erzeugt:
-
-1. Agentenlauf wurde begonnen, aber nie abgeschlossen.
-2. PR wurde gemerged, obwohl Review-Findings unklar waren.
-3. Ein Blocker taucht wiederholt auf, wird aber jedes Mal neu entdeckt.
-4. Bundle-/Kontext-Freshness ist unklar.
-5. Bureau-Task und tatsächliche Ausführung laufen auseinander.
-6. Ein Override wurde getroffen, aber später ist nicht mehr sichtbar warum.
-
-## 3. No-Brainer-Bedingungen
-
-Chronik-Integration wird erst dann zum No-brainer, wenn mindestens drei dieser Effekte messbar eintreten:
-
-1. **Kontextverlust sinkt:** Grabowski kann beim Start eines ähnlichen Tasks relevante frühere Events anzeigen.
-2. **Doppelte Arbeit sinkt:** Wiederkehrende Blocker/Friction werden erkannt, bevor erneut Debugzeit verbrannt wird.
-3. **Review-Gates werden belastbarer:** Findings, Overrides, Restpunkte und Merge-Entscheidungen sind historisch sichtbar.
-4. **Bureau plant besser:** Tasks können nach echter Laufhistorie, nicht nur nach Dokumentenlage priorisiert werden.
-5. **Vibe-Lab wird gestützt:** Run-Cards erhalten maschinenlesbare Eventanker, ohne Evidence zu ersetzen.
-6. **Replay wird möglich:** Ein Agentenlauf lässt sich anhand von Events und Artefaktrefs rekonstruieren.
-7. **Leitstand bekommt Lagebilder:** Nicht nur statische Reports, sondern zeitliche Betriebszustände.
-
-Wenn diese Effekte nicht entstehen, bleibt Chronik optionales Logging und darf nicht weiter ausgedehnt werden.
-
-## 4. Designprinzipien
-
-### 4.1 Fail-soft vor Pflichtpfad
-
-Kein Agentenlauf darf scheitern, nur weil Chronik nicht erreichbar ist.
-
-Pflicht:
-
-- lokale Outbox vor HTTP-Push
-- idempotente `event_id`
-- Retry mit Backoff
-- Flush später möglich
-- harte Timeouts
-- keine synchrone Merge-/Review-Blockade durch Chronik
-
-### 4.2 Outbox-first
-
-Producer schreiben zunächst lokal in eine Outbox-Datei, z. B.:
-
-```text
-.local/state/<producer>/chronik-outbox/*.jsonl
-```
-
-Ein Flush-Befehl überträgt Events an `POST /v1/ingest`.
-
-Vorteile:
-
-- Chronik-Ausfall blockiert nicht.
-- Events bleiben prüfbar.
-- Tests können ohne laufenden Dienst arbeiten.
-- Migration zu Servicebetrieb bleibt möglich.
-
-### 4.3 Kleine Eventfamilien
-
-v0 darf maximal diese Eventfamilien einführen:
+Erlaubte Eventarten in v0:
 
 - `agent.run.started`
 - `agent.run.completed`
 - `agent.run.blocked`
-- `repo.pr.created`
-- `repo.pr.reviewed`
-- `repo.pr.merged`
-- `review.finding.recorded`
-- `bureau.claim.created`
-- `artifact.bundle.created`
-- `context.pack.created`
+
+Alles andere ist out of scope, auch wenn es plausibel klingt:
+
+- `repo.pr.*`
+- `review.finding.*`
+- `bureau.claim.*`
+- `artifact.bundle.*`
 - `friction.recorded`
 
-Neue Eventtypen brauchen einen Consumer-Nachweis oder ein klares Diagnoseziel.
+Diese Typen dürfen erst nach einem belegten v0-Nutzenfall ergänzt werden.
 
-### 4.4 Kausalität statt flacher Timeline
+## 4. Organe und Rollen
 
-Jedes Event kann Kausalbezüge tragen:
+| Organ | v0-Rolle | Grenze |
+|---|---|---|
+| Chronik | hält Eventformat, Ingest, Query/View | entscheidet und orchestriert nicht |
+| rLens/Lenskit | liefert Repo-Kontext und später Bundle-Refs | speichert keine Bundles in Chronik |
+| Bureau | erster geplanter Consumer der Run-Historie | erzeugt keine Tasks nur aus Chronik |
+| Grabowski | erster möglicher realer Producer nach Demo-View | blockiert keinen Lauf bei Chronik-Ausfall |
+| Vibe-Lab | Primärort für Evidence | Chronik kopiert keine Run-Cards |
+| Steuerboard | read-only Repo-State-Kontext | kein Gate, keine Freigabe |
+| metarepo/contracts | spätere Contract-Governance | keine v0-Vorbedingung |
+| Leitstand, semantAH, heimlern, hausKI, Cabinet | spätere Konsumenten/Entscheidungsflächen | nicht in v0 einbinden |
+
+## 5. Eventformat v0
+
+### 5.1 Domain und Ingest
+
+Outbox-Flushes müssen eine Chronik-Domain explizit setzen:
+
+```text
+POST /v1/ingest?domain=agent.ledger
+```
+
+Begründung: `POST /v1/ingest` akzeptiert Events nur, wenn die Domain per Query-Parameter oder top-level Payload-Feld angegeben ist. v0 bevorzugt die Query-Domain, damit das Eventformat nicht von Chroniks Storage-Domain-Feld abhängig wird.
+
+### 5.2 Minimales Event
 
 ```json
 {
-  "event_id": "...",
+  "schema_version": "agent-ledger.v0",
+  "event_id": "01JZ0000000000000000000000",
   "kind": "agent.run.completed",
   "ts": "2026-07-02T12:00:00Z",
   "source": {
     "repo": "heimgewebe/grabowski",
-    "component": "grabowski"
+    "component": "grabowski",
+    "run_id": "run-20260702-120000"
   },
   "subject": {
     "repo": "heimgewebe/chronik",
-    "branch": "docs/chronik-agent-ledger-v0-plan"
+    "branch": "docs/chronik-agent-ledger-v0-plan",
+    "head": "2f9774273b"
   },
-  "caused_by": ["event:..."],
-  "evidence_refs": ["repo:path@sha256:..."],
-  "data": {}
+  "trust_tier": "declared",
+  "status": "active",
+  "caused_by": [],
+  "evidence_refs": ["github-pr:heimgewebe/chronik#192"],
+  "data": {
+    "result": "completed"
+  }
 }
 ```
 
-Kausalbezüge sind optional, aber wenn vorhanden, müssen sie stabil referenzierbar sein.
+### 5.3 ID-Regel
 
-### 4.5 Trust-Tiers
+`event_id` muss idempotent und möglichst zeitlich sortierbar sein.
 
-Nicht jedes Event ist gleich belastbar.
+Präferenz:
 
-Erlaubte `trust_tier`:
+1. ULID für neue Events.
+2. Deterministischer Hash nur, wenn ein Lauf dieselbe Event-ID bei Retry reproduzieren muss.
 
-- `observed`: direkt gemessen, z. B. Git-Head, CI-Status, Service-State
-- `declared`: Agent berichtet Ergebnis
-- `inferred`: System leitet Zustand ab
-- `corrected`: spätere Korrektur eines früheren Events
-- `superseded`: alte Deutung wurde ersetzt
+Keine UUIDv4-Pflicht, weil ein Ledger von chronologisch sortierbaren IDs profitiert.
 
-Regel: Chronik löscht Irrtümer nicht still. Chronik markiert sie. Ein Gedächtnis, das Fehler heimlich glättet, ist keine Infrastruktur, sondern PR-Abteilung.
+### 5.4 Kausalität und Context Propagation
 
-### 4.6 Evidence bleibt extern
+Producer dürfen `caused_by` nur setzen, wenn ihnen auslösende Event-IDs explizit übergeben wurden, z. B. per Task-Payload, Run-Metadaten oder Environment.
 
-Chronik speichert keine langen Belege und keine vollständigen Run-Cards.
+Cardinality-Regeln:
 
-Chronik speichert:
+- `caused_by`: maximal 3 IDs
+- `evidence_refs`: maximal 5 Referenzen
+- keine rekursive Expansion im Event selbst
 
-- kurze Eventdaten
-- Hashes
-- Pfade
-- PR-Nummern
-- Bundle-Stems
-- Run-IDs
-- kurze Reason-Codes
+Tiefe Kausalitätsgraphen sind Query-Problem, nicht Payload-Problem. Sonst wird aus Kausalität schnell ein Wollknäuel mit Doktortitel.
 
-Vibe-Lab, Repo-Dokumente, PRs und Artefakte bleiben Primärbelege.
+### 5.5 Trust und Status
 
-## 5. Phasenplan
+`trust_tier` beschreibt die Herkunftsqualität:
 
-## Phase 0 – Readiness und Stop/Go
+- `observed`: direkt gemessen, z. B. Git-Head oder CI-Status
+- `declared`: Agent berichtet ein Ergebnis
+- `inferred`: aus anderen Signalen abgeleitet
 
-Ziel: Beweisen, dass Chronik lokal reproduzierbar prüfbar ist.
+`status` beschreibt den Lebenszustand des Events:
 
-Umfang:
+- `active`
+- `superseded`
+- `corrected`
 
-1. venv-/Dependency-Pfad dokumentieren oder automatisieren.
-2. `python -m pytest -q` reproduzierbar grün machen.
-3. Metrics-Workflow-Fehler bewerten: reparieren, deaktivieren oder dokumentiert aus dem Ledger-Scope nehmen.
-4. `/health`, `/version`, `/v1/ingest`, `/v1/events` lokal smoke-testen.
-5. rLens-Bundle für Chronik erzeugen.
+Ein Korrektur-Event mit `status: "corrected"` muss ein Feld `corrects` mit mindestens einer alten Event-ID tragen.
 
-Akzeptanzkriterien:
+### 5.6 Redaction Allow-List
 
-- lokaler Testbefehl dokumentiert und grün
-- keine fehlenden Import-Dependencies im Standardpfad
-- Healthcheck-Befehl dokumentiert
-- rLens-Context-Pack für Chronik verfügbar
+`data` darf in v0 nur diese Felder enthalten:
 
-Stop-Kriterium:
+- `result`
+- `blocker_code`
+- `summary`
+- `duration_ms`
 
-- Wenn Tests nur durch lokale Sonderzustände grün werden, keine Integrationsarbeit beginnen.
+Nicht erlaubt:
 
-## Phase 1 – Agent Event Contract v0
+- Rohlogs
+- Tooloutputs
+- Prompts
+- Secrets
+- Tokens
+- personenbezogene Freitexte
+- vollständige Review-Kommentare
 
-Ziel: Minimalen, contracts-kompatiblen Eventvertrag formulieren.
+Maskierung muss vor dem Schreiben in die Outbox erfolgen, nicht erst beim Flush.
 
-Umfang:
+## 6. Outbox v0
 
-1. Neues Doku-/Schema-Konzept: `agent.ledger.event.v0`.
-2. Feldgruppen definieren:
-   - identity: `event_id`, `kind`, `ts`
-   - source: `repo`, `component`, optional `run_id`
-   - subject: Repo, PR, branch, task, artifact
-   - causality: `caused_by`, `supersedes`, `blocks`, `unblocks`
-   - trust: `trust_tier`, `confidence`
-   - evidence: `evidence_refs`
-   - payload: `data`
-3. Validierungsregeln definieren, aber nicht zu früh überverengen.
-4. Secret-/Redaction-Regeln festlegen.
+### 6.1 Pfad und Concurrency
 
-Akzeptanzkriterien:
-
-- maximal eine neue Eventfamilie-Doku oder Schema-Datei
-- Beispiel-Events für Started/Completed/Blocked
-- Validierungsentscheidung dokumentiert: lokal in Chronik vs. metarepo Contract
-
-Stop-Kriterium:
-
-- Wenn kein konkreter Consumer für v0 benannt wird, Contract nur dokumentieren, nicht implementieren.
-
-## Phase 2 – Outbox-Client
-
-Ziel: Schreiben ohne Runtime-Zwang.
-
-Umfang:
-
-1. Kleine Python-Lib oder CLI:
-   - `chronik-outbox append`
-   - `chronik-outbox flush`
-   - `chronik-outbox status`
-2. Idempotente Event-IDs.
-3. Lokaler JSONL-Spool.
-4. HTTP-Flush mit Retry/Timeout.
-5. Fehler bleiben lokal sichtbar.
-
-Akzeptanzkriterien:
-
-- Tests ohne laufenden Chronik-Dienst
-- Flush-Test gegen FastAPI TestClient oder lokalen Dienst
-- Ausfall von Chronik blockiert Producer nicht
-
-Stop-Kriterium:
-
-- Wenn Outbox mehr Komplexität erzeugt als direkter Eventnutzen, Phase 2 einfrieren und nur Doku behalten.
-
-## Phase 3 – Ein Producer: Grabowski oder Bureau
-
-Ziel: Genau ein realer Producer schreibt Events.
-
-Empfohlener erster Producer: **Grabowski**, aber nur für bounded Events:
-
-- `agent.run.started`
-- `agent.run.completed`
-- `agent.run.blocked`
-- optional `friction.recorded`
-
-Alternative erster Producer: **Bureau**, wenn Claim-/Task-Historie wichtiger ist.
-
-Entscheidungskriterium:
-
-| Kriterium | Grabowski zuerst | Bureau zuerst |
-|---|---:|---:|
-| viele reale Läufe | hoch | mittel |
-| klare Eventpunkte | hoch | hoch |
-| Risiko harter Kopplung | mittel | niedrig |
-| direkter Nutzen für nächste Agentenläufe | hoch | mittel |
-| Planungsnutzen | mittel | hoch |
-
-Empfehlung: Grabowski schreibt Outbox; Bureau liest erst später.
-
-Akzeptanzkriterien:
-
-- ein echter Agentenlauf erzeugt 2–3 Events
-- Events enthalten Repo, Branch, Run-ID, Ergebnis, Evidenzref
-- Eventschreiben ist optional/fail-soft
-- keine Secrets in Payloads
-
-Stop-Kriterium:
-
-- Wenn Events nur Duplikate existierender Logs ohne neue Abfragefähigkeit sind, Producer nicht ausweiten.
-
-## Phase 4 – Erste Consumer-View
-
-Ziel: Nutzen beweisen.
-
-Eine einzige View bauen:
-
-> Letzte Agentenläufe pro Repo mit Ergebnis, Blocker und Evidence-Ref.
-
-Mögliche Ausgabe:
+Ein Run schreibt in genau eine Datei:
 
 ```text
-repo                last_run              result      blocker              evidence
-heimgewebe/chronik  2026-07-02T12:00Z     blocked     missing-deps          run:...
-heimgewebe/lenskit  2026-07-02T11:40Z     completed   -                    pr:...
+.local/state/<producer>/chronik-outbox/<producer>_<run_id>.jsonl
 ```
+
+Damit konkurrieren parallele Agentenläufe nicht auf derselben Append-Datei.
+
+### 6.2 Lifecycle
+
+Outbox-Befehle:
+
+- `append`: Event validieren und lokal anhängen
+- `flush`: an `POST /v1/ingest?domain=agent.ledger` senden
+- `status`: ungeflushte Dateien anzeigen
+- `compact`: erfolgreich geflushte Events löschen oder in ein kompaktes Receipt verschieben
+
+Flush ist fail-soft:
+
+- kurzer Timeout
+- Retry mit Backoff
+- kein Agentenlauf scheitert wegen Chronik-Ausfall
+- erfolgreiche Flushes werden lokal bereinigt, damit kein Disk-Spam entsteht
+
+## 7. Phasenplan
+
+### Phase 0 – Readiness und Blockerklärung
 
 Akzeptanzkriterien:
 
-- Grabowski oder Bureau kann diese View lesen.
-- Die View hilft bei mindestens einem Folge-Task nachweisbar.
-- Keine UI nötig; CLI/JSON reicht.
+- One-command local setup ist dokumentiert oder vorhanden, z. B. `scripts/setup-chronik-dev.sh`
+- `python -m pytest -q` läuft reproduzierbar grün
+- lokaler Smoke für `/health`, `/version`, `/v1/ingest?domain=agent.ledger` und `/v1/events` ist dokumentiert
+- Zielhost ist entschieden oder bewusst offengelassen: heim-pc vs. heimserver
+- `CHRONIK_DATA_DIR`-Strategie ist bekannt
+- Token-/Secret-Verwaltung ist beschrieben
+- Retention für `agent.ledger` ist entschieden
+- Redaction-Allow-List ist akzeptiert
+- Chronik-rLens-Bundle oder ein dokumentierter Ersatzpfad existiert
 
-Stop-Kriterium:
+Ohne diese Punkte beginnt keine Producer-Integration.
 
-- Wenn niemand die View nutzt, keine weiteren Producer anbinden.
-
-## Phase 5 – Evidence-Verknüpfung mit Vibe-Lab
-
-Ziel: Events mit Run-Cards und Receipts verbinden, ohne Vibe-Lab zu ersetzen.
+### Phase 1 – Event Contract v0
 
 Umfang:
 
-1. `evidence_refs` für Vibe-Lab-Pfade standardisieren.
-2. Run-Card kann optional Chronik-Event-ID nennen.
-3. Chronik-Event kann Run-Card-Pfad/hash nennen.
-4. Keine doppelten Langtexte.
+- nur `agent.run.*`
+- `schema_version`
+- ULID-/ID-Regel
+- Trust-/Status-Trennung
+- Kausalitäts-Cardinality
+- Redaction-Allow-List
+- drei Beispiel-Events: started, completed, blocked
 
-Akzeptanzkriterien:
+Akzeptanzkriterium:
 
-- Ein Vibe-Lab-Run und seine Chronik-Events sind wechselseitig auffindbar.
-- Event bleibt klein.
-- Evidence bleibt Primärquelle.
+- Contract ist klein genug, dass ein synthetisches Demo-Event validiert und gelesen werden kann.
 
-## Phase 6 – Auswertung und stärkere Integration
+### Phase 2 – Outbox-Prototyp
 
-Ziel: Nach realer Nutzung entscheiden.
+Umfang:
 
-Messfenster: 30 Tage oder mindestens 20 reale Events aus mindestens 5 Läufen.
+- append/status/flush/compact
+- Datei pro Run
+- Flush gegen `POST /v1/ingest?domain=agent.ledger`
+- Tests ohne laufenden Dienst
 
-Auswertung:
+Akzeptanzkriterium:
 
-- Wie oft wurde die Chronik-View genutzt?
-- Hat sie eine Entscheidung geändert?
-- Hat sie doppelte Arbeit verhindert?
-- Wurden Events falsch, doppelt oder nutzlos geschrieben?
-- Gab es Secret-/Payload-Probleme?
-- War Betrieb stabil?
+- ein synthetisches Event kann lokal erzeugt, geflusht und wieder gelesen werden.
 
-Go-Kriterien für Ausbau:
+### Phase 3 – Consumer-View mit Demo-Daten
 
-- mindestens 2 belegte Fälle, in denen Chronik-Kontext eine Entscheidung verbessert hat
-- keine harten Producer-Blockaden durch Chronik-Ausfall
-- Eventtypen bleiben unter Kontrolle
-- ein Consumer existiert wirklich
+Diese Phase kommt vor dem ersten realen Producer.
 
-No-Go:
+View:
 
-- Events werden nur gesammelt, aber nicht gelesen
-- Payloads sind unredigiert oder zu groß
-- Chronik wird zur Pflichtdependency
-- Producer divergieren semantisch
+```text
+last agent runs by repo: repo, branch, result, blocker_code, evidence_ref, ts
+```
 
-## 6. Integrationsmatrix
+Akzeptanzkriterium:
 
-| Reposystem | v0-Aktion | v1-Aktion | Nicht tun |
-|---|---|---|---|
-| chronik | Readiness, Contract, Outbox | Views, replay-nahe Queries | semantische Bewertung übernehmen |
-| grabowski | optionaler Outbox-Producer | liest letzte relevante Läufe | Lauf blockieren, wenn Chronik down ist |
-| bureau | späterer Consumer | Claim-/Task-Historie schreiben | automatisch Tasks nur aus Events erzeugen |
-| vibe-lab | Evidence-Refs | Run-Card-Verknüpfung | Evidence in Chronik duplizieren |
-| lenskit/rLens | Bundle-Events | Freshness-/Context-Pack-Events | komplette Bundles in Chronik speichern |
-| leitstand | später View-Anzeige | Lagebild | eigene Wahrheit erzeugen |
-| semantAH/heimlern | später Pattern-Consumer | Friction-/Policy-Lernen | v0 blockieren |
+- Bureau oder Grabowski kann die View lesen und daraus mindestens eine plausible nächste Entscheidung ableiten.
 
-## 7. Risiken und Gegenmaßnahmen
+### Phase 4 – Erster realer Producer
+
+Erst nach Phase 3 darf ein realer Producer angebunden werden.
+
+Präferenz:
+
+- Grabowski schreibt optional `agent.run.started/completed/blocked` in seine Outbox.
+
+Grenzen:
+
+- kein Lauf blockiert bei Chronik-Ausfall
+- keine unredigierten Payloads
+- keine zusätzlichen Eventtypen
+
+### Phase 5 – Nutzenmessung und Exit
+
+Messung nicht nach Kalender, sondern nach Nutzung:
+
+- mindestens 15 reale Agentenläufe
+- mindestens 3 unterschiedliche Zielrepos
+- mindestens 1 dokumentierter Fall, in dem die Chronik-View eine Bureau- oder Grabowski-Entscheidung verändert hat
+
+Pausieren, wenn:
+
+- nach 15 Läufen kein Entscheidungsprozess die View konsultiert hat
+- Events nur bestehende Logs duplizieren
+- Producer ohne Consumer wachsen
+- Payloads nicht zuverlässig redigiert bleiben
+
+Ausbau erlauben, wenn:
+
+- mindestens 3 No-Brainer-Effekte aus Abschnitt 8 messbar sind oder Cabinet/Bureau explizit einen engeren Ausbau begründet
+- kein harter Runtime-Kopplungspfad entstanden ist
+- Eventtypen weiter eng begrenzt bleiben
+
+## 8. No-Brainer-Effekte
+
+Chronik wird erst dann ein No-brainer, wenn mindestens drei Effekte belegt sind:
+
+1. weniger Kontextverlust bei ähnlichen Folgeaufgaben
+2. weniger wiederholte Debugarbeit
+3. bessere Review-/Merge-Rekonstruktion
+4. bessere Bureau-Priorisierung
+5. bessere Evidence-Verknüpfung mit Vibe-Lab
+6. brauchbares Replay eines Agentenlaufs
+7. Grundlage für spätere Leitstand- oder Lern-Views
+
+## 9. Risiken und Gegenmaßnahmen
 
 | Risiko | Folge | Gegenmaßnahme |
 |---|---|---|
-| Event-Spam | Rauschen, keine Entscheidungen | maximal 5–10 Eventtypen in v0 |
-| harte Kopplung | Agentenläufe brechen bei Chronik-Ausfall | Outbox-first, Timeouts, optional |
-| doppelte Wahrheit | Vibe-Lab/Bureau/Chronik widersprechen sich | Evidence-Refs, Trust-Tiers, Korrektur-Events |
-| Secret-Leaks | Sicherheitsrisiko | Redaction-Regeln, keine Rohlogs, Payload-Limits |
-| Schema-Overengineering | langsame Umsetzung | v0 dokumentarisch klein halten |
-| Consumer fehlt | Nutzen bleibt hypothetisch | Phase 4 vor Ausbau verpflichtend |
-| falsche Sicherheit | Event = Beweis wird verwechselt | Trust-Tiers und Evidence-Refs erzwingen |
+| Producer vor Consumer | Event-Spam | Demo-Consumer-View vor realem Producer |
+| harte Kopplung | Agentenläufe brechen | Outbox-first, Timeouts, optional |
+| doppelte Wahrheit | Widerspruch zu Vibe-Lab/Bureau/GitHub | nur Evidence-Refs, keine Langtexte |
+| Secret-Leaks | Sicherheitsrisiko | Allow-List vor Outbox-Write |
+| Event-Inflation | `friction.recorded` wird Mülleimer | nur `agent.run.*` in v0 |
+| JSONL-Suche wird teuer | schlechte Querybarkeit | View klein halten; Index/SQLite erst nach Nutzennachweis prüfen |
+| Kausalitäts-Hölle | teure Graphabfragen | `caused_by` max. 3, keine Payload-Expansion |
+| Schema-Drift | spätere Migration unklar | `schema_version`, additive v0-Regeln, neue Version nur mit Consumer |
 
-## 8. Nutzenhypothesen
+## 10. Nächste PRs
 
-### Hypothese H1 – weniger Kontextverlust
+1. `docs: define agent ledger minimal plan` – dieser PR.
+2. `chore: make chronik local validation reproducible` – One-command setup, Tests, Smoke.
+3. `docs: define agent-run event v0 examples` – Beispiele und Validation-Seam.
+4. `feat: add chronik outbox prototype` – append/status/flush/compact.
+5. `feat: add agent ledger demo view` – Consumer-View mit Demo-Daten.
+6. `experiment: connect grabowski run outbox` – erster realer Producer.
 
-Wenn Grabowski vor einem neuen Repo-Task die letzten Chronik-Events zu Repo/Branch/Tasktyp lesen kann, sinkt wiederholte Kontextklärung.
+## 11. Urteil
 
-Messung:
+Der Kern bleibt stark: Chronik als kausales Betriebsgedächtnis statt Logging-Friedhof.
 
-- Anzahl manuell nachgereichter Kontextblöcke
-- Anzahl wiederentdeckter Blocker
-- qualitative Fallnotiz in Vibe-Lab oder Bureau
+Die v0-Disziplin ist enger:
 
-### Hypothese H2 – bessere Review-Historie
-
-Wenn PR-Reviews und Findings als kleine Events erfasst werden, werden Overrides und Restpunkte später rekonstruierbar.
-
-Messung:
-
-- PR mit Finding → Fix → Merge ist nachvollziehbar
-- Merge-Entscheidung referenziert Findings/Evidence
-
-### Hypothese H3 – Bureau plant realistischer
-
-Wenn Bureau Laufereignisse lesen kann, kann es Tasks nach realer Reibung priorisieren.
-
-Messung:
-
-- mindestens ein Bureau-Task wird aufgrund Chronik-Historie anders priorisiert
-
-## 9. Minimaler erster Slice
-
-Name: `chronik-agent-ledger-v0-readiness`
-
-Umfang:
-
-1. Chronik-Testumgebung stabilisieren.
-2. rLens-Bundle erzeugen.
-3. Agent-Ledger-v0-Doku/Schemagrundlage erstellen.
-4. Outbox-Format definieren, noch ohne breite Producer-Integration.
-5. Eine Demo-Outbox-Datei mit 3 Events erzeugen.
-6. Eine einfache Query/View skizzieren: letzte Agentenläufe pro Repo.
-
-Nicht enthalten:
-
-- kein systemd-Pflichtbetrieb
-- keine Grabowski-Pflichtintegration
-- keine Semantik-/ML-Auswertung
-- keine Leitstand-UI
-- keine metarepo-weite Contract-Migration ohne Review
-
-## 10. Reihenfolge der nächsten konkreten PRs
-
-### PR 1 – docs: define agent ledger plan
-
-Inhalt:
-
-- dieser Plan
-- Verweis aus `docs/PLAN_OPTIMIERUNG.md` oder `docs/architecture.md`
-
-Risiko: niedrig.
-
-### PR 2 – chore: make chronik local validation reproducible
-
-Inhalt:
-
-- dokumentierter venv/test command
-- ggf. `requirements-dev.txt` ergänzen
-- lokale Importfehler beseitigen
-
-Risiko: niedrig bis mittel.
-
-### PR 3 – docs/contracts: define agent ledger event v0 examples
-
-Inhalt:
-
-- Eventfelder
-- Beispiele
-- Trust-Tiers
-- Redaction-Regeln
-
-Risiko: mittel, weil Contract-Semantik langlebig wird.
-
-### PR 4 – feat: add outbox writer prototype
-
-Inhalt:
-
-- lokaler Append
-- Flush-Befehl
-- Tests ohne laufenden Dienst
-
-Risiko: mittel.
-
-### PR 5 – integration experiment: one producer
-
-Inhalt:
-
-- Grabowski oder Bureau erzeugt optional Events
-- fail-soft
-- 30-Tage-Auswertung festlegen
-
-Risiko: mittel bis hoch; erst nach PR 1–4.
-
-## 11. Entscheidungslogik
-
-Stärkere Integration ist erlaubt, wenn:
-
-- Phase 0 grün ist
-- ein Consumer benannt ist
-- Outbox funktioniert
-- Events klein und redigiert bleiben
-- ein messbarer Nutzenfall dokumentiert ist
-
-Stärkere Integration ist verboten, wenn:
-
-- Chronik als Pflichtdienst vor Producer-Läufen nötig wird
-- niemand Events liest
-- Eventtypen unkontrolliert wachsen
-- Evidence dupliziert statt referenziert wird
-- Secret-Safety unklar ist
-
-## 12. Epistemische Leere
-
-Folgende Informationen fehlen und sind für spätere Entscheidungen nötig:
-
-- tatsächlicher Zielhost für Chronik-Betrieb: heim-pc oder heimserver
-- produktiver `CHRONIK_DATA_DIR`
-- Token-/Secret-Verwaltung
-- reale Consumer-Priorität: Grabowski, Bureau oder Leitstand zuerst
-- gewünschte Retention pro Agent-Eventfamilie
-- erwartetes Eventvolumen
-- Datenschutz-/Redaction-Policy für Agentenpayloads
-
-Ohne diese Informationen darf v0 nicht als Produktionsintegration verkauft werden.
-
-## 13. Vorläufiges Urteil
-
-Chronik kann langfristig ein No-brainer werden, aber nur als **kausales, fail-softes Betriebsgedächtnis**.
-
-Kurzfristig lautet die richtige Strategie:
-
-1. Readiness beweisen.
-2. Eventvertrag klein halten.
-3. Outbox statt Pflichtdienst.
-4. Einen Producer anbinden.
-5. Einen Consumer-View bauen.
-6. Nutzen messen.
-7. Erst dann ausweiten.
+1. nur `agent.run.*`
+2. Query-Domain `agent.ledger`
+3. Consumer-View vor realem Producer
+4. harte Readiness-Blocker in Phase 0
+5. Redaction-Allow-List statt bloßer Secret-Hoffnung
+6. klare Exit-Metrik nach 15 Läufen
 
 Essenz:
 
-> Nicht Chronik überall anschließen. Erst eine Vergangenheit bauen, die jemand tatsächlich nutzt.
+> Erst eine kleine Vergangenheit bauen, die jemand liest. Dann erst mehr Vergangenheit produzieren.
