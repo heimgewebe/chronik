@@ -78,3 +78,49 @@ def test_format_table_contains_expected_columns():
     assert "blocker_code" in rendered
     assert "heimgewebe/chronik" in rendered
     assert "missing-consumer-view" in rendered
+
+
+def with_run(event, run_id, ts, result, kind=None, blocker_code=""):
+    copied = json.loads(json.dumps(event))
+    copied["source"]["run_id"] = run_id
+    copied["ts"] = ts
+    copied["data"] = {"result": result}
+    if blocker_code:
+        copied["data"]["blocker_code"] = blocker_code
+    if kind is not None:
+        copied["kind"] = kind
+    return copied
+
+
+def test_build_run_view_keeps_distinct_runs_for_one_repo():
+    started = load_fixture("agent-run-started.v0.json")
+    completed = load_fixture("agent-run-completed.v0.json")
+    blocked = load_fixture("agent-run-blocked.v0.json")
+    records = [
+        with_run(started, "run-a", "2026-07-02T12:00:00Z", "started"),
+        with_run(completed, "run-a", "2026-07-02T12:01:00Z", "completed"),
+        with_run(started, "run-b", "2026-07-02T12:02:00Z", "started"),
+        with_run(blocked, "run-b", "2026-07-02T12:03:00Z", "blocked", blocker_code="task-failed"),
+    ]
+
+    repo_rows = agent_ledger_view.build_view(records)
+    run_rows = agent_ledger_view.build_run_view(records)
+
+    assert len(repo_rows) == 1
+    assert repo_rows[0].result == "blocked"
+    assert len(run_rows) == 2
+    assert [(row.run_id, row.result) for row in run_rows] == [
+        ("run-a", "completed"),
+        ("run-b", "blocked"),
+    ]
+    assert run_rows[1].blocker_code == "task-failed"
+
+
+def test_run_view_table_includes_run_id_column():
+    completed = load_fixture("agent-run-completed.v0.json")
+    row = agent_ledger_view.build_run_view([completed])[0]
+
+    rendered = agent_ledger_view.format_table([row])
+
+    assert "run_id" in rendered
+    assert completed["source"]["run_id"] in rendered
