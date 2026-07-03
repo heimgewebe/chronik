@@ -106,3 +106,36 @@ Stop and do not export if:
 ## Current conclusion
 
 The pilot supports the run-view addition and a future manual export path. It does not support default-on collection, auto-export, or consumer automation.
+
+## Second pilot: real Chronik maintenance tasks
+
+Date: 2026-07-03
+State root:
+
+```text
+/home/alex/.local/state/grabowski/agent-run-ledger-real-20260703T185817Z
+```
+
+This pilot used task-local Grabowski Agent Ledger opt-in for real Chronik maintenance work.
+
+| task | command | final state |
+| --- | --- | --- |
+| `c233acc24cec49618f827320` | `py_compile tools/chronik_outbox.py tools/agent_ledger_view.py` | `completed` |
+| `d3edc8ca61a84e25be5af6ba` | `pytest tests/test_chronik_outbox.py tests/test_agent_ledger_view.py -q` | `completed` |
+| `425ab2c86ab4476ebe4cd7f0` | `make validate-local` | `completed` |
+
+Preview result:
+
+- JSONL files: 3
+- events: 6
+- repo view rows: 1
+- run view rows: 3
+- remote mutation: false
+- receipt files: 0
+- default production outbox files after the pilot: 0
+
+### Updated decision
+
+The second pilot supports local preview as the next normal operator habit. It still does not justify automatic transfer or downstream consumer activation.
+
+Proceed only with explicit manual transfer when there is a concrete target and review reason. Until then, these outbox roots are local evidence, not Chronik production data.
