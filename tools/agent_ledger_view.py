@@ -30,6 +30,17 @@ class AgentRunViewRow:
     ts: str
 
 
+@dataclass(frozen=True)
+class AgentRunLaneRow:
+    repo: str
+    run_id: str
+    branch: str
+    result: str
+    blocker_code: str
+    evidence_ref: str
+    ts: str
+
+
 def parse_ts(value: str) -> datetime:
     if not value.endswith("Z"):
         raise ValueError(f"expected UTC Z timestamp, got {value!r}")
@@ -95,8 +106,42 @@ def build_view(records: Iterable[dict[str, Any]]) -> list[AgentRunViewRow]:
     return [entry[1] for entry in sorted(latest_by_repo.values(), key=lambda item: item[1].repo)]
 
 
-def format_table(rows: list[AgentRunViewRow]) -> str:
+def build_run_view(records: Iterable[dict[str, Any]]) -> list[AgentRunLaneRow]:
+    latest_by_run: dict[tuple[str, str], tuple[datetime, AgentRunLaneRow]] = {}
+    for event in iter_agent_run_events(records):
+        subject = event["subject"]
+        source = event["source"]
+        repo = subject["repo"]
+        run_id = source["run_id"]
+        data = event.get("data", {})
+        evidence_refs = event.get("evidence_refs", [])
+        row = AgentRunLaneRow(
+            repo=repo,
+            run_id=run_id,
+            branch=subject.get("branch", ""),
+            result=data.get("result", ""),
+            blocker_code=data.get("blocker_code", ""),
+            evidence_ref=evidence_refs[0] if evidence_refs else "",
+            ts=event["ts"],
+        )
+        event_ts = parse_ts(event["ts"])
+        key = (repo, run_id)
+        current = latest_by_run.get(key)
+        if current is None or event_ts >= current[0]:
+            latest_by_run[key] = (event_ts, row)
+    return [
+        entry[1]
+        for entry in sorted(
+            latest_by_run.values(),
+            key=lambda item: (item[1].repo, item[1].run_id),
+        )
+    ]
+
+
+def format_table(rows: list[AgentRunViewRow | AgentRunLaneRow]) -> str:
     headers = ["repo", "branch", "result", "blocker_code", "evidence_ref", "ts"]
+    if rows and hasattr(rows[0], "run_id"):
+        headers = ["repo", "run_id", "branch", "result", "blocker_code", "evidence_ref", "ts"]
     values = [[getattr(row, header) for header in headers] for row in rows]
     widths = [len(header) for header in headers]
     for value_row in values:
@@ -114,13 +159,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Render the Agent Ledger v0 demo view")
     parser.add_argument("input", nargs="+", help="JSON or JSONL files containing raw events or Chronik /v1/events output")
     parser.add_argument("--format", choices=["table", "json"], default="table")
+    parser.add_argument("--view", choices=["repo", "run"], default="repo")
     args = parser.parse_args(argv)
 
     records: list[dict[str, Any]] = []
     for input_path in args.input:
         records.extend(load_records(Path(input_path)))
 
-    rows = build_view(records)
+    rows = build_run_view(records) if args.view == "run" else build_view(records)
     if args.format == "json":
         print(json.dumps([asdict(row) for row in rows], indent=2, sort_keys=True))
     else:
