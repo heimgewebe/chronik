@@ -202,6 +202,38 @@ def compact(state_root: Path = DEFAULT_STATE_ROOT) -> list[Path]:
     return removed
 
 
+def preview(state_root: Path = DEFAULT_STATE_ROOT) -> dict[str, Any]:
+    project_root = Path(__file__).resolve().parents[1]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    from tools import agent_ledger_view
+
+    files = [entry for entry in status(state_root) if not entry.flushed]
+    events: list[dict[str, Any]] = []
+    for entry in files:
+        events.extend(read_events(entry.path))
+
+    repo_rows = agent_ledger_view.build_view(events)
+    run_rows = agent_ledger_view.build_run_view(events)
+    return {
+        "domain": DOMAIN,
+        "state_root": str(state_root),
+        "mutates_remote": False,
+        "event_count": len(events),
+        "files": [
+            {
+                "path": str(entry.path),
+                "events": entry.events,
+                "bytes": entry.bytes,
+                "flushed": entry.flushed,
+            }
+            for entry in files
+        ],
+        "repo_view": [row.__dict__ for row in repo_rows],
+        "run_view": [row.__dict__ for row in run_rows],
+    }
+
+
 def print_json(value: Any) -> None:
     print(json.dumps(value, indent=2, sort_keys=True, default=str))
 
@@ -215,6 +247,7 @@ def main(argv: list[str] | None = None) -> int:
     append_parser.add_argument("event_file")
 
     subparsers.add_parser("status")
+    subparsers.add_parser("preview")
 
     flush_parser = subparsers.add_parser("flush")
     flush_parser.add_argument("--base-url", default=os.environ.get("CHRONIK_URL", "http://localhost:8788"))
@@ -231,6 +264,8 @@ def main(argv: list[str] | None = None) -> int:
             print_json({"appended": str(path)})
         elif args.command == "status":
             print_json({"files": [entry.__dict__ for entry in status(state_root)]})
+        elif args.command == "preview":
+            print_json(preview(state_root))
         elif args.command == "flush":
             receipts = flush_all(state_root=state_root, base_url=args.base_url, timeout=args.timeout)
             print_json({"receipts": [str(receipt) for receipt in receipts]})

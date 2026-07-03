@@ -103,3 +103,26 @@ def test_flush_failure_keeps_pending_file_and_no_receipt(tmp_path):
 
     assert path.exists()
     assert not chronik_outbox.receipt_path(path).exists()
+
+
+def test_preview_renders_views_without_receipts(tmp_path):
+    completed = load_event()
+    blocked = load_event()
+    blocked["kind"] = "agent.run.blocked"
+    blocked["event_id"] = "sha256:" + "b" * 64
+    blocked["source"]["run_id"] = "run-blocked"
+    blocked["ts"] = "2026-07-02T12:10:00Z"
+    blocked["data"] = {"result": "blocked", "blocker_code": "task-failed"}
+    completed_path = chronik_outbox.append_event(completed, tmp_path)
+    blocked_path = chronik_outbox.append_event(blocked, tmp_path)
+    result = chronik_outbox.preview(tmp_path)
+    assert result["mutates_remote"] is False
+    assert result["event_count"] == 2
+    assert len(result["repo_view"]) == 1
+    assert result["repo_view"][0]["result"] == "blocked"
+    assert [(row["run_id"], row["result"]) for row in result["run_view"]] == [
+        ("run-20260702-120000", "completed"),
+        ("run-blocked", "blocked"),
+    ]
+    assert not chronik_outbox.receipt_path(completed_path).exists()
+    assert not chronik_outbox.receipt_path(blocked_path).exists()
