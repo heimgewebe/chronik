@@ -3,8 +3,8 @@ ai_context_version: 1.1
 
 project:
   name: chronik
-  summary: Event ingest and processing hub.
-  role: central_event_store
+  summary: Append-only event ledger and historical evidence axis.
+  role: append_only_event_ledger
   primary_language: python
   visibility: internal
 
@@ -16,6 +16,24 @@ heimgewebe:
   wgx:
     profile_expected: true
     guard_smoke_expected: true
+
+role_contract:
+  name: append_only_event_ledger
+  authority: historical_evidence
+  owns:
+    - append_only_event_records
+    - event_validation
+    - ledger_rendering
+  consumes:
+    - bounded_event_submissions
+    - plexer_delivery_events
+  produces:
+    - historical_event_evidence
+    - validated_event_files
+  limits:
+    - no_worker_control
+    - no_orchestration_decisions
+  unavailable_effect: new_event_capture_degrades
 
 interfaces:
   consumes:
@@ -61,9 +79,12 @@ boundaries:
   not_responsible_for:
     - "UI/dashboard (that is leitstand)"
     - "Defining event schemas (contracts repo does that)"
+    - "Task ownership or completion truth (Bureau owns that)"
+    - "Worker execution or leases (Grabowski owns that)"
   dangerous_assumptions:
     - "Assume files are always small"
     - "Assume network is always reliable"
+    - "Treat ledger presence as task commitment"
 
 conventions:
   branching: "main, feature/*, hotfix/*"
