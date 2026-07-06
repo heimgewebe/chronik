@@ -1,19 +1,13 @@
 PORT := $(if $(CHRONIK_PORT),$(CHRONIK_PORT),8788)
 AUTH_TOKEN := $(if $(CHRONIK_TOKEN),$(CHRONIK_TOKEN))
 
-.PHONY: dev ingest-test ensure-token validate-local service-setup service-smoke
+.PHONY: dev ingest-test ensure-token validate-local
 
 dev:
 	uvicorn app:app --reload --port $(PORT)
 
 validate-local:
 	./scripts/validate-local.sh
-
-service-setup:
-	bash ./scripts/setup-chronik-dev.sh
-
-service-smoke:
-	bash ./scripts/chronik-smoke.sh
 
 ingest-test: ensure-token
 	curl --fail-with-body -sS -X POST "http://localhost:$(PORT)/v1/ingest?domain=aussen" \
