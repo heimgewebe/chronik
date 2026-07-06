@@ -1,1 +1,17 @@
-x
+[Unit]
+Description=chronik local event store
+Documentation=https://github.com/heimgewebe/chronik
+
+[Service]
+Type=simple
+WorkingDirectory=%h/repos/chronik
+Environment=CHRONIK_PORT=8788
+Environment=CHRONIK_HOST=127.0.0.1
+Environment=CHRONIK_DATA_DIR=%h/.local/state/chronik/data
+Environment=CHRONIK_LOG_LEVEL=INFO
+EnvironmentFile=-%h/.config/chronik/chronik.env
+ExecStart=%h/repos/chronik/.venv/bin/uvicorn app:app --host 127.0.0.1 --port 8788
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
