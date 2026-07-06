@@ -15,6 +15,6 @@ jobs:
     uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@main
     with:
       jsonl_path: tests/fixtures/aussen/sample-ok.jsonl
-      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/main/contracts/aussen.event.schema.json
+      schema_url: https://raw.githubusercontent.com/heimgewebe/contracts-mirror/contracts-v1/json/aussen.event.schema.json
       strict: false
       validate_formats: true
