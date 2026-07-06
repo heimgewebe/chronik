@@ -1,5 +1,11 @@
 # chronik
 
+## Operator ecosystem correction
+
+Chronik is the append-only event ledger and historical evidence axis in the new operator ecosystem. It stores, validates and renders events; it does not trigger tasks or make orchestration decisions. Plexer may deliver bounded operational events to `POST /v1/ingest?domain=agent.ledger`. Grabowski task-local ledger export remains opt-in/manual. Bureau, Leitstand, semantAH, heimlern and hausKI may consume Chronik data only through explicit consumer gates.
+
+This correction supersedes older text that frames Chronik mainly as a small standalone ingest service or as only a hausKI client target.
+
 `chronik` stellt einen sehr kleinen HTTP-Ingest-Dienst bereit, der strukturierte Ereignisse
 als JSON entgegennimmt und domain-spezifisch in JSON Lines Dateien ablegt. Die Anwendung ist in
 FastAPI implementiert und lässt sich lokal oder in Codespaces betreiben.
@@ -50,7 +56,7 @@ uvicorn app:app --reload --port 8788
 Ein erstes Ereignis kann anschließend mit folgendem Aufruf eingespielt werden:
 
 ```bash
-curl -X POST "http://localhost:8788/ingest/aussen" \
+curl -X POST "http://localhost:8788/v1/ingest?domain=aussen" \
      -H "Content-Type: application/json" \
      -H "X-Auth: ${CHRONIK_TOKEN}" \
      -d '{"event": "demo", "status": "ok"}'
@@ -266,7 +272,7 @@ print(ingest_event(
 Dieses Repository ist Teil des **Heimgewebe-Organismus**.
 
 Die übergeordnete Architektur, Achsen, Rollen und Contracts sind zentral beschrieben im  
-👉 [`metarepo/docs/heimgewebe-organismus.md`](https://github.com/heimgewebe/metarepo/blob/main/docs/heimgewebe-organismus.md)  
+👉 [`metarepo/docs/system/heimgewebe-organismus.md`](https://github.com/heimgewebe/metarepo/blob/main/docs/heimgewebe-organismus.md)  
 👉 [`metarepo/docs/heimgewebe-zielbild.md`](https://github.com/heimgewebe/metarepo/blob/main/docs/heimgewebe-zielbild.md).
 
 Alle Rollen-Definitionen, Datenflüsse und Contract-Zuordnungen dieses Repos
