@@ -5,7 +5,6 @@ permissions:
   contents: read
 
 concurrency:
-  # Keep PR-specific groups to prevent cross-branch cancellations.
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -16,13 +15,13 @@ on:
       - "json/**"
       - "proto/**"
       - "fixtures/**"
-      - ".github/workflows/**"   # ensure pin guard runs when ANY workflow changes
+      - ".github/workflows/**"
   pull_request:
     paths:
       - "json/**"
       - "proto/**"
       - "fixtures/**"
-      - ".github/workflows/**"   # ensure pin guard runs when ANY workflow changes
+      - ".github/workflows/**"
 
 defaults:
   run:
@@ -43,9 +42,9 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      - name: Verify 'uses:' pins for heimgewebe/contracts
+      - name: Verify uses pins for contracts mirror
         env:
-          REQUIRED_REPO: "heimgewebe/contracts/.github/workflows/contracts-ajv-reusable.yml"
+          REQUIRED_REPO: "heimgewebe/contracts-mirror/.github/workflows/contracts-ajv-reusable.yml"
           REQUIRED_REF: "contracts-v1"
         run: |
           set -euo pipefail
@@ -63,13 +62,13 @@ jobs:
             line="${line##+([[:space:]])}"
             line="${line%%+([[:space:]])}"
             if [[ "$line" =~ ^(-[[:space:]]*)?uses:[[:space:]]*'([^']+)' ]]; then
-              echo "${BASHREMATCH[2]}"; return 0
+              echo "${BASH_REMATCH[2]}"; return 0
             fi
             if [[ "$line" =~ ^(-[[:space:]]*)?uses:[[:space:]]*\"([^\"]+)\" ]]; then
-              echo "${BASHREMATCH[2]}"; return 0
+              echo "${BASH_REMATCH[2]}"; return 0
             fi
             if [[ "$line" =~ ^(-[[:space:]]*)?uses:[[:space:]]*([^[:space:]#]+) ]]; then
-              echo "${BASHREMATCH[2]}"; return 0
+              echo "${BASH_REMATCH[2]}"; return 0
             fi
             return 1
           }
@@ -98,7 +97,7 @@ jobs:
           done
 
           [[ $mismatches -eq 0 ]] || exit 1
-          echo "::notice::✅ All version pins validated"
+          echo "::notice::All version pins validated"
 
   guard:
     name: "Security: guard deletion policy (json/proto)"
@@ -121,7 +120,7 @@ jobs:
           is_truthy() { case "${1:-0}" in 1|true|yes|on) return 0 ;; esac; return 1; }
 
           if is_truthy "${ALLOW_REMOVALS:-0}"; then
-            echo "::notice::ALLOW_REMOVALS=1 → skipping guard"
+            echo "::notice::ALLOW_REMOVALS=1 -> skipping guard"
             exit 0
           fi
 
@@ -166,24 +165,24 @@ jobs:
             [[ "$p1" =~ ${PROTECTED_REGEX} ]] || continue
             case "$status" in
               D)  blocked+=("DELETE: $p1") ;;
-              R*) blocked+=("RENAME: $p1 → ${p2:-(unknown destination)}") ;;
+              R*) blocked+=("RENAME: $p1 -> ${p2:-(unknown destination)}") ;;
             esac
           done < <(git diff --name-status --diff-filter=DR "${base}...HEAD")
 
           if (( ${#blocked[@]} )); then
-            echo "::group::❌ Protected file deletions blocked"
-            printf '  • %s\n' "${blocked[@]}" | sort -u
+            echo "::group::Protected file deletions blocked"
+            printf '  - %s\n' "${blocked[@]}" | sort -u
             echo "::endgroup::"
             echo "::error::Guard violation"
             exit 1
           fi
 
-          echo "::notice::✅ Guard passed"
+          echo "::notice::Guard passed"
 
   validate:
     name: "Validate fixtures via reusable workflow"
     needs: [version-sync-check, guard]
-    uses: heimgewebe/contracts/.github/workflows/contracts-ajv-reusable.yml@contracts-v1
+    uses: heimgewebe/contracts-mirror/.github/workflows/contracts-ajv-reusable.yml@contracts-v1
     secrets: inherit
     with:
       fixtures_glob: ${{ vars.FIXTURES_GLOB || 'fixtures/**/*.jsonl' }}
