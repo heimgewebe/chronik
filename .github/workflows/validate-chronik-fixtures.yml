@@ -2,11 +2,9 @@
 name: validate-chronik-fixtures
 permissions:
   contents: read
-
 on:
   push:
   pull_request:
-
 jobs:
   check-files:
     name: check if fixture files exist
@@ -29,11 +27,10 @@ jobs:
     name: fixtures (tests/fixtures/chronik.jsonl)
     needs: check-files
     if: needs.check-files.outputs.has_fixtures == 'true'
-    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@main
     with:
       jsonl_path: tests/fixtures/chronik.jsonl
-      schema_url: >-
-        https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/chronik-fixtures.schema.json
+      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/main/contracts/event.line.schema.json
       strict: false
       validate_formats: true
 
@@ -41,10 +38,9 @@ jobs:
     name: demo (demo/chronik.jsonl)
     needs: check-files
     if: needs.check-files.outputs.has_demo == 'true'
-    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@main
     with:
       jsonl_path: demo/chronik.jsonl
-      schema_url: >-
-        https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/chronik-fixtures.schema.json
+      schema_url: https://raw.githubusercontent.com/heimgewebe/metarepo/main/contracts/event.line.schema.json
       strict: false
       validate_formats: true
