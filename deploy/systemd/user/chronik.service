@@ -13,7 +13,7 @@ Environment=CHRONIK_DATA_DIR=%h/.local/state/chronik/data
 Environment=CHRONIK_LOG_LEVEL=INFO
 Environment=PYTHONDONTWRITEBYTECODE=1
 EnvironmentFile=-%h/.config/chronik/chronik.env
-ExecStart=/bin/bash -lc 'cd "$CHRONIK_ROOT" && exec bash scripts/run-chronik-service.sh'
+ExecStart=/bin/bash -lc 'cd "$CHRONIK_ROOT" && mkdir -p "$CHRONIK_DATA_DIR" && exec .venv/bin/uvicorn app:app --host "$CHRONIK_HOST" --port "$CHRONIK_PORT"'
 Restart=on-failure
 RestartSec=5s
 UMask=0077
