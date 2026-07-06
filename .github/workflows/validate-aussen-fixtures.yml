@@ -4,17 +4,41 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+
 permissions:
   contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
+
 jobs:
+  check-fixtures:
+    name: check if fixtures exist
+    runs-on: ubuntu-latest
+    outputs:
+      has_fixtures: ${{ steps.check.outputs.has_fixtures }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        run: |
+          if [ -d "tests/fixtures/aussen" ] && [ -n "$(find tests/fixtures/aussen -name '*.jsonl')" ]; then
+            echo "has_fixtures=true" >> "$GITHUB_OUTPUT"
+          fi
+
   fixtures:
     name: fixtures (aussen JSONL)
-    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@a1984186a98a1e4214769f87649c5affc9686a53
+    needs: check-fixtures
+    if: needs.check-fixtures.outputs.has_fixtures == 'true'
+    # ⚠️ Pin auf immutablen Tag/Commit (statt main)
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@contracts-v1
     with:
+      # Das Reusable erwartet (Fleet-Variante) einen einzelnen Pfad:
+      # Für den Anfang prüfen wir die Beispiel-Fixture. Wenn weitere Dateien dazukommen,
+      # entweder weitere Jobs anlegen oder das Reusable auf Mehrfachpfade erweitern.
       jsonl_path: tests/fixtures/aussen/sample-ok.jsonl
-      schema_url: https://raw.githubusercontent.com/heimgewebe/contracts-mirror/contracts-v1/json/aussen.event.schema.json
+      # ⚠️ Schema-URL ebenfalls an den gleichen Tag pinnen
+      schema_url: >-
+        https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/aussen.event.schema.json
       strict: false
       validate_formats: true
