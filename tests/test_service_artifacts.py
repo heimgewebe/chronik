@@ -36,3 +36,16 @@ def test_service_runner_fails_closed_and_honors_bind_env():
     assert "exit 78" in text
     assert "--host" in text
     assert "--port" in text
+
+
+def test_operator_docs_close_ai_context_loop():
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    runbook = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+    ai_context = (ROOT / ".ai-context.yml").read_text(encoding="utf-8")
+
+    assert "append-only event ledger" in agents
+    assert "Runtime activation" in agents
+    assert "docs/runbook.md" in ai_context
+    assert "not an orchestrator" in runbook
+    assert "requires explicit approval" in runbook
+    assert "CHRONIK_TOKEN=dev" in runbook
