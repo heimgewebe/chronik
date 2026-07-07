@@ -1,10 +1,15 @@
 PORT := $(if $(CHRONIK_PORT),$(CHRONIK_PORT),8788)
 AUTH_TOKEN := $(if $(CHRONIK_TOKEN),$(CHRONIK_TOKEN))
+# Prefer the project venv (has pyyaml etc.); fall back to system python.
+PYTHON := $(if $(wildcard .venv/bin/python),./.venv/bin/python,python)
 
-.PHONY: dev ingest-test ensure-token validate-local
+.PHONY: dev ingest-test ensure-token validate-local check-role
 
 dev:
 	uvicorn app:app --reload --port $(PORT)
+
+check-role:
+	$(PYTHON) scripts/check_role.py
 
 validate-local:
 	./scripts/validate-local.sh
