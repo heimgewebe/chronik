@@ -20,8 +20,8 @@ CONTEXT_PATH = ROOT / ".ai-context.yml"
 
 def _load_guard():
     spec = importlib.util.spec_from_file_location("check_role", GUARD_PATH)
-    module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
@@ -71,3 +71,40 @@ def test_reformatting_does_not_break_guard(tmp_path):
     target = tmp_path / ".ai-context.yml"
     target.write_text(yaml.safe_dump(data, default_flow_style=False, indent=4), encoding="utf-8")
     assert guard.check(target) == []
+
+
+def test_invalid_yaml_is_reported(tmp_path):
+    target = tmp_path / ".ai-context.yml"
+    target.write_text("project: [", encoding="utf-8")
+    errors = guard.check(target)
+    assert any("invalid YAML" in e for e in errors)
+
+
+def test_limits_must_be_list_of_strings(tmp_path):
+    data = yaml.safe_load(CONTEXT_PATH.read_text(encoding="utf-8"))
+    data["role_contract"]["limits"] = "no_worker_control"  # string, not a list
+    target = tmp_path / ".ai-context.yml"
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    errors = guard.check(target)
+    assert any("limits must be a list of strings" in e for e in errors)
+
+
+def test_non_mapping_section_is_reported(tmp_path):
+    data = yaml.safe_load(CONTEXT_PATH.read_text(encoding="utf-8"))
+    data["role_contract"] = ["not", "a", "mapping"]
+    target = tmp_path / ".ai-context.yml"
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    errors = guard.check(target)
+    assert any("role_contract must be a YAML mapping" in e for e in errors)
+
+
+def test_main_returns_zero_on_real_context():
+    assert guard.main(["check_role.py", str(CONTEXT_PATH)]) == 0
+
+
+def test_main_returns_nonzero_on_weakened_contract(tmp_path):
+    data = yaml.safe_load(CONTEXT_PATH.read_text(encoding="utf-8"))
+    data["role_contract"]["authority"] = "orchestration_control"
+    target = tmp_path / ".ai-context.yml"
+    target.write_text(yaml.safe_dump(data), encoding="utf-8")
+    assert guard.main(["check_role.py", str(target)]) == 1

@@ -18,6 +18,7 @@ Usage: ``python scripts/check_role.py [path-to-.ai-context.yml]``
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import yaml
@@ -41,33 +42,46 @@ def check(path: Path) -> list[str]:
     """Return a list of contract violations (empty means the contract holds)."""
     errors: list[str] = []
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return [f"missing file {path}"]
+    try:
+        data = yaml.safe_load(raw) or {}
     except yaml.YAMLError as exc:
         return [f"invalid YAML in {path}: {exc}"]
 
-    if not isinstance(data, dict):
+    if not isinstance(data, Mapping):
         return [f"{path} does not contain a YAML mapping"]
 
-    def section(name: str) -> dict:
-        value = data.get(name)
-        return value if isinstance(value, dict) else {}
+    # Both sections must be mappings; report explicitly instead of masking
+    # a broken shape as an empty section.
+    project = data.get("project")
+    role_contract = data.get("role_contract")
+    if not isinstance(project, Mapping):
+        errors.append("project must be a YAML mapping")
+        project = {}
+    if not isinstance(role_contract, Mapping):
+        errors.append("role_contract must be a YAML mapping")
+        role_contract = {}
+    sections = {"project": project, "role_contract": role_contract}
 
     for (sec, key), want in EXPECTED_VALUES.items():
-        got = section(sec).get(key)
+        got = sections[sec].get(key)
         if got != want:
             errors.append(f"{sec}.{key} must be {want!r}, got {got!r}")
 
-    limits = section("role_contract").get("limits") or []
-    missing = REQUIRED_LIMITS - set(limits)
-    if missing:
-        errors.append(
-            f"role_contract.limits must include {sorted(REQUIRED_LIMITS)}, "
-            f"missing {sorted(missing)}"
-        )
+    limits = role_contract.get("limits")
+    if not isinstance(limits, list) or not all(isinstance(item, str) for item in limits):
+        errors.append("role_contract.limits must be a list of strings")
+    else:
+        missing = REQUIRED_LIMITS - set(limits)
+        if missing:
+            errors.append(
+                f"role_contract.limits must include {sorted(REQUIRED_LIMITS)}, "
+                f"missing {sorted(missing)}"
+            )
 
-    role = section("project").get("role")
+    role = project.get("role")
     if role in FORBIDDEN_ROLES:
         errors.append(f"stale/forbidden project.role {role!r}")
 

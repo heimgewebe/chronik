@@ -37,8 +37,15 @@ jobs:
             echo "INFO: .ai-context.yml missing (allowed during rollout, but should be added)."
           fi
 
+      # chronik hard-requires .ai-context.yml — the operator-ecosystem role
+      # contract lives here. This intentionally supersedes the generic
+      # "missing allowed during rollout" note in the step above.
+      # pyyaml is installed by "Install validator deps" for this same
+      # interpreter, so check_role.py's `import yaml` resolves.
       - name: Enforce operator-ecosystem role contract
-        run: python scripts/check_role.py
+        run: |
+          test -f .ai-context.yml || { echo "ERROR: .ai-context.yml is required for chronik"; exit 1; }
+          python scripts/check_role.py
 
   templates:
     # Template-Validierung ist NUR für metarepo gedacht.
