@@ -36,6 +36,8 @@ def test_service_runner_fails_closed_and_honors_bind_env():
     assert "exit 78" in text
     assert "--host" in text
     assert "--port" in text
+    assert "export CHRONIK_DATA_DIR" in text
+    assert "export CHRONIK_ROOT" in text
 
 
 def test_operator_docs_close_ai_context_loop():

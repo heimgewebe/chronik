@@ -6,10 +6,10 @@ if [ -z "${CHRONIK_TOKEN:-}" ]; then
   exit 78
 fi
 
-CHRONIK_ROOT="${CHRONIK_ROOT:-$HOME/repos/chronik}"
-CHRONIK_HOST="${CHRONIK_HOST:-127.0.0.1}"
-CHRONIK_PORT="${CHRONIK_PORT:-8788}"
-CHRONIK_DATA_DIR="${CHRONIK_DATA_DIR:-$HOME/.local/state/chronik/data}"
+export CHRONIK_ROOT="${CHRONIK_ROOT:-$HOME/repos/chronik}"
+export CHRONIK_HOST="${CHRONIK_HOST:-127.0.0.1}"
+export CHRONIK_PORT="${CHRONIK_PORT:-8788}"
+export CHRONIK_DATA_DIR="${CHRONIK_DATA_DIR:-$HOME/.local/state/chronik/data}"
 
 mkdir -p "$CHRONIK_DATA_DIR"
 cd "$CHRONIK_ROOT"
