@@ -1,10 +1,13 @@
 PORT := $(if $(CHRONIK_PORT),$(CHRONIK_PORT),8788)
 AUTH_TOKEN := $(if $(CHRONIK_TOKEN),$(CHRONIK_TOKEN))
 
-.PHONY: dev ingest-test ensure-token validate-local
+.PHONY: dev ingest-test ensure-token validate-local check-role
 
 dev:
 	uvicorn app:app --reload --port $(PORT)
+
+check-role:
+	python scripts/check_role.py
 
 validate-local:
 	./scripts/validate-local.sh

@@ -37,6 +37,9 @@ jobs:
             echo "INFO: .ai-context.yml missing (allowed during rollout, but should be added)."
           fi
 
+      - name: Enforce operator-ecosystem role contract
+        run: python scripts/check_role.py
+
   templates:
     # Template-Validierung ist NUR für metarepo gedacht.
     # In allen anderen Repos wird dieser Job automatisch übersprungen,

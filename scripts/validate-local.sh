@@ -15,6 +15,10 @@ trap cleanup EXIT
 export CHRONIK_TOKEN="${CHRONIK_TOKEN:-dev}"
 export CHRONIK_DATA_DIR="$TMP_DATA_DIR"
 
+# Operator-ecosystem role contract must not drift (append-only ledger, no
+# worker control / orchestration authority).
+./.venv/bin/python scripts/check_role.py
+
 ./.venv/bin/python -m pytest -q
 
 ./.venv/bin/python - <<'PY'
