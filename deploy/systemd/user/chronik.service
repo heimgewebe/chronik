@@ -1,0 +1,21 @@
+[Unit]
+Description=chronik local event store
+Documentation=https://github.com/heimgewebe/chronik
+
+[Service]
+Type=simple
+WorkingDirectory=%h/repos/chronik
+Environment=CHRONIK_ROOT=%h/repos/chronik
+Environment=CHRONIK_PORT=8788
+Environment=CHRONIK_HOST=127.0.0.1
+Environment=CHRONIK_DATA_DIR=%h/.local/state/chronik/data
+Environment=CHRONIK_LOG_LEVEL=INFO
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=-%h/.config/chronik/chronik.env
+ExecStart=/bin/bash %h/repos/chronik/scripts/run-chronik-service.sh
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+
+[Install]
+WantedBy=default.target
