@@ -37,12 +37,15 @@ jobs:
             echo "INFO: .ai-context.yml missing (allowed during rollout, but should be added)."
           fi
 
-      # chronik hard-requires .ai-context.yml — the operator-ecosystem role
-      # contract lives here. This intentionally supersedes the generic
-      # "missing allowed during rollout" note in the step above.
+      # This workflow is rolled out to multiple repos (see the rollout note
+      # above), so this step is scoped to chronik only: chronik hard-requires
+      # .ai-context.yml because its operator-ecosystem role contract lives
+      # there. Other repos keep the generic "missing allowed during rollout"
+      # behavior and skip this step entirely.
       # pyyaml is installed by "Install validator deps" for this same
       # interpreter, so check_role.py's `import yaml` resolves.
-      - name: Enforce operator-ecosystem role contract
+      - name: Enforce chronik operator-ecosystem role contract
+        if: github.repository == 'heimgewebe/chronik'
         run: |
           test -f .ai-context.yml || { echo "ERROR: .ai-context.yml is required for chronik"; exit 1; }
           python scripts/check_role.py

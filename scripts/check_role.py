@@ -46,9 +46,13 @@ def check(path: Path) -> list[str]:
     except FileNotFoundError:
         return [f"missing file {path}"]
     try:
-        data = yaml.safe_load(raw) or {}
+        data = yaml.safe_load(raw)
     except yaml.YAMLError as exc:
         return [f"invalid YAML in {path}: {exc}"]
+    # Only an empty document normalizes to an empty mapping; falsy scalars
+    # (false, 0, "") must still be reported as "not a mapping".
+    if data is None:
+        data = {}
 
     if not isinstance(data, Mapping):
         return [f"{path} does not contain a YAML mapping"]

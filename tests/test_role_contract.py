@@ -89,6 +89,13 @@ def test_limits_must_be_list_of_strings(tmp_path):
     assert any("limits must be a list of strings" in e for e in errors)
 
 
+def test_falsy_scalar_yaml_is_reported_as_non_mapping(tmp_path):
+    target = tmp_path / ".ai-context.yml"
+    target.write_text("false\n", encoding="utf-8")
+    errors = guard.check(target)
+    assert any("does not contain a YAML mapping" in e for e in errors)
+
+
 def test_non_mapping_section_is_reported(tmp_path):
     data = yaml.safe_load(CONTEXT_PATH.read_text(encoding="utf-8"))
     data["role_contract"] = ["not", "a", "mapping"]
