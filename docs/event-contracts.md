@@ -81,6 +81,21 @@ Nach der Verarbeitung durch den Dienst wird die Zeile in `aussen.jsonl` so ausse
 {"event": "deploy", "status": "success", "domain": "aussen"}
 ```
 
+## Schema: `runtime-lens-observation.v1` (Chronik-local contract)
+
+Chronik defines a bounded Runtime-Lens observation contract under
+`docs/chronik/runtime-lens-observation-v1.schema.json`. It links RepoBrief
+snapshot citations to runtime observations without granting verdict authority to
+either side. See `docs/chronik/runtime-lens-evidence-bridge-v1.md`.
+
+Key boundaries:
+
+- RepoBrief is code-evidence authority only.
+- Runtime sources are observation authority only.
+- `authority.verdict_authority` is always `none`.
+- The event does not permit service restart, deploy, systemd mutation, secret
+  read, runtime write, task dispatch, approval decision or correctness verdict.
+
 ## Schema: `heimgeist.self_state.snapshot` (Mirror)
 
 Chronik spiegelt das kanonische Schema aus dem Metarepo:

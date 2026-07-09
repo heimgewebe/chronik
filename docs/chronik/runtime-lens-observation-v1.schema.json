@@ -1,0 +1,230 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://heimgewebe.local/chronik/runtime-lens-observation-v1.schema.json",
+  "title": "Chronik Runtime-Lens Observation v1",
+  "description": "A bounded Chronik observation that links RepoBrief code evidence to runtime evidence without turning either side into a correctness verdict.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "kind",
+    "ts",
+    "producer",
+    "subject",
+    "code_evidence",
+    "runtime_evidence",
+    "drift",
+    "authority",
+    "boundary",
+    "non_claims"
+  ],
+  "properties": {
+    "schema_version": {"const": "runtime-lens-observation.v1"},
+    "event_id": {"$ref": "#/definitions/event_id"},
+    "kind": {"const": "runtime.lens.observation"},
+    "ts": {"$ref": "#/definitions/utc_second"},
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "component", "run_id"],
+      "properties": {
+        "repo": {"type": "string", "minLength": 1, "maxLength": 200},
+        "component": {"type": "string", "minLength": 1, "maxLength": 120},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 160},
+        "version": {"type": "string", "minLength": 1, "maxLength": 80}
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["system", "repo"],
+      "properties": {
+        "system": {"type": "string", "minLength": 1, "maxLength": 120},
+        "repo": {"type": "string", "minLength": 1, "maxLength": 200},
+        "service": {"type": "string", "minLength": 1, "maxLength": 160},
+        "environment": {"type": "string", "minLength": 1, "maxLength": 120},
+        "runtime_id": {"type": "string", "minLength": 1, "maxLength": 200}
+      }
+    },
+    "code_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority_label", "snapshot", "citations"],
+      "properties": {
+        "authority_label": {"const": "repobrief_snapshot"},
+        "snapshot": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stem", "repo", "commit", "manifest_sha256"],
+          "properties": {
+            "stem": {"type": "string", "minLength": 1, "maxLength": 180},
+            "repo": {"type": "string", "minLength": 1, "maxLength": 200},
+            "commit": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+            "manifest_sha256": {"$ref": "#/definitions/sha256_hex"},
+            "generated_at": {"$ref": "#/definitions/utc_second"}
+          }
+        },
+        "citations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "items": {"$ref": "#/definitions/code_citation"}
+        }
+      }
+    },
+    "runtime_evidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {"$ref": "#/definitions/runtime_observation"}
+    },
+    "drift": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "basis", "summary"],
+      "properties": {
+        "status": {
+          "enum": ["aligned_observed", "drift_observed", "unknown", "not_checked"]
+        },
+        "basis": {
+          "enum": [
+            "commit_identity_match",
+            "commit_identity_mismatch",
+            "runtime_newer_than_snapshot",
+            "snapshot_newer_than_runtime",
+            "missing_runtime_evidence",
+            "missing_code_evidence",
+            "inconclusive",
+            "none"
+          ]
+        },
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code_authority", "runtime_authority", "verdict_authority"],
+      "properties": {
+        "code_authority": {"const": "RepoBrief snapshot is code-evidence authority only"},
+        "runtime_authority": {"const": "Runtime source is observation authority only"},
+        "verdict_authority": {"const": "none"}
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo_brief_forbidden_actions", "chronik_forbidden_actions"],
+      "properties": {
+        "repo_brief_forbidden_actions": {
+          "type": "array",
+          "minItems": 5,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "service_restart",
+              "deploy",
+              "systemd_mutation",
+              "secret_read",
+              "runtime_write",
+              "git_mutation",
+              "pr_merge"
+            ]
+          }
+        },
+        "chronik_forbidden_actions": {
+          "type": "array",
+          "minItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "task_dispatch",
+              "approval_decision",
+              "service_restart",
+              "deploy",
+              "correctness_verdict"
+            ]
+          }
+        }
+      }
+    },
+    "non_claims": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "runtime_correctness",
+          "code_correctness",
+          "test_sufficiency",
+          "review_completeness",
+          "merge_readiness",
+          "security_correctness",
+          "regression_absence",
+          "deployment_safety"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "event_id": {
+      "type": "string",
+      "pattern": "^([0-9A-HJKMNP-TV-Z]{26}|sha256:[0-9a-f]{64})$"
+    },
+    "sha256_hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "utc_second": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "code_citation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ref", "source_file", "line_start", "line_end", "content_sha256"],
+      "properties": {
+        "ref": {"type": "string", "minLength": 1, "maxLength": 240},
+        "source_file": {"type": "string", "minLength": 1, "maxLength": 260},
+        "line_start": {"type": "integer", "minimum": 1},
+        "line_end": {"type": "integer", "minimum": 1},
+        "content_sha256": {"$ref": "#/definitions/sha256_hex"}
+      }
+    },
+    "runtime_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_type", "observed_at", "authority_label", "provenance", "summary"],
+      "properties": {
+        "source_type": {
+          "enum": [
+            "service_status",
+            "service_log_excerpt",
+            "deployment_identity",
+            "health_endpoint",
+            "metrics_snapshot",
+            "manual_observation",
+            "grabowski_receipt"
+          ]
+        },
+        "observed_at": {"$ref": "#/definitions/utc_second"},
+        "authority_label": {
+          "enum": ["observed_runtime", "declared_runtime", "inferred_runtime"]
+        },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "artifact_sha256": {"$ref": "#/definitions/sha256_hex"},
+            "command_sha256": {"$ref": "#/definitions/sha256_hex"},
+            "receipt_sha256": {"$ref": "#/definitions/sha256_hex"},
+            "uri": {"type": "string", "minLength": 1, "maxLength": 260}
+          }
+        },
+        "summary": {"type": "string", "minLength": 1, "maxLength": 500}
+      }
+    }
+  }
+}
