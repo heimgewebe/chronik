@@ -170,6 +170,8 @@ Events haben definierte TTLs basierend auf Event-Typ (konfigurierbar in `config/
 **Wichtig**: `quality` ist Envelope-Metadata und wird nicht in `payload` eingefügt. Der ursprüngliche Event-Payload bleibt unverändert.
 
 **Siehe auch:** Ausführliche Dokumentation in [`docs/chronik/event-quality.md`](docs/chronik/event-quality.md)
+
+Für Operator-Ereignisse gilt zusätzlich die [bounded operator event policy](docs/chronik/operator-event-policy-v1.json): nur Lifecycle, Deployment, terminale Failure, Policy-Block und Recovery mit benanntem Consumer; keine Commits, Diffs, Routine-Taskübergänge oder Rohlogs.
 ## Betrieb & Wartung
 * Logs: `uvicorn` schreibt standardmäßig auf STDOUT; bei Bedarf Output umleiten oder in eine zentrale Log-Pipeline integrieren.
 * Backups: Das Datenverzeichnis lässt sich als Ganzes sichern. Durch die reine Anhänge-Strategie eignen sich inkrementelle Backups.

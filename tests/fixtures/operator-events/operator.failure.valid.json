@@ -1,0 +1,11 @@
+{
+  "event_id": "failure-20260710-0001",
+  "event_type": "operator.failure",
+  "ts": "2026-07-10T08:30:00Z",
+  "source": {"repo": "heimgewebe/grabowski", "component": "task-runner", "producer_version": "b965937"},
+  "subject_id": "task-example",
+  "outcome": "failed",
+  "summary": "Task reached a terminal failure class after bounded execution.",
+  "evidence_refs": ["grabowski-task:task-example"],
+  "failure_class": "tool_exit_nonzero"
+}

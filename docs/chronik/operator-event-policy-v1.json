@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "kind": "chronik.operator_event_policy",
+  "authority": "append_only_historical_evidence_only",
+  "allowed": [
+    {
+      "event_type": "operator.lifecycle",
+      "consumer": "Grabowski and Bureau incident reconstruction",
+      "query_use": "Reconstruct start, terminal outcome, and recovery boundary of one durable operator task.",
+      "retention_days": 180,
+      "required_fields": ["event_id", "ts", "source", "subject_id", "outcome", "evidence_refs"]
+    },
+    {
+      "event_type": "operator.deployment",
+      "consumer": "Leitstand and human post-deploy review",
+      "query_use": "Reconstruct what artifact was deployed to which runtime and whether rollback occurred.",
+      "retention_days": 365,
+      "required_fields": ["event_id", "ts", "source", "subject_id", "artifact_sha256", "runtime_target", "outcome", "evidence_refs"]
+    },
+    {
+      "event_type": "operator.failure",
+      "consumer": "Heimlern offline failure analysis",
+      "query_use": "Group terminal failures by bounded failure class without retaining raw logs.",
+      "retention_days": 180,
+      "required_fields": ["event_id", "ts", "source", "subject_id", "failure_class", "outcome", "evidence_refs"]
+    },
+    {
+      "event_type": "operator.policy_block",
+      "consumer": "Bureau and security review",
+      "query_use": "Explain why a requested effect was blocked by an approval, resource, or safety policy.",
+      "retention_days": 365,
+      "required_fields": ["event_id", "ts", "source", "subject_id", "policy_id", "outcome", "evidence_refs"]
+    },
+    {
+      "event_type": "operator.recovery",
+      "consumer": "Human incident review",
+      "query_use": "Verify that a failed operation reached a known recovery or rollback state.",
+      "retention_days": 365,
+      "required_fields": ["event_id", "ts", "source", "subject_id", "recovery_action", "outcome", "evidence_refs"]
+    }
+  ],
+  "forbidden": [
+    "git.commit",
+    "git.diff",
+    "git.patch",
+    "bureau.task.created",
+    "bureau.task.started",
+    "bureau.task.updated",
+    "bureau.task.completed",
+    "operator.stdout",
+    "operator.stderr",
+    "operator.prompt",
+    "operator.secret"
+  ],
+  "redaction": {
+    "forbidden_payload_keys": ["secret", "token", "password", "authorization", "cookie", "stdout", "stderr", "diff", "patch", "prompt"],
+    "max_summary_chars": 500,
+    "raw_log_storage": false
+  },
+  "provenance": {
+    "required": true,
+    "source_fields": ["repo", "component", "producer_version"],
+    "evidence_refs_required": true
+  },
+  "boundary": {
+    "no_task_authority": true,
+    "no_command_authority": true,
+    "no_auto_retry": true,
+    "no_auto_policy": true,
+    "no_runtime_activation": true
+  }
+}

@@ -3,7 +3,7 @@ AUTH_TOKEN := $(if $(CHRONIK_TOKEN),$(CHRONIK_TOKEN))
 # Prefer the project venv (has pyyaml etc.); fall back to system python.
 PYTHON := $(if $(wildcard .venv/bin/python),./.venv/bin/python,python)
 
-.PHONY: dev ingest-test ensure-token validate-local check-role
+.PHONY: dev ingest-test ensure-token validate-local check-role validate-operator-events
 
 dev:
 	uvicorn app:app --reload --port $(PORT)
@@ -13,6 +13,10 @@ check-role:
 
 validate-local:
 	./scripts/validate-local.sh
+
+validate-operator-events:
+	$(PYTHON) scripts/validate_operator_event_policy.py
+	$(PYTHON) -m pytest -q tests/test_operator_event_policy.py
 
 ingest-test: ensure-token
 	curl --fail-with-body -sS -X POST "http://localhost:$(PORT)/v1/ingest?domain=aussen" \
