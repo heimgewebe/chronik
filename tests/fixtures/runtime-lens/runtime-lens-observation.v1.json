@@ -1,0 +1,86 @@
+{
+  "schema_version": "runtime-lens-observation.v1",
+  "event_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "kind": "runtime.lens.observation",
+  "ts": "2026-07-09T16:00:00Z",
+  "source": {
+    "repo": "heimgewebe/chronik",
+    "component": "runtime-lens-bridge-doc",
+    "run_id": "RPU-V1-T017"
+  },
+  "subject": {
+    "system": "grabowski",
+    "repo": "heimgewebe/grabowski",
+    "service": "grabowski-mcp",
+    "environment": "heim-pc",
+    "runtime_id": "2761100fb1df-srcset2d962b393f71-locke6664d600b6c-contracta3fdd357e5a7"
+  },
+  "code_evidence": {
+    "authority_label": "repobrief_snapshot",
+    "snapshot": {
+      "stem": "grabowski-main-20260709-000000",
+      "repo": "heimgewebe/grabowski",
+      "commit": "2761100fb1df8eee6779e19d3a0b692092e491ac",
+      "manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "generated_at": "2026-07-09T15:50:00Z"
+    },
+    "citations": [
+      {
+        "ref": "repobrief://snapshot/grabowski-main-20260709-000000/range/src/grabowski_mcp.py:L10-L30",
+        "source_file": "src/grabowski_mcp.py",
+        "line_start": 10,
+        "line_end": 30,
+        "content_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      }
+    ]
+  },
+  "runtime_evidence": [
+    {
+      "source_type": "deployment_identity",
+      "observed_at": "2026-07-09T15:59:00Z",
+      "authority_label": "observed_runtime",
+      "provenance": {
+        "receipt_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "summary": "Observed runtime release id and source identity match the cited RepoBrief commit."
+    }
+  ],
+  "drift": {
+    "status": "aligned_observed",
+    "basis": "commit_identity_match",
+    "summary": "Code snapshot and runtime identity align for this observation; no correctness verdict is implied."
+  },
+  "authority": {
+    "code_authority": "RepoBrief snapshot is code-evidence authority only",
+    "runtime_authority": "Runtime source is observation authority only",
+    "verdict_authority": "none"
+  },
+  "boundary": {
+    "repo_brief_forbidden_actions": [
+      "service_restart",
+      "deploy",
+      "systemd_mutation",
+      "secret_read",
+      "runtime_write",
+      "git_mutation",
+      "pr_merge"
+    ],
+    "chronik_forbidden_actions": [
+      "task_dispatch",
+      "approval_decision",
+      "service_restart",
+      "correctness_verdict",
+      "deploy"
+    ]
+  },
+  "non_claims": [
+    "runtime_correctness",
+    "code_correctness",
+    "test_sufficiency",
+    "review_completeness",
+    "merge_readiness",
+    "security_correctness",
+    "regression_absence",
+    "deployment_safety"
+  ]
+}
