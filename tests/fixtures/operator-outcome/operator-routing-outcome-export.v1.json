@@ -1,0 +1,80 @@
+{
+  "schema_version": "chronik.operator-routing-outcome-export.v1",
+  "kind": "operator.routing_outcome.exported",
+  "ts": "2026-07-10T22:41:00Z",
+  "source": {
+    "repo": "heimgewebe/grabowski",
+    "component": "operator-outcome-export",
+    "revision": "6a169c5f8f580907b64a51ba797b2d8bcc93b3e0",
+    "run_id": "outcome-export-20260710-001"
+  },
+  "payload_contract": {
+    "owner": "heimgewebe/heimlern",
+    "source_repository": "heimgewebe/heimlern",
+    "source_revision": "6d70e4900377c92b540d07bd6b71fe36677c2ba5",
+    "source_path": "contracts/operator.routing_outcome.v1.schema.json",
+    "sha256": "cff1f19814d33dd0ba084b3b5d9e2d4b6c36b1276dab35c3256912b5c457712d"
+  },
+  "payload_sha256": "c9843409b700342bfeb4539179895547a1a14e168b7dd240ba762aaee61af207",
+  "payload": {
+    "version": "operator.routing_outcome.v1",
+    "decision_id": "grabowski-route-20260710-001",
+    "ts": "2026-07-10T22:40:00Z",
+    "task_class": "contract_slice",
+    "route_used": "typed_tool",
+    "outcome": "success",
+    "resolved": true,
+    "reward": 0.8,
+    "metrics": {
+      "completion_state": "completed",
+      "friction_count": 0,
+      "blocked_by_platform_filter": false,
+      "manual_operator_needed": false,
+      "ci_state": "pass",
+      "pr_state": "merged",
+      "elapsed_seconds": 420,
+      "rework_count": 1
+    },
+    "friction": [],
+    "evidence_refs": [
+      {
+        "kind": "receipt",
+        "ref": "grabowski-task:example-outcome-001",
+        "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ],
+    "does_not_establish": [
+      "causal_route_superiority",
+      "routing_policy_readiness",
+      "auto_apply_permission"
+    ]
+  },
+  "freshness": {
+    "observed_at": "2026-07-10T22:40:00Z",
+    "exported_at": "2026-07-10T22:41:00Z",
+    "consumer_must_recompute": true
+  },
+  "evidence_refs": [
+    {
+      "kind": "receipt",
+      "ref": "grabowski-task:example-outcome-001",
+      "sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+    }
+  ],
+  "boundary": {
+    "transport_authority": "chronik_append_only_history",
+    "payload_authority": "heimlern_contract_at_pinned_revision",
+    "routing_authority": "none",
+    "raw_logs_included": false,
+    "secrets_included": false,
+    "auto_apply_permitted": false
+  },
+  "non_claims": [
+    "routing_policy_superiority",
+    "production_sample_sufficiency",
+    "automatic_application_permission",
+    "chronik_payload_contract_ownership",
+    "runtime_readiness"
+  ],
+  "event_id": "sha256:e4062c86598a9995552bfeb238705c3ad7c50ec10df93ea2c92ef26a1ddc991c"
+}

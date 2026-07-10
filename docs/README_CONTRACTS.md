@@ -13,3 +13,10 @@ This directory contains schemas and documentation defining the interfaces (contr
 ## Event Contracts
 
 See `event-contracts.md` for a detailed list of supported events and their requirements.
+
+## Heimlern operator outcome mirror
+
+`docs/mirrors/heimlern/operator.routing_outcome.v1.schema.json` is an exact,
+digest-pinned validation mirror. Heimlern remains the canonical payload owner;
+Chronik owns only the surrounding historical transport envelope. The adjacent
+`.pin.json` records source repository, revision, path, digest and non-claims.

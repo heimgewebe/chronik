@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "authority": "mirror_only",
+  "owner": "heimgewebe/heimlern",
+  "source_repository": "heimgewebe/heimlern",
+  "source_revision": "6d70e4900377c92b540d07bd6b71fe36677c2ba5",
+  "source_path": "contracts/operator.routing_outcome.v1.schema.json",
+  "sha256": "cff1f19814d33dd0ba084b3b5d9e2d4b6c36b1276dab35c3256912b5c457712d",
+  "does_not_establish": [
+    "chronik_payload_contract_ownership",
+    "automatic_mirror_refresh",
+    "routing_authority"
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.local/heimlern/operator.routing_outcome.v1.schema.json",
+  "title": "Operator Routing Outcome v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "decision_id", "ts", "task_class", "route_used", "outcome", "resolved", "reward", "metrics", "does_not_establish"],
+  "properties": {
+    "version": {"const": "operator.routing_outcome.v1"},
+    "decision_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,160}$"},
+    "ts": {"type": "string", "format": "date-time"},
+    "task_class": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{0,80}$"},
+    "route_used": {"type": "string", "pattern": "^[a-z][a-z0-9._:-]{0,119}$"},
+    "outcome": {"enum": ["success", "failure", "partial", "unknown"]},
+    "resolved": {"type": "boolean"},
+    "reward": {"type": "number", "minimum": -1.0, "maximum": 1.0},
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completion_state", "friction_count", "blocked_by_platform_filter", "manual_operator_needed"],
+      "properties": {
+        "completion_state": {"enum": ["completed", "blocked", "deferred", "failed", "unknown"]},
+        "friction_count": {"type": "integer", "minimum": 0},
+        "blocked_by_platform_filter": {"type": "boolean"},
+        "manual_operator_needed": {"type": "boolean"},
+        "ci_state": {"enum": ["pass", "fail", "pending", "not_applicable", "unknown"]},
+        "pr_state": {"enum": ["merged", "open", "closed", "not_applicable", "unknown"]},
+        "elapsed_seconds": {"type": "integer", "minimum": 0},
+        "rework_count": {"type": "integer", "minimum": 0}
+      }
+    },
+    "friction": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "surface", "resolved"],
+        "properties": {
+          "kind": {"enum": ["ci_contract", "connector_snapshot", "execution_context", "fail_closed_gate", "network", "operator_bug", "platform_filter", "unknown", "user_input"]},
+          "surface": {"type": "string", "minLength": 1, "maxLength": 160},
+          "operation": {"type": "string", "minLength": 1, "maxLength": 160},
+          "resolved": {"type": "boolean"},
+          "fallback": {"type": "string", "minLength": 1, "maxLength": 500}
+        }
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref"],
+        "properties": {
+          "kind": {"type": "string", "pattern": "^[a-z][a-z0-9._:-]{0,80}$"},
+          "ref": {"type": "string", "minLength": 1},
+          "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    },
+    "does_not_establish": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
+  }
+}

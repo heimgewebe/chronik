@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://heimgewebe.local/chronik/operator-routing-outcome-export-v1.schema.json",
+  "title": "Chronik Operator Routing Outcome Export v1",
+  "description": "A digest-bound Chronik transport envelope around a Heimlern-owned operator.routing_outcome.v1 payload.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "event_id",
+    "kind",
+    "ts",
+    "source",
+    "payload_contract",
+    "payload_sha256",
+    "payload",
+    "freshness",
+    "evidence_refs",
+    "boundary",
+    "non_claims"
+  ],
+  "properties": {
+    "schema_version": {"const": "chronik.operator-routing-outcome-export.v1"},
+    "event_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "kind": {"const": "operator.routing_outcome.exported"},
+    "ts": {"$ref": "#/$defs/utc_second"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "component", "revision", "run_id"],
+      "properties": {
+        "repo": {"const": "heimgewebe/grabowski"},
+        "component": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,120}$"},
+        "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "run_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,160}$"}
+      }
+    },
+    "payload_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["owner", "source_repository", "source_revision", "source_path", "sha256"],
+      "properties": {
+        "owner": {"const": "heimgewebe/heimlern"},
+        "source_repository": {"const": "heimgewebe/heimlern"},
+        "source_revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+        "source_path": {"const": "contracts/operator.routing_outcome.v1.schema.json"},
+        "sha256": {"$ref": "#/$defs/sha256_hex"}
+      }
+    },
+    "payload_sha256": {"$ref": "#/$defs/sha256_hex"},
+    "payload": {"type": "object"},
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["observed_at", "exported_at", "consumer_must_recompute"],
+      "properties": {
+        "observed_at": {"$ref": "#/$defs/utc_second"},
+        "exported_at": {"$ref": "#/$defs/utc_second"},
+        "consumer_must_recompute": {"const": true}
+      }
+    },
+    "evidence_refs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "ref", "sha256"],
+        "properties": {
+          "kind": {"type": "string", "pattern": "^[a-z][a-z0-9._:-]{0,80}$"},
+          "ref": {"type": "string", "minLength": 1, "maxLength": 240},
+          "sha256": {"$ref": "#/$defs/sha256_hex"}
+        }
+      }
+    },
+    "boundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["transport_authority", "payload_authority", "routing_authority", "raw_logs_included", "secrets_included", "auto_apply_permitted"],
+      "properties": {
+        "transport_authority": {"const": "chronik_append_only_history"},
+        "payload_authority": {"const": "heimlern_contract_at_pinned_revision"},
+        "routing_authority": {"const": "none"},
+        "raw_logs_included": {"const": false},
+        "secrets_included": {"const": false},
+        "auto_apply_permitted": {"const": false}
+      }
+    },
+    "non_claims": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "routing_policy_superiority",
+          "production_sample_sufficiency",
+          "automatic_application_permission",
+          "chronik_payload_contract_ownership",
+          "runtime_readiness"
+        ]
+      }
+    }
+  },
+  "$defs": {
+    "sha256_hex": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "utc_second": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"}
+  }
+}
