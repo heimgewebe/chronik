@@ -32,7 +32,7 @@ def assert_invalid(instance, loaded_schema):
 def test_runtime_lens_observation_schema_is_strict_and_bounded():
     loaded_schema = schema()
     assert loaded_schema["additionalProperties"] is False
-    assert loaded_schema["properties"]["producer"]["additionalProperties"] is False
+    assert loaded_schema["properties"]["source"]["additionalProperties"] is False
     assert loaded_schema["properties"]["subject"]["additionalProperties"] is False
     assert loaded_schema["properties"]["code_evidence"]["additionalProperties"] is False
     assert loaded_schema["properties"]["runtime_evidence"]["maxItems"] == 8
@@ -79,3 +79,25 @@ def test_runtime_lens_observation_allows_drift_without_verdict():
     }
     jsonschema.validate(event, loaded_schema)
     assert event["authority"]["verdict_authority"] == "none"
+
+
+def test_runtime_lens_fixture_satisfies_chronik_strict_provenance():
+    from provenance import validate_provenance
+
+    event = load_json(FIXTURE_PATH)
+    validate_provenance(event, strict=True)
+
+
+def test_runtime_lens_requires_complete_boundaries_and_non_claims():
+    loaded_schema = schema()
+    for section, key in (
+        ("boundary", "repo_brief_forbidden_actions"),
+        ("boundary", "chronik_forbidden_actions"),
+    ):
+        event = load_json(FIXTURE_PATH)
+        event[section][key].pop()
+        assert_invalid(event, loaded_schema)
+
+    event = load_json(FIXTURE_PATH)
+    event["non_claims"].pop()
+    assert_invalid(event, loaded_schema)

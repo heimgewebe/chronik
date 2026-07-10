@@ -37,10 +37,11 @@ kind           = runtime.lens.observation
 domain         = runtime.lens
 ```
 
-The payload has five authority-bearing sections:
+The event has a Chronik-compatible `source` provenance object plus five authority-bearing sections:
 
 | Section | Role | Boundary |
 |---|---|---|
+| `source` | producer repository, component and run identity | transport provenance only |
 | `code_evidence` | RepoBrief snapshot identity and citations | code evidence only |
 | `runtime_evidence` | observed runtime source, timestamp and provenance | runtime observation only |
 | `drift` | relation between code identity and runtime identity | observation, not verdict |
@@ -59,7 +60,7 @@ Allowed runtime evidence sources are deliberately coarse:
 - `manual_observation`
 - `grabowski_receipt`
 
-Every runtime evidence item must have:
+The top-level `source.repo`, `source.component` and `event_id` fields deliberately satisfy Chronik strict provenance enforcement. Every runtime evidence item must have:
 
 - `observed_at` as UTC timestamp;
 - `authority_label` as `observed_runtime`, `declared_runtime`, or `inferred_runtime`;

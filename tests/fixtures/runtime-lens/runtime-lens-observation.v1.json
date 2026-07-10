@@ -3,7 +3,7 @@
   "event_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "kind": "runtime.lens.observation",
   "ts": "2026-07-09T16:00:00Z",
-  "producer": {
+  "source": {
     "repo": "heimgewebe/chronik",
     "component": "runtime-lens-bridge-doc",
     "run_id": "RPU-V1-T017"
@@ -61,13 +61,16 @@
       "deploy",
       "systemd_mutation",
       "secret_read",
-      "runtime_write"
+      "runtime_write",
+      "git_mutation",
+      "pr_merge"
     ],
     "chronik_forbidden_actions": [
       "task_dispatch",
       "approval_decision",
       "service_restart",
-      "correctness_verdict"
+      "correctness_verdict",
+      "deploy"
     ]
   },
   "non_claims": [
@@ -76,6 +79,8 @@
     "test_sufficiency",
     "review_completeness",
     "merge_readiness",
-    "security_correctness"
+    "security_correctness",
+    "regression_absence",
+    "deployment_safety"
   ]
 }

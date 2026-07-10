@@ -10,7 +10,7 @@
     "event_id",
     "kind",
     "ts",
-    "producer",
+    "source",
     "subject",
     "code_evidence",
     "runtime_evidence",
@@ -24,7 +24,7 @@
     "event_id": {"$ref": "#/definitions/event_id"},
     "kind": {"const": "runtime.lens.observation"},
     "ts": {"$ref": "#/definitions/utc_second"},
-    "producer": {
+    "source": {
       "type": "object",
       "additionalProperties": false,
       "required": ["repo", "component", "run_id"],
@@ -119,7 +119,8 @@
       "properties": {
         "repo_brief_forbidden_actions": {
           "type": "array",
-          "minItems": 5,
+          "minItems": 7,
+          "maxItems": 7,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -135,7 +136,8 @@
         },
         "chronik_forbidden_actions": {
           "type": "array",
-          "minItems": 3,
+          "minItems": 5,
+          "maxItems": 5,
           "uniqueItems": true,
           "items": {
             "enum": [
@@ -151,7 +153,8 @@
     },
     "non_claims": {
       "type": "array",
-      "minItems": 6,
+      "minItems": 8,
+      "maxItems": 8,
       "uniqueItems": true,
       "items": {
         "enum": [

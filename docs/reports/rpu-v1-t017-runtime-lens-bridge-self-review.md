@@ -19,6 +19,12 @@ Changed surfaces:
 
 ## Review findings
 
+### Material findings fixed
+
+- The draft used `producer`, but Chronik strict provenance validates `source.repo` and `source.component`; the event now uses the live-compatible `source` object.
+- Boundary arrays previously allowed omission of named forbidden actions; exact full-set cardinalities are now required.
+- `non_claims` previously allowed omission of two declared safeguards; all eight are now required.
+
 ### Accepted
 
 - The schema requires explicit runtime evidence source, timestamp and provenance anchor.
@@ -49,10 +55,9 @@ This change does not add:
 
 ## Validation
 
-- `python3 -m pytest -q tests/test_runtime_lens_observation_contract.py`: 6 passed.
-- `python3 -m pytest -q`: failed with system Python before collection because project dependencies such as `filelock` and `limits` were missing.
-- `.venv/bin/python -m pytest -q`: 251 passed, 1 warning.
-- `make validate-local`: passed; includes `251 passed, 1 warning` and local validation smoke.
+- `/home/alex/repos/chronik/.venv/bin/python -m pytest -q`: 253 passed, 1 warning.
+- `/home/alex/repos/chronik/.venv/bin/python scripts/check_role.py`: role-contract OK.
+- The fixture passes `validate_provenance(..., strict=True)`.
 - `git diff --check`: passed.
 
 ## Does not establish
