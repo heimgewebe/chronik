@@ -81,6 +81,16 @@ Nach der Verarbeitung durch den Dienst wird die Zeile in `aussen.jsonl` so ausse
 {"event": "deploy", "status": "success", "domain": "aussen"}
 ```
 
+## Schema: `chronik.operator-routing-outcome-export.v1`
+
+Chronik defines a strict transport envelope for the Heimlern-owned
+`operator.routing_outcome.v1` payload. The envelope binds source identity, the
+pinned payload-contract revision and digest, canonical payload bytes, event
+identity, observation/export timestamps and evidence-reference digests. It
+preserves transport-only authority and rejects raw output, secret-shaped text,
+private absolute paths and automatic application. See
+`docs/chronik/operator-routing-outcome-export-v1.md`.
+
 ## Schema: `runtime-lens-observation.v1` (Chronik-local contract)
 
 Chronik defines a bounded Runtime-Lens observation contract under
