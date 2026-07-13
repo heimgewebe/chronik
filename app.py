@@ -40,15 +40,14 @@ from storage import (
     write_payload,
 )
 from provenance import ProvenanceError, validate_provenance, has_provenance
-from retention import get_ttl_for_event, compute_expiry_date
 from validation import (
     normalize_heimgeist_item,
     parse_iso_ts,
     prewarm_validators,
     validate_insights_daily_payload,
 )
-from quality import compute_signal_strength, compute_completeness
 from integrity import IntegrityManager
+from canonical_ingest import build_envelope
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
@@ -444,55 +443,27 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             # Non-strict validation: just log warnings
             validate_provenance(normalized, strict=False)
         
-        # 1c. Compute quality markers (if enabled) - but don't mutate payload
-        quality_meta = None
-        if is_quality_enabled:
-            signal_strength = compute_signal_strength(normalized)
-            completeness = compute_completeness(normalized)
-            quality_meta = {
-                "signal_strength": signal_strength.value,
-                "completeness": completeness,
-            }
-            events_signal_strength.labels(domain=domain_label, signal_strength=quality_meta["signal_strength"]).inc()
-        
-        # 1d. Compute retention metadata
-        # Extract event_type from event itself (not from domain)
-        # Priority: kind > type > event
+        # 1c. Identify the event type for bounded metrics. Canonical quality and
+        # retention metadata are computed once by the shared envelope constructor.
         event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event")
-        
-        # For retention: use event_type if available, otherwise apply default policy
-        # Note: We do NOT use domain as event_type - they serve different purposes
-        retention_event_type = event_type if event_type else "unknown"
-        
-        # For metrics: use domain as fallback to preserve observability
-        # This allows us to see which domains produce events without type fields
         metrics_event_type = event_type if event_type else f"domain.{dom}"
-        
-        # Sanitize for metrics to prevent label pollution/entropy
         event_type_for_metrics = _sanitize_metric_label(metrics_event_type)
-        
-        ttl_days = get_ttl_for_event(retention_event_type)
         received_dt = datetime.now(timezone.utc)
-        expiry_dt = compute_expiry_date(retention_event_type, received_dt)
-        
-        retention_meta = {
-            "ttl_days": ttl_days,
-            "expires_at": expiry_dt.strftime("%Y-%m-%dT%H:%M:%SZ") if expiry_dt else None,
-        }
 
-        # 2. Canonical Wrapping (All domains)
-        # Payload remains unmodified; quality and retention are envelope metadata
-        wrapper = {
-            "domain": dom,
-            "received_at": received_dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "payload": normalized,
-            "retention": retention_meta,
-        }
+        # 2. Canonical Wrapping (All domains). API and local importers share
+        # this constructor so receipt hashes and retention metadata do not drift.
+        wrapper = build_envelope(
+            dom,
+            normalized,
+            received_at=received_dt,
+            quality_enabled=is_quality_enabled,
+        )
         
-        # Add quality to wrapper (not payload) if enabled
-        if quality_meta:
-            wrapper["quality"] = quality_meta
-        
+        if is_quality_enabled:
+            events_signal_strength.labels(
+                domain=domain_label,
+                signal_strength=wrapper["quality"]["signal_strength"],
+            ).inc()
         # Track metrics with sanitized labels (both domain and event_type)
         events_ingested_total.labels(domain=domain_label, event_type=event_type_for_metrics).inc()
         

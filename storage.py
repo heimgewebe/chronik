@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import logging
 import os
 import re
@@ -25,6 +26,7 @@ __all__ = [
     "target_filename",
     "safe_target_path",
     "write_payload",
+    "write_payload_unique",
     "read_tail",
     "read_last_line",
     "scan_domain",
@@ -226,6 +228,10 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
     elif mode == "a":
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         py_mode = "a"
+        encoding = "utf-8"
+    elif mode == "a+":
+        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
+        py_mode = "a+"
         encoding = "utf-8"
     else:
         raise ValueError(f"unsupported mode: {mode}")
@@ -492,3 +498,70 @@ def write_payload(domain: str, lines: Iterable[str]) -> None:
                 logger.error("disk full", extra={"file": str(target_path)})
                 raise StorageFullError("insufficient storage") from exc
             raise
+
+
+def write_payload_unique(domain: str, lines: Iterable[str], *, identity_key: str = "event_id") -> tuple[int, int]:
+    """Append JSON lines once per payload identity under the domain lock.
+
+    Returns ``(written, skipped)``. Existing malformed lines are preserved but do
+    not participate in identity matching. The lock covers both scan and append.
+    """
+    candidates = list(lines)
+    if not candidates:
+        return 0, 0
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    parsed: list[tuple[str, str, bytes]] = []
+    candidate_payloads: dict[str, bytes] = {}
+    for line in candidates:
+        try:
+            value = json.loads(line)
+            payload = value.get("payload", value) if isinstance(value, dict) else None
+            identity = payload.get(identity_key) if isinstance(payload, dict) else None
+            canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
+            raise StorageError("invalid JSON line") from exc
+        if not isinstance(identity, str) or not identity:
+            raise StorageError(f"missing {identity_key}")
+        previous = candidate_payloads.get(identity)
+        if previous is not None and previous != canonical_payload:
+            raise StorageError(f"conflicting {identity_key}: {identity}")
+        candidate_payloads.setdefault(identity, canonical_payload)
+        parsed.append((identity, line, canonical_payload))
+
+    with _locked_open(target_path, "a+") as fh:
+        fh.seek(0)
+        existing: dict[str, bytes] = {}
+        for raw in fh:
+            try:
+                value = json.loads(raw)
+                payload = value.get("payload", value) if isinstance(value, dict) else None
+                identity = payload.get(identity_key) if isinstance(payload, dict) else None
+                canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+            except (TypeError, ValueError):
+                continue
+            if isinstance(identity, str):
+                previous = existing.get(identity)
+                if previous is not None and previous != canonical_payload:
+                    raise StorageError(f"conflicting {identity_key}: {identity}")
+                existing.setdefault(identity, canonical_payload)
+        for identity, _, canonical_payload in parsed:
+            previous = existing.get(identity)
+            if previous is not None and previous != canonical_payload:
+                raise StorageError(f"conflicting {identity_key}: {identity}")
+        written = 0
+        skipped = 0
+        for identity, line, canonical_payload in parsed:
+            if identity in existing:
+                skipped += 1
+                continue
+            fh.write(line)
+            fh.write("\n")
+            existing[identity] = canonical_payload
+            written += 1
+        fh.flush()
+        os.fsync(fh.fileno())
+    return written, skipped
