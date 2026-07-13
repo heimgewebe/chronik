@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import json
 import logging
 import os
 import re
@@ -513,38 +514,53 @@ def write_payload_unique(domain: str, lines: Iterable[str], *, identity_key: str
     except DomainError as exc:
         raise StorageError("invalid target path") from exc
 
-    parsed: list[tuple[str, str]] = []
+    parsed: list[tuple[str, str, bytes]] = []
+    candidate_payloads: dict[str, bytes] = {}
     for line in candidates:
         try:
-            value = __import__("json").loads(line)
-        except ValueError as exc:
+            value = json.loads(line)
+            payload = value.get("payload", value) if isinstance(value, dict) else None
+            identity = payload.get(identity_key) if isinstance(payload, dict) else None
+            canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+        except (TypeError, ValueError) as exc:
             raise StorageError("invalid JSON line") from exc
-        identity = value.get("payload", value).get(identity_key) if isinstance(value, dict) else None
         if not isinstance(identity, str) or not identity:
             raise StorageError(f"missing {identity_key}")
-        parsed.append((identity, line))
+        previous = candidate_payloads.get(identity)
+        if previous is not None and previous != canonical_payload:
+            raise StorageError(f"conflicting {identity_key}: {identity}")
+        candidate_payloads.setdefault(identity, canonical_payload)
+        parsed.append((identity, line, canonical_payload))
 
     with _locked_open(target_path, "a+") as fh:
         fh.seek(0)
-        existing: set[str] = set()
+        existing: dict[str, bytes] = {}
         for raw in fh:
             try:
-                value = __import__("json").loads(raw)
-            except ValueError:
+                value = json.loads(raw)
+                payload = value.get("payload", value) if isinstance(value, dict) else None
+                identity = payload.get(identity_key) if isinstance(payload, dict) else None
+                canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+            except (TypeError, ValueError):
                 continue
-            payload = value.get("payload", value) if isinstance(value, dict) else None
-            identity = payload.get(identity_key) if isinstance(payload, dict) else None
             if isinstance(identity, str):
-                existing.add(identity)
+                previous = existing.get(identity)
+                if previous is not None and previous != canonical_payload:
+                    raise StorageError(f"conflicting {identity_key}: {identity}")
+                existing.setdefault(identity, canonical_payload)
+        for identity, _, canonical_payload in parsed:
+            previous = existing.get(identity)
+            if previous is not None and previous != canonical_payload:
+                raise StorageError(f"conflicting {identity_key}: {identity}")
         written = 0
         skipped = 0
-        for identity, line in parsed:
+        for identity, line, canonical_payload in parsed:
             if identity in existing:
                 skipped += 1
                 continue
             fh.write(line)
             fh.write("\n")
-            existing.add(identity)
+            existing[identity] = canonical_payload
             written += 1
         fh.flush()
         os.fsync(fh.fileno())

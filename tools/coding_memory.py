@@ -27,10 +27,13 @@ def main(argv=None):
     args=parser.parse_args(argv)
     try:
         data_path = Path(args.data_dir).expanduser()
+        query_filters = filters(args) if args.command in {"query", "freeze"} else None
+        if query_filters is not None:
+            coding_memory.validate_query(**query_filters)
         if args.command == "query" and not data_path.exists():
             result = {
                 "schema_version": "chronik-coding-history.v1",
-                "query": filters(args),
+                "query": query_filters,
                 "events": [],
                 "event_ids": [],
                 "historical_only": True,
@@ -39,8 +42,8 @@ def main(argv=None):
             print(json.dumps(result,indent=2,sort_keys=True)); return 0
         coding_memory.configure_data_dir(data_path, create=args.command in {"import", "freeze"})
         if args.command=="import": result=coding_memory.import_events(load(args.input))
-        elif args.command=="query": result=coding_memory.query_history(**filters(args))
-        else: result=coding_memory.freeze_history(args.output,**filters(args))
+        elif args.command=="query": result=coding_memory.query_history(**query_filters)
+        else: result=coding_memory.freeze_history(args.output,**query_filters)
     except (OSError,ValueError) as exc:
         print(f"chronik-coding-memory: {exc}",file=sys.stderr); return 2
     print(json.dumps(result,indent=2,sort_keys=True)); return 0

@@ -31,6 +31,16 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _parse_timestamp(value: str, *, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{field} must include a timezone")
+    return parsed.astimezone(timezone.utc)
+
+
 def configure_data_dir(path: Path, *, create: bool) -> Path:
     candidate = path.expanduser()
     if create:
@@ -54,6 +64,7 @@ def validate_event(event: dict[str, Any]) -> None:
         error = errors[0]
         path = "/".join(str(part) for part in error.absolute_path) or "<root>"
         raise ValueError(f"invalid coding event at {path}: {error.message}")
+    _parse_timestamp(event["ts"], field="ts")
 
 
 def import_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
@@ -96,9 +107,14 @@ def _records() -> list[dict[str, Any]]:
     return rows
 
 
-def query_history(*, repo: str, component: str | None = None, operation: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> dict[str, Any]:
+def validate_query(*, repo: str, component: str | None = None, operation: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> datetime | None:
     if not repo or limit < 1 or limit > 500:
         raise ValueError("repo and limit 1..500 are required")
+    return _parse_timestamp(since, field="since") if since is not None else None
+
+
+def query_history(*, repo: str, component: str | None = None, operation: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> dict[str, Any]:
+    since_at = validate_query(repo=repo, component=component, operation=operation, outcome=outcome, since=since, limit=limit)
     selected: list[dict[str, Any]] = []
     for row in _records():
         event = row["payload"]
@@ -113,10 +129,11 @@ def query_history(*, repo: str, component: str | None = None, operation: str | N
         actual_outcome = data.get("outcome") or data.get("result")
         if outcome and actual_outcome != outcome:
             continue
-        if since and event.get("ts", "") < since:
+        event_at = _parse_timestamp(event["ts"], field="ts")
+        if since_at is not None and event_at < since_at:
             continue
-        selected.append(row)
-    selected.sort(key=lambda row: (row["payload"]["ts"], row["payload"]["event_id"]), reverse=True)
+        selected.append({**row, "event_at": event_at})
+    selected.sort(key=lambda row: (row["event_at"], row["payload"]["event_id"]), reverse=True)
     selected = selected[:limit]
     query = {"repo": repo, "component": component, "operation": operation, "outcome": outcome, "since": since, "limit": limit}
     return {
