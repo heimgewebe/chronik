@@ -18,10 +18,18 @@
     "data"
   ],
   "properties": {
-    "schema_version": {"const": "agent-run-event.v0"},
-    "event_id": {"$ref": "#/definitions/event_id"},
+    "schema_version": {
+      "const": "agent-run-event.v0"
+    },
+    "event_id": {
+      "$ref": "#/definitions/event_id"
+    },
     "kind": {
-      "enum": ["agent.run.started", "agent.run.completed", "agent.run.blocked"]
+      "enum": [
+        "agent.run.started",
+        "agent.run.completed",
+        "agent.run.blocked"
+      ]
     },
     "ts": {
       "type": "string",
@@ -30,59 +38,169 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repo", "component", "run_id"],
+      "required": [
+        "repo",
+        "component",
+        "run_id"
+      ],
       "properties": {
-        "repo": {"type": "string", "minLength": 1, "maxLength": 200},
-        "component": {"type": "string", "minLength": 1, "maxLength": 80},
-        "run_id": {"type": "string", "minLength": 1, "maxLength": 160}
+        "repo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
       }
     },
     "subject": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repo"],
+      "required": [
+        "repo"
+      ],
       "properties": {
-        "repo": {"type": "string", "minLength": 1, "maxLength": 200},
-        "branch": {"type": "string", "minLength": 1, "maxLength": 200},
-        "head": {"type": "string", "minLength": 1, "maxLength": 80}
+        "repo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "branch": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "head": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "component": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "operation": {
+          "enum": [
+            "implement",
+            "review",
+            "merge",
+            "deploy",
+            "runtime_verify",
+            "recovery"
+          ]
+        },
+        "bureau_task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "pr_number": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
-    "trust_tier": {"enum": ["observed", "declared", "inferred"]},
-    "status": {"enum": ["active", "superseded", "corrected"]},
+    "trust_tier": {
+      "enum": [
+        "observed",
+        "declared",
+        "inferred"
+      ]
+    },
+    "status": {
+      "enum": [
+        "active",
+        "superseded",
+        "corrected"
+      ]
+    },
     "corrects": {
       "type": "array",
       "minItems": 1,
       "maxItems": 3,
       "uniqueItems": true,
-      "items": {"$ref": "#/definitions/event_id"}
+      "items": {
+        "$ref": "#/definitions/event_id"
+      }
     },
     "caused_by": {
       "type": "array",
       "maxItems": 3,
       "uniqueItems": true,
-      "items": {"$ref": "#/definitions/event_id"}
+      "items": {
+        "$ref": "#/definitions/event_id"
+      }
     },
     "evidence_refs": {
       "type": "array",
       "maxItems": 5,
       "uniqueItems": true,
-      "items": {"type": "string", "minLength": 1, "maxLength": 240}
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      }
     },
     "data": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "result": {"enum": ["started", "completed", "blocked"]},
-        "blocker_code": {"type": "string", "minLength": 1, "maxLength": 80},
-        "summary": {"type": "string", "minLength": 1, "maxLength": 500},
-        "duration_ms": {"type": "integer", "minimum": 0}
+        "result": {
+          "enum": [
+            "started",
+            "completed",
+            "blocked"
+          ]
+        },
+        "blocker_code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "duration_ms": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "outcome": {
+          "enum": [
+            "completed",
+            "blocked",
+            "failed",
+            "reverted",
+            "outcome_unknown"
+          ]
+        }
       }
     }
   },
   "allOf": [
     {
-      "if": {"properties": {"status": {"const": "corrected"}}},
-      "then": {"required": ["corrects"]}
+      "if": {
+        "properties": {
+          "status": {
+            "const": "corrected"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "corrects"
+        ]
+      }
     }
   ],
   "definitions": {
