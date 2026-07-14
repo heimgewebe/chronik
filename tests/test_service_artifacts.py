@@ -50,6 +50,8 @@ def test_outbox_import_units_are_direct_bounded_and_hardened():
     assert "ProtectSystem=strict" in service
     assert "ProtectHome=read-only" in service
     assert "NoNewPrivileges=true" in service
+    assert "PrivateDevices=true" not in service
+    assert "ProtectKernelModules=true" not in service
     assert "OnUnitActiveSec=2min" in timer
     assert "Persistent=true" in timer
     assert "WantedBy=timers.target" in timer
