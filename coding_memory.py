@@ -211,9 +211,9 @@ def _record_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     snapshot_sha256 = sha256_bytes(raw_snapshot)
     start_offset = 0
 
-    for raw_line in raw_snapshot.splitlines(keepends=True):
-        next_offset = start_offset + len(raw_line)
-        content = raw_line[:-1]
+    complete_lines = raw_snapshot.split(b"\n")[:-1] if raw_snapshot else []
+    for content in complete_lines:
+        next_offset = start_offset + len(content) + 1
         if not content.strip():
             start_offset = next_offset
             continue

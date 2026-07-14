@@ -190,3 +190,15 @@ def test_read_domain_snapshot_validates_offset_and_complete_boundary(tmp_path,mo
         storage.read_domain_snapshot(coding_memory.DOMAIN,-1)
     with pytest.raises(storage.StorageError,match="non-negative integer"):
         storage.read_domain_snapshot(coding_memory.DOMAIN,True)
+
+
+def test_snapshot_treats_only_lf_as_jsonl_record_boundary(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); target=tmp_path/"agent.ledger.jsonl"
+    raw=b'bad\rstill-one-record\n'
+    target.write_bytes(raw)
+    result=coding_memory.query_history(repo="heimgewebe/example")
+    snapshot=result["ledger_snapshot"]
+    assert snapshot["sha256"]==hashlib.sha256(raw).hexdigest()
+    assert snapshot["total_record_count"]==1
+    assert snapshot["invalid_record_count"]==1
+    assert snapshot["diagnostics"][0]["next_offset"]==len(raw)
