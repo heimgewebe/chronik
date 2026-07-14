@@ -137,3 +137,68 @@ def test_query_cli_supports_host_target_without_creating_data_dir(tmp_path):
     assert result.returncode==0,result.stderr
     assert json.loads(result.stdout)["target"]=={"scope":"host","host":"heim-pc"}
     assert not missing.exists()
+
+
+def test_snapshot_hashes_original_invalid_utf8_bytes_without_collision(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); target=tmp_path/"agent.ledger.jsonl"
+    first=b'{"payload":"\xff"}\n'; second=b'{"payload":"\xfe"}\n'
+    target.write_bytes(first)
+    first_result=coding_memory.query_history(repo="heimgewebe/example")
+    target.write_bytes(second)
+    second_result=coding_memory.query_history(repo="heimgewebe/example")
+    first_snapshot=first_result["ledger_snapshot"]; second_snapshot=second_result["ledger_snapshot"]
+    assert first_snapshot["sha256"]==hashlib.sha256(first).hexdigest()
+    assert second_snapshot["sha256"]==hashlib.sha256(second).hexdigest()
+    assert first_snapshot["sha256"]!=second_snapshot["sha256"]
+    assert first_snapshot["invalid_record_count"]==second_snapshot["invalid_record_count"]==1
+    assert first_snapshot["diagnostics"][0]["offset"]==0
+    assert first_snapshot["diagnostics"][0]["next_offset"]==len(first)
+
+
+def test_snapshot_excludes_incomplete_tail_but_includes_complete_corruption(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); coding_memory.import_events([event()]); target=tmp_path/"agent.ledger.jsonl"
+    valid=target.read_bytes(); complete_corruption=b'not-json\n'; incomplete=b'partial-tail'
+    target.write_bytes(valid+complete_corruption+incomplete)
+    result=coding_memory.query_history(repo="heimgewebe/example")
+    bounded=valid+complete_corruption; snapshot=result["ledger_snapshot"]
+    assert snapshot["sha256"]==hashlib.sha256(bounded).hexdigest()
+    assert snapshot["complete_bytes"]==len(bounded)
+    assert snapshot["total_record_count"]==2
+    assert snapshot["valid_record_count"]==1 and snapshot["invalid_record_count"]==1
+    assert result["event_ids"]==[event()["event_id"]]
+
+
+def test_query_uses_one_immutable_snapshot_even_if_file_grows_after_read(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); coding_memory.import_events([event()]); target=tmp_path/"agent.ledger.jsonl"
+    original=storage.read_domain_snapshot; observed=target.read_bytes(); calls=[]
+    def read_then_append(domain):
+        calls.append(domain); snapshot=original(domain); target.write_bytes(snapshot+b'not-json\n'); return snapshot
+    monkeypatch.setattr(storage,"read_domain_snapshot",read_then_append)
+    result=coding_memory.query_history(repo="heimgewebe/example")
+    assert calls==[coding_memory.DOMAIN]
+    assert result["ledger_snapshot"]["sha256"]==hashlib.sha256(observed).hexdigest()
+    assert result["ledger_snapshot"]["integrity_valid"] is True
+    assert target.read_bytes()==observed+b'not-json\n'
+
+
+def test_read_domain_snapshot_validates_offset_and_complete_boundary(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); target=tmp_path/"agent.ledger.jsonl"
+    target.write_bytes(b'one\ntwo\npartial')
+    assert storage.read_domain_snapshot(coding_memory.DOMAIN)==b'one\ntwo\n'
+    assert storage.read_domain_snapshot(coding_memory.DOMAIN,4)==b'two\n'
+    with pytest.raises(storage.StorageError,match="non-negative integer"):
+        storage.read_domain_snapshot(coding_memory.DOMAIN,-1)
+    with pytest.raises(storage.StorageError,match="non-negative integer"):
+        storage.read_domain_snapshot(coding_memory.DOMAIN,True)
+
+
+def test_snapshot_treats_only_lf_as_jsonl_record_boundary(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); target=tmp_path/"agent.ledger.jsonl"
+    raw=b'bad\rstill-one-record\n'
+    target.write_bytes(raw)
+    result=coding_memory.query_history(repo="heimgewebe/example")
+    snapshot=result["ledger_snapshot"]
+    assert snapshot["sha256"]==hashlib.sha256(raw).hexdigest()
+    assert snapshot["total_record_count"]==1
+    assert snapshot["invalid_record_count"]==1
+    assert snapshot["diagnostics"][0]["next_offset"]==len(raw)

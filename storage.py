@@ -29,6 +29,7 @@ __all__ = [
     "write_payload_unique",
     "read_tail",
     "read_last_line",
+    "read_domain_snapshot",
     "scan_domain",
     "list_domains",
     "get_lock_path",
@@ -301,6 +302,46 @@ def read_last_line(domain: str) -> str | None:
     """
     lines = read_tail(domain, 1)
     return lines[0] if lines else None
+
+
+def read_domain_snapshot(domain: str, start_offset: int = 0) -> bytes:
+    """Read one byte-exact, append-stable snapshot of complete JSONL records.
+
+    The file size is captured from the opened descriptor before reading. Bytes
+    appended afterwards are outside this snapshot. An incomplete tail is
+    excluded so parsing, offsets and hashes share one complete-record boundary.
+    """
+    if not isinstance(start_offset, int) or isinstance(start_offset, bool) or start_offset < 0:
+        raise StorageError("start_offset must be a non-negative integer")
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    try:
+        with _safe_open_read(target_path) as fh:
+            observed_size = os.fstat(fh.fileno()).st_size
+            if start_offset >= observed_size:
+                return b""
+            fh.seek(start_offset)
+            remaining = observed_size - start_offset
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = fh.read(min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return b""
+        raise StorageError("read error") from exc
+
+    snapshot = b"".join(chunks)
+    if snapshot.endswith(b"\n"):
+        return snapshot
+    last_newline = snapshot.rfind(b"\n")
+    return snapshot[: last_newline + 1] if last_newline >= 0 else b""
 
 
 def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, str]]:
