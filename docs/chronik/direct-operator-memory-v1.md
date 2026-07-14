@@ -60,8 +60,11 @@ kanonisches Feld; `subject.operation` bleibt nur als Rückwärtskompatibilität.
 - Eine unvollständige letzte JSONL-Zeile, ungültiges JSON, Vertragsdrift oder ein
   fremder Producer führt für die betroffene Quelldatei zu einem Fehler ohne
   Importbeleg.
-- Jede Abfrage liefert `ledger_snapshot` mit SHA-256, vollständiger Bytegrenze,
-  gültigen und ungültigen Datensätzen sowie begrenzten Diagnosen.
+- Jede Abfrage liest einen einzelnen, an der letzten vollständigen JSONL-Zeile
+  begrenzten Rohbyte-Snapshot. SHA-256, Bytegrenze, Parsing und Diagnosen werden
+  ausschließlich aus diesem unveränderlichen Snapshot abgeleitet. Ungültiges
+  UTF-8 bleibt dadurch bytegenau unterscheidbar und wird als ungültiger Datensatz
+  ausgewiesen.
 - Historische Abfragen bleiben bei beschädigten Datensätzen lesbar, weisen den
   Zustand aber mit `integrity_valid = false` aus. Eine eingefrorene Kohorte wird
   in diesem Zustand verweigert, damit kein scheinbar vollständiger Beleg aus

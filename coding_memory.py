@@ -206,17 +206,20 @@ def _record_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
     invalid_record_count = 0
     total_record_count = 0
-    complete_bytes = 0
-    snapshot = hashlib.sha256()
+    raw_snapshot = storage.read_domain_snapshot(DOMAIN)
+    complete_bytes = len(raw_snapshot)
+    snapshot_sha256 = sha256_bytes(raw_snapshot)
+    start_offset = 0
 
-    for start_offset, next_offset, line in storage.scan_domain(DOMAIN):
-        encoded = line.encode("utf-8") + b"\n"
-        snapshot.update(encoded)
-        complete_bytes = next_offset
-        if not line.strip():
+    for raw_line in raw_snapshot.splitlines(keepends=True):
+        next_offset = start_offset + len(raw_line)
+        content = raw_line[:-1]
+        if not content.strip():
+            start_offset = next_offset
             continue
         total_record_count += 1
         try:
+            line = content.decode("utf-8")
             envelope = json.loads(line)
             if not isinstance(envelope, dict):
                 raise ValueError("envelope must be an object")
@@ -224,16 +227,22 @@ def _record_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             if not isinstance(payload, dict):
                 raise ValueError("payload must be an object")
             validate_event(payload)
-        except (json.JSONDecodeError, ValueError) as exc:
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             invalid_record_count += 1
             if len(diagnostics) < MAX_INTEGRITY_DIAGNOSTICS:
-                diagnostics.append({"offset": start_offset, "error": str(exc)})
+                diagnostics.append({
+                    "offset": start_offset,
+                    "next_offset": next_offset,
+                    "error": str(exc),
+                })
+            start_offset = next_offset
             continue
         rows.append({"received_at": envelope.get("received_at"), "payload": payload})
+        start_offset = next_offset
 
     ledger_snapshot = {
         "domain": DOMAIN,
-        "sha256": snapshot.hexdigest(),
+        "sha256": snapshot_sha256,
         "complete_bytes": complete_bytes,
         "total_record_count": total_record_count,
         "valid_record_count": len(rows),
