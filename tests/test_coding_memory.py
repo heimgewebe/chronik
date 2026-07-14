@@ -61,6 +61,23 @@ def test_query_cli_missing_data_dir_is_read_only(tmp_path):
     assert json.loads(result.stdout)["events"] == []
 
 
+def test_query_cli_prefers_repository_module_when_pythonpath_contains_root(tmp_path):
+    import os, subprocess, sys
+    root = Path(__file__).parents[1]
+    missing = tmp_path / "missing"
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(root)
+    result = subprocess.run(
+        [sys.executable, str(root / "tools" / "coding_memory.py"), "--data-dir", str(missing), "query", "--repo", "heimgewebe/example"],
+        text=True,
+        capture_output=True,
+        env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["events"] == []
+    assert not missing.exists()
+
+
 def test_query_cli_validates_filters_without_creating_data_dir(tmp_path):
     import subprocess, sys
     missing = tmp_path / "missing"
