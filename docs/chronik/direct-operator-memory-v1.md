@@ -39,7 +39,8 @@ Der Import akzeptiert nur Ereignisse mit:
 - Jeder Importbeleg ist an SHA-256, Größe und absoluten Pfad der gelesenen
   Quelldatei gebunden.
 - Der Chronik-Speicher dedupliziert atomar über `event_id`.
-- Ein vorhandener Importbeleg ersetzt niemals den Abgleich mit dem tatsächlichen Chronik-Speicher; nach Datenverlust werden Ereignisse erneut eingespielt.
+- Ein vorhandener Importbeleg ersetzt niemals den Abgleich mit dem tatsächlichen
+  Chronik-Speicher; nach Datenverlust werden Ereignisse erneut eingespielt.
 - Wächst eine Outbox-Datei, wird ihr neuer Hash erkannt; bereits vorhandene
   Ereignisse werden übersprungen, neue Ereignisse werden ergänzt.
 - Eine unvollständige letzte JSONL-Zeile, ungültiges JSON, Vertragsdrift oder ein

@@ -84,7 +84,6 @@ def test_receipt_never_replaces_target_store_verification(tmp_path, monkeypatch)
     assert len((data / "agent.ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2
 
 
-
 def test_appended_source_updates_receipt_and_imports_only_new_event(tmp_path, monkeypatch):
     data, receipts, outbox = configure(tmp_path, monkeypatch)
     source = write_outbox(outbox, [event("agent.run.started", "a")])
