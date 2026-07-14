@@ -26,25 +26,35 @@ role_contract:
     - ledger_rendering
   consumes:
     - bounded_event_submissions
-    - plexer_delivery_events
+    - direct_grabowski_outbox_events
+    - optional_plexer_delivery_events
   produces:
     - historical_event_evidence
     - validated_event_files
+    - hash_bound_import_receipts
+    - operator_history_summaries
   limits:
     - no_worker_control
     - no_orchestration_decisions
+    - no_task_truth_authority
+    - historical_evidence_does_not_authorize_retry
   unavailable_effect: new_event_capture_degrades
 
 interfaces:
   consumes:
     - "HTTP POST /v1/ingest payload"
+    - "local Grabowski agent-run-event.v0 JSONL outbox"
   produces:
     - "local JSONL files (append-only)"
+    - "chronik-grabowski-outbox-import.v1 receipts"
+    - "chronik-operator-summary.v1 query results"
 
 contracts:
   schemas:
     - path: "docs/aussen.event.schema.json"
       note: "Primary event schema from metarepo"
+    - path: "docs/chronik/agent-run-event-v0.schema.json"
+      note: "Allow-listed operator event contract"
 
 dependencies:
   internal:
@@ -53,6 +63,10 @@ dependencies:
       interface:
         - json_schema
         - proto
+    - name: grabowski
+      relationship: consumes_local_outbox
+      interface:
+        - agent_run_event_v0_jsonl
   external:
     - name: fastapi
     - name: uvicorn
@@ -63,28 +77,45 @@ dependencies:
 architecture:
   entrypoints:
     - app.py
+    - tools/coding_memory.py
   key_paths:
     - path: app.py
       purpose: HTTP ingest + validation + API
     - path: storage.py
       purpose: File I/O + domain validation + locking
+    - path: coding_memory.py
+      purpose: Idempotent local import, historical query and frozen receipts
+    - path: tools/coding_memory.py
+      purpose: Operator CLI for direct import, summary, query and freeze
+    - path: deploy/systemd/user/chronik-outbox-import.service
+      purpose: Hardened direct Grabowski outbox importer
+    - path: deploy/systemd/user/chronik-outbox-import.timer
+      purpose: Periodic local operator-memory capture
     - path: clients/rust/chronik_producer/
       purpose: Rust client library
-  data_flow:
-    input: HTTP POST /v1/ingest
-    processing: JSON validation + domain sanitization
-    output: local JSONL files (append-only)
+  data_flows:
+    - name: direct_operator_memory
+      input: local Grabowski agent-run-event.v0 JSONL outbox
+      processing: producer allow-list + schema validation + event_id deduplication
+      output: agent.ledger append-only JSONL + SHA-256-bound import receipts
+      transport_dependency: none
+    - name: http_ingest
+      input: HTTP POST /v1/ingest
+      processing: JSON validation + domain sanitization
+      output: local JSONL files (append-only)
 
 boundaries:
   not_responsible_for:
     - "UI/dashboard (that is leitstand)"
-    - "Defining event schemas (contracts repo does that)"
+    - "Defining fleet event schemas (contracts repo owns shared contracts)"
     - "Task ownership or completion truth (Bureau owns that)"
     - "Worker execution or leases (Grabowski owns that)"
+    - "Current Git, CI or runtime truth"
   dangerous_assumptions:
     - "Assume files are always small"
     - "Assume network is always reliable"
     - "Treat ledger presence as task commitment"
+    - "Treat historical success as safe retry authority"
 
 conventions:
   branching: "main, feature/*, hotfix/*"
@@ -95,12 +126,18 @@ documentation:
   adr: docs/adr/
   runbook: docs/runbook.md
   openapi: docs/openapi.yaml
+  direct_operator_memory: docs/chronik/direct-operator-memory-v1.md
 
 ai_guidance:
   do:
-    - validate payloads against contracts (if applicable)
+    - validate payloads against contracts
+    - preserve append-only and event_id idempotency
+    - bind imports and frozen cohorts to exact hashes
+    - keep historical answers explicit about freshness limits
     - use structured logging via ExtraFormatter
     - ensure safe file operations (no path traversal)
   dont:
     - modify generated JSONL files manually
     - bypass sanitize_domain validation
+    - route direct operator memory through Plexer without a proven need
+    - infer current operational authority from Chronik history

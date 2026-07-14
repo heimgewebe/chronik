@@ -1,0 +1,13 @@
+[Unit]
+Description=Regularly import Grabowski operator events into Chronik
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=30s
+RandomizedDelaySec=15s
+Persistent=true
+Unit=chronik-outbox-import.service
+
+[Install]
+WantedBy=timers.target

@@ -21,7 +21,6 @@ def test_service_notes_exist():
     assert "must not dispatch tasks" in text
 
 
-
 def test_service_env_example_is_service_specific_and_safe():
     text = (ROOT / "deploy" / "systemd" / "user" / "chronik.env.example").read_text(encoding="utf-8")
     assert "strong-local" in text
@@ -38,6 +37,22 @@ def test_service_runner_fails_closed_and_honors_bind_env():
     assert "--port" in text
     assert "export CHRONIK_DATA_DIR" in text
     assert "export CHRONIK_ROOT" in text
+
+
+def test_outbox_import_units_are_direct_bounded_and_hardened():
+    service = (ROOT / "deploy" / "systemd" / "user" / "chronik-outbox-import.service").read_text(encoding="utf-8")
+    timer = (ROOT / "deploy" / "systemd" / "user" / "chronik-outbox-import.timer").read_text(encoding="utf-8")
+
+    assert "import-outbox" in service
+    assert "plexer" not in service.lower()
+    assert "ReadOnlyPaths=%h/.local/state/grabowski/chronik-outbox" in service
+    assert "ReadWritePaths=%h/.local/state/chronik" in service
+    assert "ProtectSystem=strict" in service
+    assert "ProtectHome=read-only" in service
+    assert "NoNewPrivileges=true" in service
+    assert "OnUnitActiveSec=2min" in timer
+    assert "Persistent=true" in timer
+    assert "WantedBy=timers.target" in timer
 
 
 def test_operator_docs_close_ai_context_loop():
