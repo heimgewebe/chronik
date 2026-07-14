@@ -85,3 +85,55 @@ def test_query_cli_validates_filters_without_creating_data_dir(tmp_path):
     assert result.returncode == 2
     assert "limit 1..500" in result.stderr
     assert not missing.exists()
+
+
+def test_query_prefers_canonical_data_operation_and_filters_task_class(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); value=event(); value["subject"]["operation"]="review"
+    value["data"].update({"operation":"implement","task_class":"coding"}); coding_memory.import_events([value])
+    result=coding_memory.query_history(repo="heimgewebe/example",operation="implement",task_class="coding")
+    assert result["event_ids"]==[value["event_id"]]
+    assert coding_memory.query_history(repo="heimgewebe/example",operation="review")["event_ids"]==[]
+
+
+def test_query_supports_host_target_and_summary_dimensions(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); value=event("sha256:"+"c"*64,operation="recovery",outcome="blocked")
+    value["kind"]="agent.run.blocked"; value["subject"]={"scope":"host","host":"heim-pc"}
+    value["data"].update({"result":"blocked","operation":"recovery","task_class":"recovery","blocker_code":"recovery-gate"})
+    coding_memory.import_events([value])
+    result=coding_memory.query_history(host="heim-pc",operation="recovery",task_class="recovery",outcome="blocked")
+    summary=coding_memory.operator_summary()
+    assert result["target"]=={"scope":"host","host":"heim-pc"} and result["event_ids"]==[value["event_id"]]
+    assert summary["counts_by_target"]=={"host:heim-pc":1}
+    assert summary["counts_by_operation"]=={"recovery":1} and summary["counts_by_task_class"]=={"recovery":1}
+
+
+def test_query_requires_exactly_one_target():
+    with pytest.raises(ValueError,match="exactly one"): coding_memory.validate_query()
+    with pytest.raises(ValueError,match="exactly one"): coding_memory.validate_query(repo="heimgewebe/example",host="heim-pc")
+
+
+def test_query_binds_snapshot_and_freeze_rejects_invalid_ledger(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); coding_memory.import_events([event()]); target=tmp_path/"agent.ledger.jsonl"
+    result=coding_memory.query_history(repo="heimgewebe/example")
+    assert result["ledger_snapshot"]["sha256"]==hashlib.sha256(target.read_bytes()).hexdigest()
+    assert result["ledger_snapshot"]["integrity_valid"] is True
+    with target.open("ab") as handle: handle.write(b"not-json\n")
+    degraded=coding_memory.query_history(repo="heimgewebe/example")
+    assert degraded["event_ids"]==[event()["event_id"]] and degraded["ledger_snapshot"]["invalid_record_count"]==1
+    with pytest.raises(ValueError,match="invalid records"): coding_memory.freeze_history(tmp_path/"bad.jsonl",repo="heimgewebe/example")
+
+
+def test_additive_query_contracts_keep_v1_schema_ids(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); coding_memory.import_events([event()]); output=tmp_path/"cohort.jsonl"
+    assert coding_memory.query_history(repo="heimgewebe/example")["schema_version"]=="chronik-coding-history.v1"
+    assert coding_memory.operator_summary()["schema_version"]=="chronik-operator-summary.v1"
+    assert coding_memory.freeze_history(output,repo="heimgewebe/example")["schema_version"]=="chronik-history-cohort-receipt.v1"
+
+
+def test_query_cli_supports_host_target_without_creating_data_dir(tmp_path):
+    import subprocess, sys
+    missing=tmp_path/"missing"
+    result=subprocess.run([sys.executable,str(Path(__file__).parents[1]/"tools"/"coding_memory.py"),"--data-dir",str(missing),"query","--host","heim-pc","--task-class","recovery"],text=True,capture_output=True)
+    assert result.returncode==0,result.stderr
+    assert json.loads(result.stdout)["target"]=={"scope":"host","host":"heim-pc"}
+    assert not missing.exists()
