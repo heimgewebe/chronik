@@ -1,4 +1,4 @@
-"""Local, idempotent coding-history import and frozen query receipts."""
+"""Local, idempotent coding-history import and evidence-bound queries."""
 from __future__ import annotations
 
 import hashlib
@@ -7,6 +7,7 @@ import os
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -21,6 +22,10 @@ DOES_NOT_ESTABLISH = ["current_git_state", "current_ci_state", "current_runtime_
 GRABOWSKI_SOURCE_REPO = "heimgewebe/grabowski"
 GRABOWSKI_COMPONENT = "grabowski"
 HIGH_VALUE_KINDS = frozenset({"agent.run.started", "agent.run.completed", "agent.run.blocked"})
+OPERATIONS = frozenset({"implement", "review", "merge", "deploy", "runtime_verify", "recovery", "other"})
+TASK_CLASSES = frozenset({"coding", "review", "merge", "deploy", "runtime_verify", "recovery", "maintenance", "diagnostic", "other"})
+OUTCOMES = frozenset({"started", "completed", "blocked", "failed", "reverted", "outcome_unknown"})
+MAX_INTEGRITY_DIAGNOSTICS = 20
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -56,6 +61,7 @@ def configure_data_dir(path: Path, *, create: bool) -> Path:
     return resolved
 
 
+@lru_cache(maxsize=1)
 def _validator() -> Draft7Validator:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     Draft7Validator.check_schema(schema)
@@ -195,42 +201,111 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
     }
 
 
-def _records() -> list[dict[str, Any]]:
+def _record_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for _, _, line in storage.scan_domain(DOMAIN):
+    diagnostics: list[dict[str, Any]] = []
+    invalid_record_count = 0
+    total_record_count = 0
+    complete_bytes = 0
+    snapshot = hashlib.sha256()
+
+    for start_offset, next_offset, line in storage.scan_domain(DOMAIN):
+        encoded = line.encode("utf-8") + b"\n"
+        snapshot.update(encoded)
+        complete_bytes = next_offset
+        if not line.strip():
+            continue
+        total_record_count += 1
         try:
             envelope = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        payload = envelope.get("payload") if isinstance(envelope, dict) else None
-        if not isinstance(payload, dict):
-            continue
-        try:
+            if not isinstance(envelope, dict):
+                raise ValueError("envelope must be an object")
+            payload = envelope.get("payload")
+            if not isinstance(payload, dict):
+                raise ValueError("payload must be an object")
             validate_event(payload)
-        except ValueError:
+        except (json.JSONDecodeError, ValueError) as exc:
+            invalid_record_count += 1
+            if len(diagnostics) < MAX_INTEGRITY_DIAGNOSTICS:
+                diagnostics.append({"offset": start_offset, "error": str(exc)})
             continue
         rows.append({"received_at": envelope.get("received_at"), "payload": payload})
-    return rows
+
+    ledger_snapshot = {
+        "domain": DOMAIN,
+        "sha256": snapshot.hexdigest(),
+        "complete_bytes": complete_bytes,
+        "total_record_count": total_record_count,
+        "valid_record_count": len(rows),
+        "invalid_record_count": invalid_record_count,
+        "integrity_valid": invalid_record_count == 0,
+        "diagnostics": diagnostics,
+        "diagnostics_truncated": invalid_record_count > len(diagnostics),
+    }
+    return rows, ledger_snapshot
 
 
-def validate_query(*, repo: str, component: str | None = None, operation: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> datetime | None:
-    if not repo or limit < 1 or limit > 500:
-        raise ValueError("repo and limit 1..500 are required")
+def _event_operation(event: dict[str, Any]) -> str | None:
+    data = event.get("data")
+    subject = event.get("subject")
+    if isinstance(data, dict) and data.get("operation"):
+        return data["operation"]
+    if isinstance(subject, dict):
+        return subject.get("operation")
+    return None
+
+
+def _event_task_class(event: dict[str, Any]) -> str | None:
+    data = event.get("data")
+    return data.get("task_class") if isinstance(data, dict) else None
+
+
+def _target(*, repo: str | None, host: str | None) -> dict[str, str]:
+    if repo is not None:
+        return {"scope": "repository", "repo": repo}
+    assert host is not None
+    return {"scope": "host", "host": host}
+
+
+def _matches_target(subject: dict[str, Any], *, repo: str | None, host: str | None) -> bool:
+    if repo is not None:
+        return subject.get("scope") != "host" and subject.get("repo") == repo
+    return subject.get("scope") == "host" and subject.get("host") == host
+
+
+def validate_query(*, repo: str | None = None, host: str | None = None, component: str | None = None, operation: str | None = None, task_class: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> datetime | None:
+    if (repo is None) == (host is None):
+        raise ValueError("exactly one of repo or host is required")
+    if repo is not None and not repo.strip():
+        raise ValueError("repo must not be empty")
+    if host is not None and not host.strip():
+        raise ValueError("host must not be empty")
+    if limit < 1 or limit > 500:
+        raise ValueError("limit 1..500 is required")
+    if operation is not None and operation not in OPERATIONS:
+        raise ValueError(f"unsupported operation: {operation}")
+    if task_class is not None and task_class not in TASK_CLASSES:
+        raise ValueError(f"unsupported task_class: {task_class}")
+    if outcome is not None and outcome not in OUTCOMES:
+        raise ValueError(f"unsupported outcome: {outcome}")
     return _parse_timestamp(since, field="since") if since is not None else None
 
 
-def query_history(*, repo: str, component: str | None = None, operation: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> dict[str, Any]:
-    since_at = validate_query(repo=repo, component=component, operation=operation, outcome=outcome, since=since, limit=limit)
+def query_history(*, repo: str | None = None, host: str | None = None, component: str | None = None, operation: str | None = None, task_class: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> dict[str, Any]:
+    since_at = validate_query(repo=repo, host=host, component=component, operation=operation, task_class=task_class, outcome=outcome, since=since, limit=limit)
+    rows, ledger_snapshot = _record_snapshot()
     selected: list[dict[str, Any]] = []
-    for row in _records():
+    for row in rows:
         event = row["payload"]
         subject = event["subject"]
         data = event.get("data", {})
-        if subject.get("repo") != repo:
+        if not _matches_target(subject, repo=repo, host=host):
             continue
         if component and subject.get("component") != component:
             continue
-        if operation and subject.get("operation") != operation:
+        if operation and _event_operation(event) != operation:
+            continue
+        if task_class and _event_task_class(event) != task_class:
             continue
         actual_outcome = data.get("outcome") or data.get("result")
         if outcome and actual_outcome != outcome:
@@ -241,12 +316,14 @@ def query_history(*, repo: str, component: str | None = None, operation: str | N
         selected.append({**row, "event_at": event_at})
     selected.sort(key=lambda row: (row["event_at"], row["payload"]["event_id"]), reverse=True)
     selected = selected[:limit]
-    query = {"repo": repo, "component": component, "operation": operation, "outcome": outcome, "since": since, "limit": limit}
+    query = {"repo": repo, "host": host, "component": component, "operation": operation, "task_class": task_class, "outcome": outcome, "since": since, "limit": limit}
     return {
         "schema_version": "chronik-coding-history.v1",
         "query": query,
+        "target": _target(repo=repo, host=host),
         "events": [row["payload"] for row in selected],
         "event_ids": [row["payload"]["event_id"] for row in selected],
+        "ledger_snapshot": ledger_snapshot,
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
@@ -256,8 +333,9 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
     if limit < 1 or limit > 500:
         raise ValueError("limit 1..500 is required")
     since_at = _parse_timestamp(since, field="since") if since is not None else None
+    rows, ledger_snapshot = _record_snapshot()
     selected: list[tuple[datetime, dict[str, Any]]] = []
-    for row in _records():
+    for row in rows:
         event = row["payload"]
         event_at = _parse_timestamp(event["ts"], field="ts")
         if since_at is not None and event_at < since_at:
@@ -266,6 +344,22 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
     selected.sort(key=lambda item: (item[0], item[1]["event_id"]), reverse=True)
     kind_counts = Counter(event["kind"] for _, event in selected)
     repo_counts = Counter(event.get("subject", {}).get("repo", "unknown") for _, event in selected)
+    host_counts = Counter(
+        event.get("subject", {}).get("host")
+        for _, event in selected
+        if event.get("subject", {}).get("scope") == "host" and event.get("subject", {}).get("host")
+    )
+    target_counts = Counter()
+    operation_counts = Counter()
+    task_class_counts = Counter()
+    for _, event in selected:
+        subject = event.get("subject", {})
+        if subject.get("scope") == "host":
+            target_counts[f"host:{subject.get('host', 'unknown')}"] += 1
+        else:
+            target_counts[f"repository:{subject.get('repo', 'unknown')}"] += 1
+        operation_counts[_event_operation(event) or "unspecified"] += 1
+        task_class_counts[_event_task_class(event) or "unspecified"] += 1
     blocker_counts = Counter(
         event.get("data", {}).get("blocker_code", "unspecified")
         for _, event in selected
@@ -273,13 +367,17 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
     )
     recent = []
     for _, event in selected[:limit]:
+        subject = event.get("subject", {})
         recent.append(
             {
                 "event_id": event["event_id"],
                 "ts": event["ts"],
                 "kind": event["kind"],
                 "run_id": event.get("source", {}).get("run_id"),
-                "subject": event.get("subject", {}),
+                "target": {"scope": "host", "host": subject.get("host")} if subject.get("scope") == "host" else {"scope": "repository", "repo": subject.get("repo")},
+                "subject": subject,
+                "operation": _event_operation(event),
+                "task_class": _event_task_class(event),
                 "data": event.get("data", {}),
             }
         )
@@ -287,10 +385,16 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
         "schema_version": "chronik-operator-summary.v1",
         "since": since,
         "event_count": len(selected),
+        "limit": limit,
         "counts_by_kind": dict(sorted(kind_counts.items())),
         "counts_by_subject_repo": dict(sorted(repo_counts.items())),
+        "counts_by_subject_host": dict(sorted(host_counts.items())),
+        "counts_by_target": dict(sorted(target_counts.items())),
+        "counts_by_operation": dict(sorted(operation_counts.items())),
+        "counts_by_task_class": dict(sorted(task_class_counts.items())),
         "blocked_by_code": dict(sorted(blocker_counts.items())),
         "recent": recent,
+        "ledger_snapshot": ledger_snapshot,
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
@@ -313,17 +417,23 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 def freeze_history(output: Path, **filters: Any) -> dict[str, Any]:
     history = query_history(**filters)
+    ledger_snapshot = history["ledger_snapshot"]
+    if not ledger_snapshot["integrity_valid"]:
+        raise ValueError("cannot freeze history from a ledger with invalid records")
     body = b"".join(canonical_bytes(event) + b"\n" for event in history["events"])
     _atomic_write(output, body)
     receipt = {
         "schema_version": "chronik-history-cohort-receipt.v1",
         "domain": DOMAIN,
         "query": history["query"],
+        "target": history["target"],
         "event_ids": history["event_ids"],
         "event_count": len(history["event_ids"]),
         "cohort_path": str(output),
         "cohort_sha256": sha256_bytes(body),
         "query_sha256": sha256_bytes(canonical_bytes(history["query"])),
+        "ledger_snapshot_sha256": ledger_snapshot["sha256"],
+        "ledger_snapshot_complete_bytes": ledger_snapshot["complete_bytes"],
         "generated_at": utc_now(),
         "redaction_contract": "agent-run-event.v0 allow-list",
         "historical_only": True,

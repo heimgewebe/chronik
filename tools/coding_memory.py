@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -29,20 +30,43 @@ def load(path: Path):
 def filters(args):
     return {
         "repo": args.repo,
+        "host": args.host,
         "component": args.component,
         "operation": args.operation,
+        "task_class": args.task_class,
         "outcome": args.outcome,
         "since": args.since,
         "limit": args.limit,
     }
 
 
+def empty_snapshot():
+    return {
+        "domain": coding_memory.DOMAIN,
+        "sha256": hashlib.sha256(b"").hexdigest(),
+        "complete_bytes": 0,
+        "total_record_count": 0,
+        "valid_record_count": 0,
+        "invalid_record_count": 0,
+        "integrity_valid": True,
+        "diagnostics": [],
+        "diagnostics_truncated": False,
+    }
+
+
 def empty_query(query_filters):
+    target = (
+        {"scope": "repository", "repo": query_filters["repo"]}
+        if query_filters["repo"] is not None
+        else {"scope": "host", "host": query_filters["host"]}
+    )
     return {
         "schema_version": "chronik-coding-history.v1",
         "query": query_filters,
+        "target": target,
         "events": [],
         "event_ids": [],
+        "ledger_snapshot": empty_snapshot(),
         "historical_only": True,
         "does_not_establish": coding_memory.DOES_NOT_ESTABLISH,
     }
@@ -55,9 +79,14 @@ def empty_summary(since, limit):
         "event_count": 0,
         "counts_by_kind": {},
         "counts_by_subject_repo": {},
+        "counts_by_subject_host": {},
+        "counts_by_target": {},
+        "counts_by_operation": {},
+        "counts_by_task_class": {},
         "blocked_by_code": {},
         "recent": [],
         "limit": limit,
+        "ledger_snapshot": empty_snapshot(),
         "historical_only": True,
         "does_not_establish": coding_memory.DOES_NOT_ESTABLISH,
     }
@@ -81,10 +110,13 @@ def main(argv=None):
 
     for name in ("query", "freeze"):
         command = sub.add_parser(name)
-        command.add_argument("--repo", required=True)
+        target = command.add_mutually_exclusive_group(required=True)
+        target.add_argument("--repo")
+        target.add_argument("--host")
         command.add_argument("--component")
-        command.add_argument("--operation", choices=["implement", "review", "merge", "deploy", "runtime_verify", "recovery"])
-        command.add_argument("--outcome", choices=["completed", "blocked", "failed", "reverted", "outcome_unknown", "started"])
+        command.add_argument("--operation", choices=sorted(coding_memory.OPERATIONS))
+        command.add_argument("--task-class", choices=sorted(coding_memory.TASK_CLASSES))
+        command.add_argument("--outcome", choices=sorted(coding_memory.OUTCOMES))
         command.add_argument("--since")
         command.add_argument("--limit", type=int, default=20)
         if name == "freeze":
@@ -122,7 +154,7 @@ def main(argv=None):
                 result = coding_memory.operator_summary(since=args.since, limit=args.limit)
             else:
                 result = coding_memory.freeze_history(args.output, **query_filters)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, coding_memory.storage.StorageError) as exc:
         print(f"chronik-coding-memory: {exc}", file=sys.stderr)
         return 2
 
