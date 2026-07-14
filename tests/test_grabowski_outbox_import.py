@@ -168,3 +168,35 @@ def test_import_outbox_cli_returns_nonzero_on_any_invalid_source(tmp_path):
 
     assert result.returncode == 2
     assert json.loads(result.stdout)["errors"]
+
+
+def test_import_preserves_repository_target_identity(tmp_path, monkeypatch):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    value = event("agent.run.completed", "d")
+    value["subject"] = {"scope": "repository", "repo": "heimgewebe/chronik", "branch": "fix/target"}
+    value["data"].update({"operation": "implement", "task_class": "coding"})
+    write_outbox(outbox, [value])
+
+    result = coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    history = coding_memory.query_history(repo="heimgewebe/chronik")
+
+    assert result["errors"] == []
+    assert result["events_imported"] == 1
+    assert history["events"][0]["subject"] == value["subject"]
+    assert history["events"][0]["data"]["operation"] == "implement"
+    assert history["events"][0]["data"]["task_class"] == "coding"
+
+
+def test_import_preserves_host_scope_without_fabricated_repo(tmp_path, monkeypatch):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    value = event("agent.run.blocked", "e")
+    value["subject"] = {"scope": "host", "host": "heim-pc"}
+    value["data"].update({"operation": "recovery", "task_class": "recovery"})
+    write_outbox(outbox, [value])
+
+    result = coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+
+    assert result["errors"] == []
+    row = json.loads((data / "agent.ledger.jsonl").read_text().splitlines()[0])
+    assert row["payload"]["subject"] == {"scope": "host", "host": "heim-pc"}
+    assert "repo" not in row["payload"]["subject"]
