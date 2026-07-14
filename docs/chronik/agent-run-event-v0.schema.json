@@ -64,9 +64,7 @@
     "subject": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "repo"
-      ],
+      "required": [],
       "properties": {
         "repo": {
           "type": "string",
@@ -106,8 +104,32 @@
         "pr_number": {
           "type": "integer",
           "minimum": 1
+        },
+        "scope": {
+          "enum": [
+            "repository",
+            "host"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
         }
-      }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "repo"
+          ]
+        },
+        {
+          "required": [
+            "scope",
+            "host"
+          ]
+        }
+      ]
     },
     "trust_tier": {
       "enum": [
@@ -183,6 +205,30 @@
             "reverted",
             "outcome_unknown"
           ]
+        },
+        "operation": {
+          "enum": [
+            "implement",
+            "review",
+            "merge",
+            "deploy",
+            "runtime_verify",
+            "recovery",
+            "other"
+          ]
+        },
+        "task_class": {
+          "enum": [
+            "coding",
+            "review",
+            "merge",
+            "deploy",
+            "runtime_verify",
+            "recovery",
+            "maintenance",
+            "diagnostic",
+            "other"
+          ]
         }
       }
     }
@@ -200,6 +246,87 @@
         "required": [
           "corrects"
         ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "scope": {
+                "const": "repository"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "required": [
+              "repo"
+            ],
+            "not": {
+              "required": [
+                "host"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "properties": {
+              "scope": {
+                "const": "host"
+              }
+            },
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "subject": {
+            "required": [
+              "host"
+            ],
+            "not": {
+              "required": [
+                "repo"
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "subject": {
+            "required": [
+              "scope"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "required": [
+              "operation",
+              "task_class"
+            ]
+          }
+        }
       }
     }
   ],
