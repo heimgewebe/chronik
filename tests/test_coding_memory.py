@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 import coding_memory, storage
 
-def event(event_id="sha256:"+"a"*64, repo="heimgewebe/example", component="api", operation="implement", outcome="completed", ts="2026-07-13T10:00:00Z"):
-    return {"schema_version":"agent-run-event.v0","event_id":event_id,"kind":"agent.run.completed","ts":ts,"source":{"repo":"heimgewebe/grabowski","component":"grabowski","run_id":"task-test-a1"},"subject":{"repo":repo,"component":component,"operation":operation,"bureau_task_id":"CCM-V1-T001","pr_number":1},"trust_tier":"observed","status":"active","caused_by":[],"evidence_refs":["grabowski-task:test"],"data":{"result":"completed","outcome":outcome}}
+def event(event_id="sha256:"+"a"*64, repo="heimgewebe/example", component="api", operation="implement", outcome="completed", ts="2026-07-13T10:00:00Z", source_component="grabowski"):
+    return {"schema_version":"agent-run-event.v0","event_id":event_id,"kind":"agent.run.completed","ts":ts,"source":{"repo":"heimgewebe/grabowski","component":source_component,"run_id":"task-test-a1"},"subject":{"repo":repo,"component":component,"operation":operation,"bureau_task_id":"CCM-V1-T001","pr_number":1},"trust_tier":"observed","status":"active","caused_by":[],"evidence_refs":["grabowski-task:test"],"data":{"result":"completed","outcome":outcome}}
 
 def setup(tmp_path,monkeypatch):
     monkeypatch.setattr(storage,"DATA_DIR",tmp_path); return tmp_path
@@ -40,7 +40,7 @@ def test_query_compares_since_offset_in_utc(tmp_path,monkeypatch):
 
 def test_query_filters_and_marks_history_only(tmp_path,monkeypatch):
     setup(tmp_path,monkeypatch); coding_memory.import_events([event(),event("sha256:"+"b"*64,repo="heimgewebe/other")])
-    result=coding_memory.query_history(repo="heimgewebe/example",component="api",operation="implement",outcome="completed")
+    result=coding_memory.query_history(repo="heimgewebe/example",component="grabowski",operation="implement",outcome="completed")
     assert result["event_ids"]==["sha256:"+"a"*64]
     assert result["historical_only"] is True and "current_ci_state" in result["does_not_establish"]
 
@@ -105,6 +105,39 @@ def test_query_supports_host_target_and_summary_dimensions(tmp_path,monkeypatch)
     assert result["target"]=={"scope":"host","host":"heim-pc"} and result["event_ids"]==[value["event_id"]]
     assert summary["counts_by_target"]=={"host:heim-pc":1}
     assert summary["counts_by_operation"]=={"recovery":1} and summary["counts_by_task_class"]=={"recovery":1}
+
+
+def test_query_component_uses_canonical_source_for_repository_target_and_combined_filters(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); value=event(component="target-api")
+    value["data"]["task_class"]="coding"; coding_memory.import_events([value])
+    result=coding_memory.query_history(repo="heimgewebe/example",component="grabowski",operation="implement",task_class="coding",outcome="completed")
+    assert result["event_ids"]==[value["event_id"]]
+    assert coding_memory.query_history(repo="heimgewebe/example",component="target-api")["event_ids"]==[]
+
+
+def test_query_component_uses_canonical_source_for_host_target(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); value=event("sha256:"+"d"*64,component="target-runtime",operation="recovery",outcome="blocked")
+    value["kind"]="agent.run.blocked"; value["subject"]={"scope":"host","host":"heim-pc","component":"target-runtime"}
+    value["data"].update({"result":"blocked","operation":"recovery","task_class":"recovery"}); coding_memory.import_events([value])
+    result=coding_memory.query_history(host="heim-pc",component="grabowski",operation="recovery",task_class="recovery",outcome="blocked")
+    assert result["event_ids"]==[value["event_id"]]
+    assert coding_memory.query_history(host="heim-pc",component="target-runtime")["event_ids"]==[]
+
+
+def test_query_component_never_allows_subject_to_override_present_source(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); value=event(component="grabowski",source_component="other-producer")
+    coding_memory.import_events([value])
+    assert coding_memory.query_history(repo="heimgewebe/example",component="grabowski")["event_ids"]==[]
+    assert coding_memory.query_history(repo="heimgewebe/example",component="other-producer")["event_ids"]==[value["event_id"]]
+
+
+def test_query_component_has_no_legacy_subject_fallback(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); legacy=event(component="grabowski"); del legacy["source"]["component"]
+    target=tmp_path/"agent.ledger.jsonl"; target.write_text(json.dumps({"payload":legacy})+"\n")
+    result=coding_memory.query_history(repo="heimgewebe/example",component="grabowski")
+    assert result["event_ids"]==[]
+    assert result["ledger_snapshot"]["invalid_record_count"]==1
+    assert result["ledger_snapshot"]["integrity_valid"] is False
 
 
 def test_query_requires_exactly_one_target():

@@ -390,6 +390,12 @@ def _event_task_class(event: dict[str, Any]) -> str | None:
     return data.get("task_class") if isinstance(data, dict) else None
 
 
+def _event_source_component(event: dict[str, Any]) -> str | None:
+    """Return the canonical producer component without a subject fallback."""
+    source = event.get("source")
+    return source.get("component") if isinstance(source, dict) else None
+
+
 def _target(*, repo: str | None, host: str | None) -> dict[str, str]:
     if repo is not None:
         return {"scope": "repository", "repo": repo}
@@ -431,7 +437,7 @@ def query_history(*, repo: str | None = None, host: str | None = None, component
         data = event.get("data", {})
         if not _matches_target(subject, repo=repo, host=host):
             continue
-        if component and subject.get("component") != component:
+        if component and _event_source_component(event) != component:
             continue
         if operation and _event_operation(event) != operation:
             continue
