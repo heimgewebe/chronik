@@ -81,10 +81,55 @@ def test_receipt_never_replaces_target_store_verification(tmp_path, monkeypatch)
 
     assert recovered["files_unchanged"] == 1
     assert recovered["events_imported"] == 2
-    assert len((data / "agent.ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+    assert (
+        len((data / "agent.ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2
+    )
 
 
-def test_appended_source_updates_receipt_and_imports_only_new_event(tmp_path, monkeypatch):
+def test_missing_receipt_is_rebuilt_after_store_verification(tmp_path, monkeypatch):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    receipt_path = next(receipts.glob("*.receipt.json"))
+    receipt_path.unlink()
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert recovered["events_imported"] == 0
+    assert recovered["events_skipped_existing"] == 1
+    assert recovered["files_unchanged"] == 0
+    assert recovered["target_scans"] == 1
+    assert receipt_path.exists()
+    assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
+
+
+def test_stale_receipt_cannot_override_store_verification(tmp_path, monkeypatch):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    receipt_path = next(receipts.glob("*.receipt.json"))
+    stale = json.loads(receipt_path.read_text())
+    stale["source_sha256"] = "0" * 64
+    receipt_path.write_text(json.dumps(stale), encoding="utf-8")
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert recovered["events_imported"] == 0
+    assert recovered["events_skipped_existing"] == 1
+    assert recovered["files_unchanged"] == 0
+    assert recovered["target_records_scanned"] == 1
+    refreshed = json.loads(receipt_path.read_text())
+    assert refreshed["source_sha256"] != "0" * 64
+    assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
+
+
+def test_appended_source_updates_receipt_and_imports_only_new_event(
+    tmp_path, monkeypatch
+):
     data, receipts, outbox = configure(tmp_path, monkeypatch)
     source = write_outbox(outbox, [event("agent.run.started", "a")])
     coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
@@ -194,9 +239,162 @@ def test_import_preserves_host_scope_without_fabricated_repo(tmp_path, monkeypat
     value["data"].update({"operation": "recovery", "task_class": "recovery"})
     write_outbox(outbox, [value])
 
-    result = coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
 
     assert result["errors"] == []
     row = json.loads((data / "agent.ledger.jsonl").read_text().splitlines()[0])
     assert row["payload"]["subject"] == {"scope": "host", "host": "heim-pc"}
     assert "repo" not in row["payload"]["subject"]
+
+
+def write_named_outbox(root: Path, name: str, values: list[dict]) -> Path:
+    path = root / "grabowski" / "chronik-outbox" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(value, sort_keys=True) + "\n" for value in values),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_multi_file_batch_scans_target_once_and_repeat_verifies_store(
+    tmp_path, monkeypatch
+):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    for index, suffix in enumerate(("a", "b", "c")):
+        write_named_outbox(
+            outbox,
+            f"grabowski_task-{index}-a1.jsonl",
+            [event("agent.run.completed", suffix)],
+        )
+    first = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+    second = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+    assert first["target_scans"] == 1
+    assert first["target_records_scanned"] == 0
+    assert first["events_imported"] == 3
+    assert second["target_scans"] == 1
+    assert second["target_records_scanned"] == 3
+    assert second["events_imported"] == 0
+    assert second["events_skipped_existing"] == 3
+    assert second["files_unchanged"] == 3
+    assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 3
+
+
+def test_batch_imports_valid_sources_while_reporting_invalid_source(
+    tmp_path, monkeypatch
+):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox, "grabowski_task-valid-a1.jsonl", [event("agent.run.completed", "a")]
+    )
+    write_named_outbox(
+        outbox,
+        "grabowski_task-invalid-a1.jsonl",
+        [event("agent.run.completed", "b", source_repo="heimgewebe/other")],
+    )
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+    assert result["target_scans"] == 1
+    assert result["events_imported"] == 1
+    assert len(result["errors"]) == 1
+    assert len(list(receipts.glob("*.receipt.json"))) == 1
+    assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
+
+
+def test_cross_file_divergent_event_id_fails_before_batch_append(tmp_path, monkeypatch):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    first = event("agent.run.completed", "a")
+    second = event("agent.run.completed", "a")
+    second["subject"] = {"scope": "repository", "repo": "heimgewebe/other"}
+    second["data"].update({"operation": "implement", "task_class": "coding"})
+    write_named_outbox(outbox, "grabowski_task-first-a1.jsonl", [first])
+    write_named_outbox(outbox, "grabowski_task-second-a1.jsonl", [second])
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+    assert result["files_imported_or_confirmed"] == 0
+    assert result["events_imported"] == 0
+    assert result["target_scans"] is None
+    assert result["errors"][0]["source_path"] == "<batch>"
+    assert "conflicting event_id" in result["errors"][0]["error"]
+    target = data / "agent.ledger.jsonl"
+    assert not target.exists() or target.read_text() == ""
+    assert not receipts.exists()
+
+
+
+def test_single_file_receipt_failure_preserves_original_exception(
+    tmp_path, monkeypatch
+):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    source = write_outbox(outbox, [event("agent.run.completed", "a")])
+
+    def fail_receipt_write(path: Path, payload: bytes) -> None:
+        raise OSError("simulated direct receipt ENOSPC")
+
+    monkeypatch.setattr(coding_memory, "_atomic_write", fail_receipt_write)
+    with pytest.raises(OSError, match="simulated direct receipt ENOSPC"):
+        coding_memory.import_grabowski_outbox_file(source, receipt_dir=receipts)
+
+    assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
+
+
+def test_empty_batch_reports_zero_target_scans(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert result["files_seen"] == 0
+    assert result["target_scans"] == 0
+    assert result["target_records_scanned"] == 0
+    assert result["errors"] == []
+
+
+def test_receipt_failure_preserves_ledger_stats_and_is_recoverable(
+    tmp_path, monkeypatch
+):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    source = write_outbox(outbox, [event("agent.run.completed", "a")])
+    atomic_write = coding_memory._atomic_write
+
+    def fail_receipt_write(path: Path, payload: bytes) -> None:
+        raise OSError("simulated receipt ENOSPC")
+
+    monkeypatch.setattr(coding_memory, "_atomic_write", fail_receipt_write)
+    failed = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert failed["files_imported_or_confirmed"] == 1
+    assert failed["events_imported"] == 1
+    assert failed["events_skipped_existing"] == 0
+    assert failed["target_scans"] == 1
+    assert failed["target_records_scanned"] == 0
+    assert failed["errors"] == [
+        {
+            "source_path": str(source),
+            "error": "receipt write failed after ledger update: simulated receipt ENOSPC",
+        }
+    ]
+    assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
+    assert not receipts.exists()
+
+    monkeypatch.setattr(coding_memory, "_atomic_write", atomic_write)
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert recovered["events_imported"] == 0
+    assert recovered["events_skipped_existing"] == 1
+    assert recovered["target_scans"] == 1
+    assert recovered["errors"] == []
+    assert len(list(receipts.glob("*.receipt.json"))) == 1

@@ -77,12 +77,23 @@ def validate_event(event: dict[str, Any]) -> None:
     _parse_timestamp(event["ts"], field="ts")
 
 
+def _envelope_lines(events: Iterable[dict[str, Any]]) -> list[str]:
+    return [
+        json.dumps(
+            build_envelope(DOMAIN, event),
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+        for event in events
+    ]
+
+
 def import_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     values = [dict(event) for event in events]
     for event in values:
         validate_event(event)
-    lines = [json.dumps(build_envelope(DOMAIN, event), sort_keys=True, separators=(",", ":"), ensure_ascii=False) for event in values]
-    written, skipped = storage.write_payload_unique(DOMAIN, lines)
+    written, skipped = storage.write_payload_unique(DOMAIN, _envelope_lines(values))
     receipt = {
         "schema_version": "chronik-import-receipt.v1",
         "domain": DOMAIN,
@@ -145,47 +156,155 @@ def _validate_grabowski_source(event: dict[str, Any]) -> None:
         raise ValueError(f"unsupported operator-memory kind: {event.get('kind')}")
 
 
-def import_grabowski_outbox_file(source: Path, *, receipt_dir: Path) -> dict[str, Any]:
+def _prepare_grabowski_outbox_source(source: Path, *, receipt_dir: Path) -> dict[str, Any]:
     raw, events = _read_jsonl_snapshot(source)
-    source_sha256 = sha256_bytes(raw)
-    receipt_path = _receipt_path(source, receipt_dir)
-    previous = _load_receipt(receipt_path)
-    source_unchanged = previous is not None and previous.get("source_sha256") == source_sha256
     if not events:
         raise ValueError(f"outbox contains no events: {source}")
     for event in events:
         _validate_grabowski_source(event)
-    imported = import_events(events)
+    source_sha256 = sha256_bytes(raw)
+    receipt_path = _receipt_path(source, receipt_dir)
+    previous = _load_receipt(receipt_path)
+    return {
+        "source": source,
+        "raw": raw,
+        "events": events,
+        "source_sha256": source_sha256,
+        "receipt_path": receipt_path,
+        "source_unchanged": previous is not None and previous.get("source_sha256") == source_sha256,
+    }
+
+
+def _write_grabowski_outbox_receipt(
+    prepared: dict[str, Any],
+    *,
+    written: int,
+    skipped: int,
+    target_scans: int,
+    target_records_scanned: int,
+) -> dict[str, Any]:
+    source = prepared["source"]
+    raw = prepared["raw"]
+    events = prepared["events"]
+    receipt_path = prepared["receipt_path"]
     receipt = {
         "schema_version": "chronik-grabowski-outbox-import.v1",
         "domain": DOMAIN,
         "source_path": str(source.resolve()),
-        "source_sha256": source_sha256,
+        "source_sha256": prepared["source_sha256"],
         "source_bytes": len(raw),
         "selection_contract": sorted(HIGH_VALUE_KINDS),
         "event_ids": sorted(event["event_id"] for event in events),
-        "requested": imported["requested"],
-        "imported": imported["imported"],
-        "skipped_existing": imported["skipped_existing"],
+        "requested": len(events),
+        "imported": written,
+        "skipped_existing": skipped,
+        "batch_target_scans": target_scans,
+        "batch_target_records_scanned": target_records_scanned,
         "recorded_at": utc_now(),
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
     receipt["receipt_sha256"] = sha256_bytes(canonical_bytes(receipt))
-    _atomic_write(receipt_path, json.dumps(receipt, indent=2, sort_keys=True).encode("utf-8") + b"\n")
-    return {**receipt, "unchanged": source_unchanged, "receipt_path": str(receipt_path)}
+    _atomic_write(
+        receipt_path,
+        json.dumps(receipt, indent=2, sort_keys=True).encode("utf-8") + b"\n",
+    )
+    return {
+        **receipt,
+        "unchanged": prepared["source_unchanged"],
+        "receipt_path": str(receipt_path),
+    }
+
+
+def _import_prepared_grabowski_sources(
+    prepared_sources: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, object], list[tuple[str, Exception]]]:
+    grouped = storage.write_payload_unique_groups(
+        DOMAIN,
+        [
+            (str(index), _envelope_lines(prepared["events"]))
+            for index, prepared in enumerate(prepared_sources)
+        ],
+    )
+    raw_group_results = grouped.get("groups")
+    if not isinstance(raw_group_results, list):
+        raise storage.StorageError("grouped write omitted per-source results")
+    group_results = {
+        str(item.get("group_id")): item
+        for item in raw_group_results
+        if isinstance(item, dict)
+    }
+    target_scans = int(grouped.get("target_scans", 0))
+    target_records_scanned = int(grouped.get("target_records_scanned", 0))
+    results: list[dict[str, Any]] = []
+    receipt_errors: list[tuple[str, Exception]] = []
+    for index, prepared in enumerate(prepared_sources):
+        stats = group_results.get(str(index))
+        if stats is None:
+            raise storage.StorageError(f"grouped write omitted source group {index}")
+        written = int(stats.get("written", 0))
+        skipped = int(stats.get("skipped", 0))
+        try:
+            result = _write_grabowski_outbox_receipt(
+                prepared,
+                written=written,
+                skipped=skipped,
+                target_scans=target_scans,
+                target_records_scanned=target_records_scanned,
+            )
+        except (OSError, ValueError, storage.StorageError) as exc:
+            result = {
+                "source_path": str(prepared["source"].resolve()),
+                "imported": written,
+                "skipped_existing": skipped,
+                "unchanged": prepared["source_unchanged"],
+            }
+            receipt_errors.append((str(prepared["source"]), exc))
+        results.append(result)
+    return results, grouped, receipt_errors
+
+
+def import_grabowski_outbox_file(source: Path, *, receipt_dir: Path) -> dict[str, Any]:
+    prepared = _prepare_grabowski_outbox_source(source, receipt_dir=receipt_dir)
+    results, _, receipt_errors = _import_prepared_grabowski_sources([prepared])
+    if receipt_errors:
+        raise receipt_errors[0][1]
+    return results[0]
 
 
 def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str, Any]:
     source_dir = outbox_root.expanduser() / "grabowski" / "chronik-outbox"
     sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
+    prepared_sources: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
+    target_scans: int | None = 0
+    target_records_scanned: int | None = 0
     for source in sources:
         try:
-            results.append(import_grabowski_outbox_file(source, receipt_dir=receipt_dir))
+            prepared_sources.append(
+                _prepare_grabowski_outbox_source(source, receipt_dir=receipt_dir)
+            )
         except (OSError, ValueError, storage.StorageError) as exc:
             errors.append({"source_path": str(source), "error": str(exc)})
+    if prepared_sources:
+        try:
+            results, grouped, receipt_errors = _import_prepared_grabowski_sources(
+                prepared_sources
+            )
+            target_scans = int(grouped.get("target_scans", 0))
+            target_records_scanned = int(grouped.get("target_records_scanned", 0))
+            errors.extend(
+                {
+                    "source_path": source_path,
+                    "error": f"receipt write failed after ledger update: {exc}",
+                }
+                for source_path, exc in receipt_errors
+            )
+        except (OSError, ValueError, storage.StorageError) as exc:
+            target_scans = None
+            target_records_scanned = None
+            errors.append({"source_path": "<batch>", "error": str(exc)})
     return {
         "schema_version": "chronik-grabowski-outbox-batch.v1",
         "source_dir": str(source_dir),
@@ -195,6 +314,8 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
         "files_unchanged": sum(1 for result in results if result.get("unchanged") is True),
         "events_imported": sum(int(result.get("imported", 0)) for result in results),
         "events_skipped_existing": sum(int(result.get("skipped_existing", 0)) for result in results),
+        "target_scans": target_scans,
+        "target_records_scanned": target_records_scanned,
         "errors": errors,
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,

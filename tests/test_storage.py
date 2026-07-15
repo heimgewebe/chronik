@@ -1,3 +1,5 @@
+import json
+
 import pytest
 import storage
 
@@ -86,3 +88,50 @@ def test_read_last_line_invalid_domain(mock_data_dir):
     """Verify it raises StorageError for an invalid domain name."""
     with pytest.raises(storage.StorageError, match="invalid target"):
         storage.read_last_line("domain with spaces")
+
+
+def _unique_line(event_id: str, value: str) -> str:
+    return json.dumps(
+        {"payload": {"event_id": event_id, "value": value}}, sort_keys=True
+    )
+
+
+def test_write_payload_unique_groups_scans_once_and_allocates_counts(mock_data_dir):
+    storage.write_payload("agent.ledger", [_unique_line("existing", "same")])
+    result = storage.write_payload_unique_groups(
+        "agent.ledger",
+        [
+            ("first", [_unique_line("existing", "same"), _unique_line("new-a", "a")]),
+            ("second", [_unique_line("new-a", "a"), _unique_line("new-b", "b")]),
+        ],
+    )
+    assert result["target_scans"] == 1
+    assert result["target_records_scanned"] == 1
+    assert result["written"] == 2
+    assert result["skipped"] == 2
+    assert result["groups"] == [
+        {"group_id": "first", "requested": 2, "written": 1, "skipped": 1},
+        {"group_id": "second", "requested": 2, "written": 1, "skipped": 1},
+    ]
+    assert len((mock_data_dir / "agent.ledger.jsonl").read_text().splitlines()) == 3
+
+
+def test_write_payload_unique_groups_rejects_cross_group_conflict_before_write(
+    mock_data_dir,
+):
+    with pytest.raises(storage.StorageError, match="conflicting event_id"):
+        storage.write_payload_unique_groups(
+            "agent.ledger",
+            [
+                ("first", [_unique_line("same", "a")]),
+                ("second", [_unique_line("same", "b")]),
+            ],
+        )
+    target = mock_data_dir / "agent.ledger.jsonl"
+    assert not target.exists() or target.read_text() == ""
+
+
+def test_write_payload_unique_wrapper_retains_tuple_contract(mock_data_dir):
+    assert storage.write_payload_unique(
+        "agent.ledger", [_unique_line("one", "a"), _unique_line("one", "a")]
+    ) == (1, 1)

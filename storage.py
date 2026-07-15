@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import re
-from collections import deque
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Iterable, Iterator, Tuple
@@ -27,6 +26,7 @@ __all__ = [
     "safe_target_path",
     "write_payload",
     "write_payload_unique",
+    "write_payload_unique_groups",
     "read_tail",
     "read_last_line",
     "read_domain_snapshot",
@@ -541,68 +541,137 @@ def write_payload(domain: str, lines: Iterable[str]) -> None:
             raise
 
 
-def write_payload_unique(domain: str, lines: Iterable[str], *, identity_key: str = "event_id") -> tuple[int, int]:
-    """Append JSON lines once per payload identity under the domain lock.
+def _parse_unique_payload(line: str, identity_key: str) -> tuple[str | None, bytes]:
+    value = json.loads(line)
+    payload = value.get("payload", value) if isinstance(value, dict) else None
+    identity = payload.get(identity_key) if isinstance(payload, dict) else None
+    canonical_payload = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+        allow_nan=False,
+    ).encode("utf-8")
+    return identity if isinstance(identity, str) else None, canonical_payload
 
-    Returns ``(written, skipped)``. Existing malformed lines are preserved but do
-    not participate in identity matching. The lock covers both scan and append.
-    """
-    candidates = list(lines)
-    if not candidates:
-        return 0, 0
+
+def write_payload_unique_groups(
+    domain: str,
+    groups: Iterable[tuple[str, Iterable[str]]],
+    *,
+    identity_key: str = "event_id",
+) -> dict[str, object]:
+    """Append grouped JSON lines with one target-ledger scan under one lock."""
+    materialized = []
+    seen_group_ids = set()
+    for group_id, lines in groups:
+        if not isinstance(group_id, str) or not group_id:
+            raise StorageError("group_id must be a non-empty string")
+        if group_id in seen_group_ids:
+            raise StorageError(f"duplicate group_id: {group_id}")
+        seen_group_ids.add(group_id)
+        materialized.append((group_id, list(lines)))
+    parsed_groups = []
+    candidate_payloads = {}
+    candidate_count = 0
+    for group_id, lines in materialized:
+        parsed = []
+        for line in lines:
+            try:
+                identity, canonical_payload = _parse_unique_payload(line, identity_key)
+            except (TypeError, ValueError) as exc:
+                raise StorageError("invalid JSON line") from exc
+            if not identity:
+                raise StorageError(f"missing {identity_key}")
+            previous = candidate_payloads.get(identity)
+            if previous is not None and previous != canonical_payload:
+                raise StorageError(f"conflicting {identity_key}: {identity}")
+            candidate_payloads.setdefault(identity, canonical_payload)
+            parsed.append((identity, line, canonical_payload))
+            candidate_count += 1
+        parsed_groups.append((group_id, parsed))
+    if candidate_count == 0:
+        return {
+            "written": 0,
+            "skipped": 0,
+            "target_scans": 0,
+            "target_records_scanned": 0,
+            "groups": [
+                {"group_id": gid, "requested": len(lines), "written": 0, "skipped": 0}
+                for gid, lines in materialized
+            ],
+        }
     try:
         target_path = safe_target_path(domain)
     except DomainError as exc:
         raise StorageError("invalid target path") from exc
-
-    parsed: list[tuple[str, str, bytes]] = []
-    candidate_payloads: dict[str, bytes] = {}
-    for line in candidates:
-        try:
-            value = json.loads(line)
-            payload = value.get("payload", value) if isinstance(value, dict) else None
-            identity = payload.get(identity_key) if isinstance(payload, dict) else None
-            canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
-        except (TypeError, ValueError) as exc:
-            raise StorageError("invalid JSON line") from exc
-        if not isinstance(identity, str) or not identity:
-            raise StorageError(f"missing {identity_key}")
-        previous = candidate_payloads.get(identity)
-        if previous is not None and previous != canonical_payload:
-            raise StorageError(f"conflicting {identity_key}: {identity}")
-        candidate_payloads.setdefault(identity, canonical_payload)
-        parsed.append((identity, line, canonical_payload))
-
     with _locked_open(target_path, "a+") as fh:
         fh.seek(0)
-        existing: dict[str, bytes] = {}
+        existing = {}
+        target_records_scanned = 0
         for raw in fh:
+            target_records_scanned += 1
             try:
-                value = json.loads(raw)
-                payload = value.get("payload", value) if isinstance(value, dict) else None
-                identity = payload.get(identity_key) if isinstance(payload, dict) else None
-                canonical_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode("utf-8")
+                identity, canonical_payload = _parse_unique_payload(raw, identity_key)
             except (TypeError, ValueError):
                 continue
-            if isinstance(identity, str):
+            if identity:
                 previous = existing.get(identity)
                 if previous is not None and previous != canonical_payload:
                     raise StorageError(f"conflicting {identity_key}: {identity}")
                 existing.setdefault(identity, canonical_payload)
-        for identity, _, canonical_payload in parsed:
-            previous = existing.get(identity)
-            if previous is not None and previous != canonical_payload:
-                raise StorageError(f"conflicting {identity_key}: {identity}")
-        written = 0
-        skipped = 0
-        for identity, line, canonical_payload in parsed:
-            if identity in existing:
-                skipped += 1
-                continue
-            fh.write(line)
-            fh.write("\n")
-            existing[identity] = canonical_payload
-            written += 1
+        for _, parsed in parsed_groups:
+            for identity, _, canonical_payload in parsed:
+                previous = existing.get(identity)
+                if previous is not None and previous != canonical_payload:
+                    raise StorageError(f"conflicting {identity_key}: {identity}")
+        total_written = 0
+        total_skipped = 0
+        group_results = []
+        for group_id, parsed in parsed_groups:
+            group_written = 0
+            group_skipped = 0
+            for identity, line, canonical_payload in parsed:
+                if identity in existing:
+                    group_skipped += 1
+                    total_skipped += 1
+                    continue
+                fh.write(line)
+                fh.write("\n")
+                existing[identity] = canonical_payload
+                group_written += 1
+                total_written += 1
+            group_results.append(
+                {
+                    "group_id": group_id,
+                    "requested": len(parsed),
+                    "written": group_written,
+                    "skipped": group_skipped,
+                }
+            )
         fh.flush()
         os.fsync(fh.fileno())
-    return written, skipped
+    return {
+        "written": total_written,
+        "skipped": total_skipped,
+        "target_scans": 1,
+        "target_records_scanned": target_records_scanned,
+        "groups": group_results,
+    }
+
+
+def write_payload_unique(
+    domain: str, lines: Iterable[str], *, identity_key: str = "event_id"
+) -> tuple[int, int]:
+    """Append JSON lines once per payload identity under the domain lock."""
+    result = write_payload_unique_groups(
+        domain, [("single", lines)], identity_key=identity_key
+    )
+    groups = result["groups"]
+    if (
+        not isinstance(groups, list)
+        or len(groups) != 1
+        or not isinstance(groups[0], dict)
+    ):
+        raise StorageError("invalid grouped write result")
+    return int(groups[0]["written"]), int(groups[0]["skipped"])
