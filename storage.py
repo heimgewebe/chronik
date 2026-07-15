@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Iterable, Iterator, Tuple
@@ -20,6 +21,7 @@ __all__ = [
     "StorageError",
     "StorageFullError",
     "StorageBusyError",
+    "StorageRecoveryError",
     "sanitize_domain",
     "secure_filename",
     "target_filename",
@@ -53,6 +55,10 @@ class StorageFullError(StorageError):
 
 class StorageBusyError(StorageError):
     """Raised when the target file is locked/busy."""
+
+
+class StorageRecoveryError(StorageError):
+    """Raised when append rollback or durability cannot be established."""
 
 
 DATA_DIR: Final[Path] = Path(
@@ -228,12 +234,12 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
         encoding = None
     elif mode == "a":
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
-        py_mode = "a"
-        encoding = "utf-8"
+        py_mode = "ab"
+        encoding = None
     elif mode == "a+":
         flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
-        py_mode = "a+"
-        encoding = "utf-8"
+        py_mode = "a+b"
+        encoding = None
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
@@ -276,6 +282,114 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
     except Timeout as exc:
         logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
         raise StorageBusyError("busy, try again") from exc
+
+
+def _target_stat_for_fd(target_path: Path, fd: int) -> os.stat_result:
+    """Return the opened-file stat only while the path still names that file."""
+    try:
+        opened = os.fstat(fd)
+        current = os.stat(target_path, follow_symlinks=False)
+    except OSError as exc:
+        raise StorageRecoveryError("target identity unavailable") from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(current.st_mode)
+        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+    ):
+        raise StorageRecoveryError("target identity changed")
+    return opened
+
+
+def _fsync_file(fd: int) -> None:
+    """Sync file contents or expose a distinct durability failure."""
+    try:
+        os.fsync(fd)
+    except OSError as exc:
+        raise StorageRecoveryError("file durability sync failed") from exc
+
+
+def _fsync_parent_directory(target_path: Path) -> None:
+    """Durably bind file creation and metadata changes to the trusted directory."""
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_DIRECTORY", 0)
+    try:
+        dirfd = os.open(str(target_path.parent), flags)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
+    except OSError as exc:
+        raise StorageRecoveryError("directory durability sync failed") from exc
+
+
+def _rollback_append(fd: int, target_path: Path, pre_append_size: int) -> None:
+    """Restore and durably verify the exact byte size captured under the lock."""
+    os.ftruncate(fd, pre_append_size)
+    _fsync_file(fd)
+    _fsync_parent_directory(target_path)
+    restored = _target_stat_for_fd(target_path, fd)
+    if restored.st_size != pre_append_size:
+        raise OSError(
+            errno.EIO,
+            f"rollback size mismatch: expected {pre_append_size}, got {restored.st_size}",
+        )
+
+
+def _raise_append_error(exc: BaseException, target_path: Path) -> None:
+    if isinstance(exc, StorageRecoveryError):
+        raise exc
+    if isinstance(exc, OSError):
+        if exc.errno == errno.ENOSPC:
+            logger.error("disk full", extra={"file": str(target_path)})
+            raise StorageFullError("insufficient storage") from exc
+        raise StorageError("append failed") from exc
+    raise exc
+
+
+def _append_jsonl_transaction(fh, target_path: Path, lines: Iterable[str]) -> None:
+    """Append complete UTF-8 JSONL records or restore the exact previous bytes."""
+    fh.flush()
+    fd = fh.fileno()
+    pre_append = _target_stat_for_fd(target_path, fd)
+    pre_append_size = pre_append.st_size
+    appended_bytes = 0
+    try:
+        for line in lines:
+            payload = (line + "\n").encode("utf-8")
+            written = os.write(fd, payload)
+            if written != len(payload):
+                raise OSError(
+                    errno.EIO,
+                    f"short append write: expected {len(payload)}, wrote {written}",
+                )
+            appended_bytes += written
+        if appended_bytes == 0:
+            return
+        _fsync_file(fd)
+        _fsync_parent_directory(target_path)
+        committed = _target_stat_for_fd(target_path, fd)
+        expected_size = pre_append_size + appended_bytes
+        if committed.st_size != expected_size:
+            raise StorageRecoveryError(
+                f"append size mismatch: expected {expected_size}, got {committed.st_size}"
+            )
+    except BaseException as exc:
+        try:
+            _rollback_append(fd, target_path, pre_append_size)
+        except BaseException as rollback_exc:
+            logger.critical(
+                "append rollback failed",
+                extra={
+                    "file": str(target_path),
+                    "pre_append_size": pre_append_size,
+                    "append_error": repr(exc),
+                    "rollback_error": repr(rollback_exc),
+                },
+            )
+            raise StorageRecoveryError(
+                "append rollback failed; ledger integrity is uncertain"
+            ) from rollback_exc
+        _raise_append_error(exc, target_path)
 
 
 def read_tail(domain: str, limit: int) -> list[str]:
@@ -530,18 +644,12 @@ def write_payload(domain: str, lines: Iterable[str]) -> None:
         raise StorageError("invalid target path") from exc
 
     with _locked_open(target_path, "a") as fh:
-        try:
-            for line in lines:
-                fh.write(line)
-                fh.write("\n")
-        except OSError as exc:
-            if exc.errno == errno.ENOSPC:
-                logger.error("disk full", extra={"file": str(target_path)})
-                raise StorageFullError("insufficient storage") from exc
-            raise
+        _append_jsonl_transaction(fh, target_path, lines)
 
 
-def _parse_unique_payload(line: str, identity_key: str) -> tuple[str | None, bytes]:
+def _parse_unique_payload(
+    line: str | bytes, identity_key: str
+) -> tuple[str | None, bytes]:
     value = json.loads(line)
     payload = value.get("payload", value) if isinstance(value, dict) else None
     identity = payload.get(identity_key) if isinstance(payload, dict) else None
@@ -628,6 +736,7 @@ def write_payload_unique_groups(
         total_written = 0
         total_skipped = 0
         group_results = []
+        append_lines = []
         for group_id, parsed in parsed_groups:
             group_written = 0
             group_skipped = 0
@@ -636,8 +745,7 @@ def write_payload_unique_groups(
                     group_skipped += 1
                     total_skipped += 1
                     continue
-                fh.write(line)
-                fh.write("\n")
+                append_lines.append(line)
                 existing[identity] = canonical_payload
                 group_written += 1
                 total_written += 1
@@ -649,8 +757,7 @@ def write_payload_unique_groups(
                     "skipped": group_skipped,
                 }
             )
-        fh.flush()
-        os.fsync(fh.fileno())
+        _append_jsonl_transaction(fh, target_path, append_lines)
     return {
         "written": total_written,
         "skipped": total_skipped,
