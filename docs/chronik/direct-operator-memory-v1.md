@@ -112,11 +112,52 @@ python tools/coding_memory.py \
 Der Receipt bindet die Kohorte sowohl an die Filter als auch an den SHA-256 des
 vollständig gelesenen Ledger-Snapshots.
 
+## Skalierungsvertrag
+
+Der Import liest und validiert weiterhin jede vollständige Quelldatei. Alle
+gültigen Ereignisse werden danach in **einer** gruppierten Storage-Operation
+abgeglichen. Unter einem einzigen Lock wird der Ziel-Ledger höchstens einmal
+vollständig gescannt. Pro Quelldatei bleiben getrennte, an Pfad, SHA-256 und
+Größe gebundene Receipts erhalten.
+
+Vor der Optimierung wurden folgende Grenzen festgelegt:
+
+- höchstens ein Ziel-Ledger-Scan pro Batch;
+- repräsentativer Tier: 200 Quelldateien, 500 bestehende Ereignisse, höchstens
+  5 Sekunden;
+- projizierter Tier: 1000 Quelldateien, 5000 bestehende Ereignisse, höchstens
+  30 Sekunden;
+- absolute Timergrenze: höchstens 60 Sekunden, also mindestens Faktor 2
+  Reserve zum Zwei-Minuten-Intervall.
+
+Reproduzierbarer Benchmark:
+
+```bash
+python tools/benchmark_outbox_import.py \
+  --output /tmp/chronik-outbox-benchmark.json
+```
+
+Der Bericht enthält Maschinenkontext, Laufzeit und Peak-Speicher für Erst- und
+Wiederholungsimport, Ziel-Ledger-Scans, gescannte Zieldatensätze sowie
+geschriebene und übersprungene Ereignisse. Ein Importbeleg bleibt dabei reine
+Evidenz: Auch der Wiederholungsimport gleicht jedes Ereignis gegen den
+tatsächlichen Ledger ab und vertraut niemals nur dem Receipt.
+
+Ein Receipt wird erst nach dem erfolgreichen Ledger-Abgleich geschrieben. Falls
+dieser Evidenzschritt scheitert, bleiben die bereits bestätigten Ledger-Zahlen
+in der Batch-Ausgabe erhalten und die betroffene Quelle wird zusätzlich als
+Fehler gemeldet. Der nächste Lauf gleicht erneut gegen den realen Ledger ab und
+kann das Receipt wiederherstellen. `target_scans = 0` bedeutet, dass keine
+gültige Quelle einen Ledger-Abgleich erforderte; `null` bedeutet, dass für einen
+vorbereiteten Batch keine verlässliche Scan-Telemetrie vorliegt.
+
 ## User-Service
 
 Die Unit `chronik-outbox-import.service` ist ein gehärteter One-shot-Importer.
-Der Timer startet sie alle zwei Minuten. Die Unit darf die Grabowski-Outbox nur
-lesen und ausschließlich unter `~/.local/state/chronik` schreiben.
+Der Timer startet sie alle zwei Minuten. Dieselbe One-shot-Unit wird von systemd
+nicht parallel ein zweites Mal gestartet; ein noch aktiver Lauf verhindert damit
+überlappende Importer. Die Unit darf die Grabowski-Outbox nur lesen und
+ausschließlich unter `~/.local/state/chronik` schreiben.
 
 Der HTTP-Dienst `chronik.service` ist für diesen Pfad nicht erforderlich. Er
 soll nur aktiviert werden, wenn ein konkreter externer Konsument den HTTP-Ingest
