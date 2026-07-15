@@ -135,3 +135,202 @@ def test_write_payload_unique_wrapper_retains_tuple_contract(mock_data_dir):
     assert storage.write_payload_unique(
         "agent.ledger", [_unique_line("one", "a"), _unique_line("one", "a")]
     ) == (1, 1)
+
+
+def test_write_payload_rolls_back_short_write(mock_data_dir, monkeypatch):
+    original = b'{"existing":1}\n'
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(original)
+    real_write = storage.os.write
+
+    def short_write(fd, payload):
+        prefix = max(1, len(payload) // 2)
+        return real_write(fd, payload[:prefix])
+
+    monkeypatch.setattr(storage.os, "write", short_write)
+
+    with pytest.raises(storage.StorageError, match="append failed"):
+        storage.write_payload("agent.ledger", ['{"new":2}'])
+
+    assert target.read_bytes() == original
+    assert storage.read_domain_snapshot("agent.ledger") == original
+
+
+def test_write_payload_rolls_back_enospc_after_prior_record(mock_data_dir, monkeypatch):
+    original = b'{"existing":1}\n'
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(original)
+    real_write = storage.os.write
+    calls = 0
+
+    def fail_second_write(fd, payload):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError(28, "No space left on device")
+        return real_write(fd, payload)
+
+    monkeypatch.setattr(storage.os, "write", fail_second_write)
+
+    with pytest.raises(storage.StorageFullError, match="insufficient storage"):
+        storage.write_payload("agent.ledger", ['{"new":2}', '{"new":3}'])
+
+    assert target.read_bytes() == original
+
+
+def test_unique_group_append_rolls_back_without_weakening_conflicts(
+    mock_data_dir, monkeypatch
+):
+    first = _unique_line("existing", "same")
+    storage.write_payload("agent.ledger", [first])
+    target = mock_data_dir / "agent.ledger.jsonl"
+    original = target.read_bytes()
+    real_write = storage.os.write
+
+    def short_write(fd, payload):
+        real_write(fd, payload[:4])
+        return 4
+
+    monkeypatch.setattr(storage.os, "write", short_write)
+    with pytest.raises(storage.StorageError, match="append failed"):
+        storage.write_payload_unique_groups(
+            "agent.ledger", [("new", [_unique_line("new", "value")])]
+        )
+    assert target.read_bytes() == original
+
+    monkeypatch.setattr(storage.os, "write", real_write)
+    with pytest.raises(storage.StorageError, match="conflicting event_id"):
+        storage.write_payload_unique_groups(
+            "agent.ledger", [("conflict", [_unique_line("existing", "different")])]
+        )
+    assert target.read_bytes() == original
+
+
+def test_append_rollback_failure_is_distinct(mock_data_dir, monkeypatch):
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(b'{"existing":1}\n')
+
+    def fail_write(fd, payload):
+        raise OSError(28, "No space left on device")
+
+    def fail_rollback(fd, size):
+        raise OSError(5, "rollback failed")
+
+    monkeypatch.setattr(storage.os, "write", fail_write)
+    monkeypatch.setattr(storage.os, "ftruncate", fail_rollback)
+
+    with pytest.raises(
+        storage.StorageRecoveryError, match="ledger integrity is uncertain"
+    ):
+        storage.write_payload("agent.ledger", ['{"new":2}'])
+
+
+def test_append_detects_target_replacement_and_fails_closed(
+    mock_data_dir, monkeypatch
+):
+    target = mock_data_dir / "agent.ledger.jsonl"
+    original = b'{"existing":1}\n'
+    target.write_bytes(original)
+    displaced = mock_data_dir / "displaced.jsonl"
+    real_write = storage.os.write
+    replaced = False
+
+    def replace_after_write(fd, payload):
+        nonlocal replaced
+        written = real_write(fd, payload)
+        if not replaced:
+            target.rename(displaced)
+            target.write_bytes(b'{"replacement":true}\n')
+            replaced = True
+        return written
+
+    monkeypatch.setattr(storage.os, "write", replace_after_write)
+
+    with pytest.raises(storage.StorageRecoveryError):
+        storage.write_payload("agent.ledger", ['{"new":2}'])
+
+    assert target.read_bytes() == b'{"replacement":true}\n'
+    assert displaced.read_bytes() == original
+
+
+def test_append_rollback_happens_before_domain_lock_release(
+    mock_data_dir, monkeypatch
+):
+    from filelock import FileLock, Timeout
+
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(b'{"existing":1}\n')
+    lock_path = storage.get_lock_path(target)
+    real_truncate = storage.os.ftruncate
+    lock_was_held = False
+
+    def checked_truncate(fd, size):
+        nonlocal lock_was_held
+        contender = FileLock(str(lock_path), timeout=0)
+        try:
+            contender.acquire()
+        except Timeout:
+            lock_was_held = True
+        else:
+            contender.release()
+        real_truncate(fd, size)
+
+    def fail_write(fd, payload):
+        raise OSError(5, "simulated append failure")
+
+    monkeypatch.setattr(storage.os, "write", fail_write)
+    monkeypatch.setattr(storage.os, "ftruncate", checked_truncate)
+
+    with pytest.raises(storage.StorageError, match="append failed"):
+        storage.write_payload("agent.ledger", ['{"new":2}'])
+
+    assert lock_was_held
+
+
+def test_write_payload_serializes_across_processes(mock_data_dir):
+    import os
+    import subprocess
+    import sys
+
+    code = (
+        "import storage; "
+        "storage.write_payload('agent.ledger', "
+        "['{\\\"process\\\":' + __import__('sys').argv[1] + '}'])"
+    )
+    env = os.environ.copy()
+    env["CHRONIK_DATA_DIR"] = str(mock_data_dir)
+    processes = [
+        subprocess.Popen([sys.executable, "-c", code, str(index)], env=env)
+        for index in range(8)
+    ]
+    assert [process.wait(timeout=20) for process in processes] == [0] * 8
+
+    target = mock_data_dir / "agent.ledger.jsonl"
+    lines = target.read_bytes().splitlines(keepends=True)
+    assert len(lines) == 8
+    assert all(line.endswith(b"\n") for line in lines)
+    assert {json.loads(line)["process"] for line in lines} == set(range(8))
+
+
+def test_commit_fsync_failure_rolls_back_and_is_recovery_error(
+    mock_data_dir, monkeypatch
+):
+    original = b'{"existing":1}\n'
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(original)
+    real_fsync = storage.os.fsync
+    calls = 0
+
+    def fail_first_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(5, "simulated durability failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(storage.os, "fsync", fail_first_fsync)
+
+    with pytest.raises(storage.StorageRecoveryError, match="durability sync failed"):
+        storage.write_payload("agent.ledger", ['{"new":2}'])
+
+    assert target.read_bytes() == original

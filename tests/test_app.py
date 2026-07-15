@@ -763,22 +763,15 @@ def test_disk_full_returns_507(monkeypatch, tmp_path, client):
 
 
 def test_disk_full_during_write_returns_507(monkeypatch, tmp_path, client):
-    """Test ENOSPC during the write call itself (not just open)."""
-    from contextlib import contextmanager
-
+    """Test ENOSPC during the low-level transactional append."""
     secret = _test_secret()
     monkeypatch.setenv("CHRONIK_TOKEN", secret)
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
 
-    # Mock _locked_open to return a file-like object that fails on write
-    @contextmanager
-    def _mock_locked_open(*args, **kwargs):
-        class MockFile:
-            def write(self, data):
-                raise OSError(errno.ENOSPC, "No space left on device")
-        yield MockFile()
+    def _raise_enospc(fd, data):
+        raise OSError(errno.ENOSPC, "No space left on device")
 
-    monkeypatch.setattr("storage._locked_open", _mock_locked_open)
+    monkeypatch.setattr("storage.os.write", _raise_enospc)
 
     response = client.post(
         "/ingest/example.com",
@@ -788,6 +781,38 @@ def test_disk_full_during_write_returns_507(monkeypatch, tmp_path, client):
 
     assert response.status_code == 507
     assert "insufficient" in response.text.lower()
+
+
+def test_recovery_error_returns_500_and_preserves_original_bytes(
+    monkeypatch, tmp_path, client
+):
+    secret = _test_secret()
+    monkeypatch.setenv("CHRONIK_TOKEN", secret)
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    target = tmp_path / "example.com.jsonl"
+    original = b'{"existing":true}\n'
+    target.write_bytes(original)
+    real_fsync = storage.os.fsync
+    calls = 0
+
+    def fail_first_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(errno.EIO, "simulated durability failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr("storage.os.fsync", fail_first_fsync)
+
+    response = client.post(
+        "/ingest/example.com",
+        headers={"X-Auth": secret, "Content-Type": "application/json"},
+        json={"data": "foo"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "storage error"}
+    assert target.read_bytes() == original
 
 
 def test_fd_leak_prevented_on_oserror(monkeypatch, tmp_path, client):
