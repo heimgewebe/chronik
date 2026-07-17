@@ -172,8 +172,58 @@ def _prepare_grabowski_outbox_source(source: Path, *, receipt_dir: Path) -> dict
         "events": events,
         "source_sha256": source_sha256,
         "receipt_path": receipt_path,
+        "previous_receipt": previous,
         "source_unchanged": previous is not None and previous.get("source_sha256") == source_sha256,
     }
+
+
+def _receipt_matches_prepared_source(
+    prepared: dict[str, Any], receipt: dict[str, Any] | None
+) -> bool:
+    """Return whether an existing receipt is intact and bound to these source bytes."""
+    if not isinstance(receipt, dict):
+        return False
+    source = prepared["source"]
+    raw = prepared["raw"]
+    events = prepared["events"]
+    expected = {
+        "schema_version": "chronik-grabowski-outbox-import.v1",
+        "domain": DOMAIN,
+        "source_path": str(source.resolve()),
+        "source_sha256": prepared["source_sha256"],
+        "source_bytes": len(raw),
+        "selection_contract": sorted(HIGH_VALUE_KINDS),
+        "event_ids": sorted(event["event_id"] for event in events),
+        "requested": len(events),
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        return False
+    for key in (
+        "imported",
+        "skipped_existing",
+        "batch_target_scans",
+        "batch_target_records_scanned",
+    ):
+        value = receipt.get(key)
+        if type(value) is not int or value < 0:
+            return False
+    if receipt["imported"] + receipt["skipped_existing"] != len(events):
+        return False
+    recorded_at = receipt.get("recorded_at")
+    if not isinstance(recorded_at, str):
+        return False
+    try:
+        _parse_timestamp(recorded_at, field="recorded_at")
+    except ValueError:
+        return False
+    claimed_digest = receipt.get("receipt_sha256")
+    if not isinstance(claimed_digest, str):
+        return False
+    unsigned = dict(receipt)
+    unsigned.pop("receipt_sha256", None)
+    return claimed_digest == sha256_bytes(canonical_bytes(unsigned))
 
 
 def _write_grabowski_outbox_receipt(
@@ -188,6 +238,38 @@ def _write_grabowski_outbox_receipt(
     raw = prepared["raw"]
     events = prepared["events"]
     receipt_path = prepared["receipt_path"]
+    previous_receipt = prepared.get("previous_receipt")
+    if (
+        prepared["source_unchanged"]
+        and written == 0
+        and skipped == len(events)
+        and _receipt_matches_prepared_source(prepared, previous_receipt)
+    ):
+        # The authoritative ledger was still scanned above. Reusing this intact
+        # source-bound receipt only suppresses an identical filesystem rewrite.
+        return {
+            "schema_version": previous_receipt["schema_version"],
+            "domain": previous_receipt["domain"],
+            "source_path": previous_receipt["source_path"],
+            "source_sha256": previous_receipt["source_sha256"],
+            "source_bytes": previous_receipt["source_bytes"],
+            "selection_contract": previous_receipt["selection_contract"],
+            "event_ids": previous_receipt["event_ids"],
+            "requested": previous_receipt["requested"],
+            "imported": written,
+            "skipped_existing": skipped,
+            "batch_target_scans": target_scans,
+            "batch_target_records_scanned": target_records_scanned,
+            "recorded_at": previous_receipt["recorded_at"],
+            "historical_only": previous_receipt["historical_only"],
+            "does_not_establish": previous_receipt["does_not_establish"],
+            "receipt_sha256": previous_receipt["receipt_sha256"],
+            "receipt_digest_scope": "persisted_receipt",
+            "unchanged": True,
+            "receipt_path": str(receipt_path),
+            "receipt_reused": True,
+            "receipt_written": False,
+        }
     receipt = {
         "schema_version": "chronik-grabowski-outbox-import.v1",
         "domain": DOMAIN,
@@ -214,6 +296,9 @@ def _write_grabowski_outbox_receipt(
         **receipt,
         "unchanged": prepared["source_unchanged"],
         "receipt_path": str(receipt_path),
+        "receipt_digest_scope": "persisted_receipt",
+        "receipt_reused": False,
+        "receipt_written": True,
     }
 
 
@@ -259,6 +344,8 @@ def _import_prepared_grabowski_sources(
                 "imported": written,
                 "skipped_existing": skipped,
                 "unchanged": prepared["source_unchanged"],
+                "receipt_reused": False,
+                "receipt_written": False,
             }
             receipt_errors.append((str(prepared["source"]), exc))
         results.append(result)
@@ -313,6 +400,8 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
         "files_seen": len(sources),
         "files_imported_or_confirmed": len(results),
         "files_unchanged": sum(1 for result in results if result.get("unchanged") is True),
+        "receipts_written": sum(1 for result in results if result.get("receipt_written") is True),
+        "receipts_reused": sum(1 for result in results if result.get("receipt_reused") is True),
         "events_imported": sum(int(result.get("imported", 0)) for result in results),
         "events_skipped_existing": sum(int(result.get("skipped_existing", 0)) for result in results),
         "target_scans": target_scans,

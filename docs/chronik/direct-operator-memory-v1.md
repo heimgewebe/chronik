@@ -169,3 +169,11 @@ Chronik bleibt historische Evidenz. `summary`, `query` und `freeze` treffen
 keine Aussage darüber, ob ein Repository, Dienst, Task oder Deployment jetzt
 noch denselben Zustand besitzt. Sie ersetzen weder Bureau-Wahrheit noch frische
 Git-, CI-, Runtime- oder Recovery-Prüfungen.
+
+## Receipt-Wiederverwendung und Replay-Autorität
+
+Jeder Outbox-Import gleicht die Event-IDs weiterhin mit dem maßgeblichen Chronik-Ledger ab. Sind die Quellbytes unverändert, alle angeforderten Events im Ledger vorhanden und der vorhandene quellgebundene Receipt durch seinen SHA-256-Digest intakt, wird die Receipt-Datei nicht ersetzt. Die Batch-Telemetrie trennt `receipts_written` und `receipts_reused`.
+
+`receipt_sha256` im Laufergebnis bindet ausdrücklich die unveränderte Receipt-Datei (`receipt_digest_scope=persisted_receipt`), nicht die aktuellen Laufzähler. `imported`, `skipped_existing` und die Scan-Zähler beschreiben den aktuellen Lauf.
+
+Receipts bleiben nicht maßgeblich. Fehlen Ledger-Daten, werden sie trotz intaktem Receipt aus der Grabowski-Outbox rekonstruiert. Die Quelldateien bleiben deshalb Replay-Evidenz; Löschen oder Kompaktieren benötigt einen eigenen Verlustwiederherstellungsvertrag und folgt nicht aus der Receipt-Wiederverwendung.
