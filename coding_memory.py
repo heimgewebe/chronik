@@ -5,6 +5,7 @@ import hashlib
 import heapq
 import json
 import os
+import stat
 import tempfile
 from collections import Counter
 from datetime import datetime, timezone
@@ -27,6 +28,10 @@ OPERATIONS = frozenset({"implement", "review", "merge", "deploy", "runtime_verif
 TASK_CLASSES = frozenset({"coding", "review", "merge", "deploy", "runtime_verify", "recovery", "maintenance", "diagnostic", "other"})
 OUTCOMES = frozenset({"started", "completed", "blocked", "failed", "reverted", "outcome_unknown"})
 MAX_INTEGRITY_DIAGNOSTICS = 20
+GRABOWSKI_TERMINAL_KINDS = frozenset({"agent.run.completed", "agent.run.blocked"})
+GRABOWSKI_BUNDLE_DIRNAME = "bundles"
+GRABOWSKI_BUNDLE_ENTRY_SCHEMA = "chronik-grabowski-outbox-bundle-source.v1"
+GRABOWSKI_BUNDLE_MANIFEST_SCHEMA = "chronik-grabowski-outbox-bundle-manifest.v1"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -111,8 +116,7 @@ def import_events(events: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return receipt
 
 
-def _read_jsonl_snapshot(path: Path) -> tuple[bytes, list[dict[str, Any]]]:
-    raw = path.read_bytes()
+def _parse_jsonl_snapshot(path: Path, raw: bytes) -> list[dict[str, Any]]:
     if raw and not raw.endswith(b"\n"):
         raise ValueError(f"incomplete JSONL tail: {path}")
     events: list[dict[str, Any]] = []
@@ -126,7 +130,16 @@ def _read_jsonl_snapshot(path: Path) -> tuple[bytes, list[dict[str, Any]]]:
         if not isinstance(value, dict):
             raise ValueError(f"event must be an object at {path}:{line_number}")
         events.append(value)
-    return raw, events
+    return events
+
+
+def _read_jsonl_snapshot(path: Path) -> tuple[bytes, list[dict[str, Any]]]:
+    raw = path.read_bytes()
+    return raw, _parse_jsonl_snapshot(path, raw)
+
+
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
 
 
 def _receipt_path(source: Path, receipt_dir: Path) -> Path:
@@ -157,15 +170,27 @@ def _validate_grabowski_source(event: dict[str, Any]) -> None:
         raise ValueError(f"unsupported operator-memory kind: {event.get('kind')}")
 
 
-def _prepare_grabowski_outbox_source(source: Path, *, receipt_dir: Path) -> dict[str, Any]:
-    raw, events = _read_jsonl_snapshot(source)
+def _prepare_grabowski_source_bytes(
+    source: Path,
+    raw: bytes,
+    *,
+    receipt_dir: Path,
+    source_origin: str,
+    source_identity: tuple[int, int, int, int] | None = None,
+    source_mtime_ns: int | None = None,
+    bundle_manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    events = _parse_jsonl_snapshot(source, raw)
     if not events:
         raise ValueError(f"outbox contains no events: {source}")
     for event in events:
         _validate_grabowski_source(event)
     source_sha256 = sha256_bytes(raw)
     receipt_path = _receipt_path(source, receipt_dir)
-    previous = _load_receipt(receipt_path)
+    try:
+        previous = _load_receipt(receipt_path)
+    except ValueError:
+        previous = None
     return {
         "source": source,
         "raw": raw,
@@ -174,7 +199,27 @@ def _prepare_grabowski_outbox_source(source: Path, *, receipt_dir: Path) -> dict
         "receipt_path": receipt_path,
         "previous_receipt": previous,
         "source_unchanged": previous is not None and previous.get("source_sha256") == source_sha256,
+        "source_origin": source_origin,
+        "source_identity": source_identity,
+        "source_mtime_ns": source_mtime_ns,
+        "bundle_manifest_path": bundle_manifest_path,
     }
+
+
+def _prepare_grabowski_outbox_source(source: Path, *, receipt_dir: Path) -> dict[str, Any]:
+    before = source.stat()
+    raw = source.read_bytes()
+    after = source.stat()
+    if _file_identity(before) != _file_identity(after):
+        raise ValueError(f"outbox source changed while reading: {source}")
+    return _prepare_grabowski_source_bytes(
+        source,
+        raw,
+        receipt_dir=receipt_dir,
+        source_origin="loose",
+        source_identity=_file_identity(after),
+        source_mtime_ns=after.st_mtime_ns,
+    )
 
 
 def _receipt_matches_prepared_source(
@@ -226,6 +271,381 @@ def _receipt_matches_prepared_source(
     return claimed_digest == sha256_bytes(canonical_bytes(unsigned))
 
 
+
+def _ledger_payloads_by_event_id() -> tuple[dict[str, bytes], int]:
+    """Read one complete ledger snapshot and bind every event id to its payload."""
+    snapshot = storage.read_domain_snapshot(DOMAIN)
+    payloads: dict[str, bytes] = {}
+    records_scanned = 0
+    for line_number, raw_line in enumerate(snapshot.splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        records_scanned += 1
+        try:
+            value = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            raise storage.StorageError(
+                f"invalid ledger JSON at record {line_number}"
+            ) from exc
+        payload = value.get("payload", value) if isinstance(value, dict) else None
+        if not isinstance(payload, dict):
+            raise storage.StorageError(
+                f"invalid ledger payload at record {line_number}"
+            )
+        event_id = payload.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise storage.StorageError(
+                f"ledger record {line_number} has no event_id"
+            )
+        canonical = canonical_bytes(payload)
+        previous = payloads.get(event_id)
+        if previous is not None and previous != canonical:
+            raise storage.StorageError(f"conflicting event_id in ledger: {event_id}")
+        payloads.setdefault(event_id, canonical)
+    return payloads, records_scanned
+
+
+def _bundle_source_record(
+    prepared: dict[str, Any], *, offset: int
+) -> dict[str, Any]:
+    events = prepared["events"]
+    record = {
+        "schema_version": GRABOWSKI_BUNDLE_ENTRY_SCHEMA,
+        "source_path": str(prepared["source"].resolve()),
+        "source_name": prepared["source"].name,
+        "offset": offset,
+        "source_sha256": prepared["source_sha256"],
+        "source_bytes": len(prepared["raw"]),
+        "event_ids": [event["event_id"] for event in events],
+        "terminal_kind": events[-1]["kind"],
+    }
+    record["record_sha256"] = sha256_bytes(canonical_bytes(record))
+    return record
+
+
+def _decode_bundle_source(
+    record: dict[str, Any],
+    bundle_raw: bytes,
+    *,
+    expected_offset: int,
+    source_dir: Path,
+    receipt_dir: Path,
+    manifest_path: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    expected_keys = {
+        "schema_version",
+        "source_path",
+        "source_name",
+        "offset",
+        "source_sha256",
+        "source_bytes",
+        "event_ids",
+        "terminal_kind",
+        "record_sha256",
+    }
+    if set(record) != expected_keys:
+        raise ValueError(f"invalid bundle source fields: {manifest_path}")
+    if record["schema_version"] != GRABOWSKI_BUNDLE_ENTRY_SCHEMA:
+        raise ValueError(f"unsupported bundle source schema: {manifest_path}")
+    claimed_record_sha256 = record.get("record_sha256")
+    if not isinstance(claimed_record_sha256, str):
+        raise ValueError(f"invalid bundle source digest: {manifest_path}")
+    unsigned = dict(record)
+    unsigned.pop("record_sha256")
+    if claimed_record_sha256 != sha256_bytes(canonical_bytes(unsigned)):
+        raise ValueError(f"bundle source digest mismatch: {manifest_path}")
+    source_path = record.get("source_path")
+    source_name = record.get("source_name")
+    if not isinstance(source_path, str) or not isinstance(source_name, str):
+        raise ValueError(f"invalid bundled source identity: {manifest_path}")
+    original_source = Path(source_path)
+    if (
+        not original_source.is_absolute()
+        or original_source.name != source_name
+        or Path(source_name).name != source_name
+        or source_name in {"", ".", ".."}
+        or not source_name.endswith(".jsonl")
+    ):
+        raise ValueError(f"invalid bundled source identity: {manifest_path}")
+    offset = record.get("offset")
+    source_bytes = record.get("source_bytes")
+    if (
+        type(offset) is not int
+        or offset != expected_offset
+        or type(source_bytes) is not int
+        or source_bytes < 1
+        or offset + source_bytes > len(bundle_raw)
+    ):
+        raise ValueError(f"invalid bundle source byte range: {manifest_path}")
+    raw = bundle_raw[offset : offset + source_bytes]
+    source_sha256 = record.get("source_sha256")
+    if not isinstance(source_sha256, str) or source_sha256 != sha256_bytes(raw):
+        raise ValueError(f"bundled source digest mismatch: {manifest_path}")
+    source = source_dir.resolve() / source_name
+    prepared = _prepare_grabowski_source_bytes(
+        source,
+        raw,
+        receipt_dir=receipt_dir,
+        source_origin="bundle",
+        bundle_manifest_path=manifest_path,
+    )
+    expected_event_ids = [event["event_id"] for event in prepared["events"]]
+    if record.get("event_ids") != expected_event_ids:
+        raise ValueError(f"bundled event id list mismatch: {manifest_path}")
+    terminal_kind = record.get("terminal_kind")
+    if (
+        terminal_kind not in GRABOWSKI_TERMINAL_KINDS
+        or prepared["events"][-1]["kind"] != terminal_kind
+    ):
+        raise ValueError(f"bundled source is not terminal: {manifest_path}")
+    return prepared, dict(record)
+
+
+def _load_grabowski_bundle(
+    manifest_path: Path,
+    *,
+    source_dir: Path,
+    receipt_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    manifest_raw = _read_immutable_artifact(
+        manifest_path, label="bundle manifest"
+    )
+    if not manifest_raw.endswith(b"\n"):
+        raise ValueError(f"incomplete bundle manifest: {manifest_path}")
+    try:
+        manifest = json.loads(manifest_raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid bundle manifest JSON: {manifest_path}") from exc
+    expected_manifest_keys = {
+        "schema_version",
+        "domain",
+        "bundle_file",
+        "bundle_sha256",
+        "bundle_bytes",
+        "source_count",
+        "event_count",
+        "sources",
+        "created_at",
+        "historical_only",
+        "does_not_establish",
+        "manifest_sha256",
+    }
+    if not isinstance(manifest, dict) or set(manifest) != expected_manifest_keys:
+        raise ValueError(f"invalid bundle manifest fields: {manifest_path}")
+    if (
+        manifest["schema_version"] != GRABOWSKI_BUNDLE_MANIFEST_SCHEMA
+        or manifest["domain"] != DOMAIN
+        or manifest["historical_only"] is not True
+        or manifest["does_not_establish"] != DOES_NOT_ESTABLISH
+    ):
+        raise ValueError(f"invalid bundle manifest contract: {manifest_path}")
+    claimed_manifest_sha256 = manifest.get("manifest_sha256")
+    if not isinstance(claimed_manifest_sha256, str):
+        raise ValueError(f"invalid manifest digest: {manifest_path}")
+    unsigned_manifest = dict(manifest)
+    unsigned_manifest.pop("manifest_sha256")
+    if claimed_manifest_sha256 != sha256_bytes(canonical_bytes(unsigned_manifest)):
+        raise ValueError(f"bundle manifest digest mismatch: {manifest_path}")
+    created_at = manifest.get("created_at")
+    if not isinstance(created_at, str):
+        raise ValueError(f"invalid bundle creation timestamp: {manifest_path}")
+    _parse_timestamp(created_at, field="created_at")
+    bundle_file = manifest.get("bundle_file")
+    bundle_sha256 = manifest.get("bundle_sha256")
+    if not isinstance(bundle_file, str) or Path(bundle_file).name != bundle_file:
+        raise ValueError(f"invalid bundle filename: {manifest_path}")
+    if not isinstance(bundle_sha256, str) or len(bundle_sha256) != 64:
+        raise ValueError(f"invalid bundle digest: {manifest_path}")
+    expected_prefix = f"grabowski-{bundle_sha256}"
+    if (
+        bundle_file != f"{expected_prefix}.bundle.jsonl"
+        or manifest_path.name != f"{expected_prefix}.manifest.json"
+    ):
+        raise ValueError(f"bundle filename is not digest-bound: {manifest_path}")
+    bundle_path = manifest_path.parent / bundle_file
+    if bundle_path.parent.resolve() != manifest_path.parent.resolve():
+        raise ValueError(f"bundle path escapes bundle directory: {manifest_path}")
+    bundle_raw = _read_immutable_artifact(bundle_path, label="bundle file")
+    bundle_bytes = manifest.get("bundle_bytes")
+    if type(bundle_bytes) is not int or bundle_bytes < 1 or bundle_bytes != len(bundle_raw):
+        raise ValueError(f"bundle byte count mismatch: {bundle_path}")
+    if sha256_bytes(bundle_raw) != bundle_sha256:
+        raise ValueError(f"bundle digest mismatch: {bundle_path}")
+    if not bundle_raw.endswith(b"\n"):
+        raise ValueError(f"incomplete bundle JSONL: {bundle_path}")
+    source_records = manifest.get("sources")
+    if not isinstance(source_records, list) or not source_records:
+        raise ValueError(f"empty bundle is forbidden: {manifest_path}")
+    prepared_sources: list[dict[str, Any]] = []
+    validated_records: list[dict[str, Any]] = []
+    names: set[str] = set()
+    original_paths: set[str] = set()
+    expected_offset = 0
+    for record in source_records:
+        if not isinstance(record, dict):
+            raise ValueError(f"bundle source must be an object: {manifest_path}")
+        prepared, validated = _decode_bundle_source(
+            record,
+            bundle_raw,
+            expected_offset=expected_offset,
+            source_dir=source_dir,
+            receipt_dir=receipt_dir,
+            manifest_path=manifest_path,
+        )
+        source_name = validated["source_name"]
+        source_path = validated["source_path"]
+        if source_name in names or source_path in original_paths:
+            raise ValueError(f"duplicate source in bundle: {manifest_path}")
+        names.add(source_name)
+        original_paths.add(source_path)
+        prepared_sources.append(prepared)
+        validated_records.append(validated)
+        expected_offset += validated["source_bytes"]
+    if expected_offset != len(bundle_raw):
+        raise ValueError(f"bundle has unassigned trailing bytes: {bundle_path}")
+    source_count = manifest.get("source_count")
+    event_count = manifest.get("event_count")
+    if (
+        type(source_count) is not int
+        or source_count != len(prepared_sources)
+        or type(event_count) is not int
+        or event_count != sum(len(item["events"]) for item in prepared_sources)
+    ):
+        raise ValueError(f"bundle manifest inventory mismatch: {manifest_path}")
+    return prepared_sources, {
+        "manifest_path": str(manifest_path),
+        "manifest_sha256": claimed_manifest_sha256,
+        "bundle_path": str(bundle_path),
+        "bundle_sha256": bundle_sha256,
+        "bundle_bytes": bundle_bytes,
+        "source_count": source_count,
+        "event_count": event_count,
+        "sources": validated_records,
+    }
+
+
+def _merge_prepared_grabowski_sources(
+    prepared_sources: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+    for prepared in prepared_sources:
+        key = str(prepared["source"].resolve())
+        previous = merged.get(key)
+        if previous is None:
+            merged[key] = prepared
+            continue
+        if previous["raw"] != prepared["raw"]:
+            raise ValueError(f"conflicting loose and bundled source bytes: {key}")
+        if previous.get("source_origin") == "bundle" and prepared.get("source_origin") == "loose":
+            merged[key] = prepared
+    return [merged[key] for key in sorted(merged)]
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _ensure_bundle_directory(source_dir: Path, bundle_dir: Path) -> None:
+    try:
+        bundle_dir.mkdir(mode=0o700)
+    except FileExistsError:
+        pass
+    try:
+        bundle_state = bundle_dir.lstat()
+    except OSError as exc:
+        raise ValueError(f"cannot inspect bundle directory: {bundle_dir}") from exc
+    if not stat.S_ISDIR(bundle_state.st_mode):
+        raise ValueError(f"bundle directory must be a real directory: {bundle_dir}")
+    if bundle_dir.resolve().parent != source_dir.resolve():
+        raise ValueError(f"bundle directory escapes source directory: {bundle_dir}")
+    _fsync_directory(source_dir)
+
+
+def _read_immutable_artifact(path: Path, *, label: str) -> bytes:
+    try:
+        before = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"cannot inspect {label}: {path}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"{label} must be a regular file: {path}")
+    try:
+        raw = path.read_bytes()
+        after = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"cannot read {label}: {path}") from exc
+    if _file_identity(before) != _file_identity(after):
+        raise ValueError(f"{label} changed while reading: {path}")
+    return raw
+
+
+def _publish_immutable(path: Path, data: bytes) -> bool:
+    """Publish bytes without replacing an existing immutable artifact."""
+    try:
+        parent_state = path.parent.lstat()
+    except OSError as exc:
+        raise ValueError(f"cannot inspect artifact directory: {path.parent}") from exc
+    if not stat.S_ISDIR(parent_state.st_mode):
+        raise ValueError(f"artifact directory must be a real directory: {path.parent}")
+    try:
+        existing_state = path.lstat()
+    except FileNotFoundError:
+        existing = None
+    else:
+        if not stat.S_ISREG(existing_state.st_mode):
+            raise ValueError(f"immutable artifact must be a regular file: {path}")
+        existing = path.read_bytes()
+    if existing is not None:
+        if existing != data:
+            raise ValueError(f"immutable artifact conflict: {path}")
+        return False
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            if path.read_bytes() != data:
+                raise ValueError(f"immutable artifact conflict: {path}")
+            return False
+        _fsync_directory(path.parent)
+        if path.read_bytes() != data:
+            raise OSError(f"immutable artifact readback failed: {path}")
+        return True
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _source_still_matches(prepared: dict[str, Any]) -> bool:
+    source = prepared["source"]
+    expected_identity = prepared.get("source_identity")
+    if expected_identity is None:
+        return False
+    try:
+        before = source.stat()
+        raw = source.read_bytes()
+        after = source.stat()
+    except OSError:
+        return False
+    return (
+        _file_identity(before) == expected_identity
+        and _file_identity(after) == expected_identity
+        and sha256_bytes(raw) == prepared["source_sha256"]
+    )
+
+
+def _unlink_loose_source(path: Path) -> None:
+    path.unlink()
+
+
 def _write_grabowski_outbox_receipt(
     prepared: dict[str, Any],
     *,
@@ -269,6 +689,12 @@ def _write_grabowski_outbox_receipt(
             "receipt_path": str(receipt_path),
             "receipt_reused": True,
             "receipt_written": False,
+            "source_origin": prepared.get("source_origin", "loose"),
+            "bundle_manifest_path": (
+                str(prepared["bundle_manifest_path"])
+                if prepared.get("bundle_manifest_path") is not None
+                else None
+            ),
         }
     receipt = {
         "schema_version": "chronik-grabowski-outbox-import.v1",
@@ -299,6 +725,12 @@ def _write_grabowski_outbox_receipt(
         "receipt_digest_scope": "persisted_receipt",
         "receipt_reused": False,
         "receipt_written": True,
+        "source_origin": prepared.get("source_origin", "loose"),
+        "bundle_manifest_path": (
+            str(prepared["bundle_manifest_path"])
+            if prepared.get("bundle_manifest_path") is not None
+            else None
+        ),
     }
 
 
@@ -346,6 +778,12 @@ def _import_prepared_grabowski_sources(
                 "unchanged": prepared["source_unchanged"],
                 "receipt_reused": False,
                 "receipt_written": False,
+                "source_origin": prepared.get("source_origin", "loose"),
+                "bundle_manifest_path": (
+                    str(prepared["bundle_manifest_path"])
+                    if prepared.get("bundle_manifest_path") is not None
+                    else None
+                ),
             }
             receipt_errors.append((str(prepared["source"]), exc))
         results.append(result)
@@ -362,20 +800,56 @@ def import_grabowski_outbox_file(source: Path, *, receipt_dir: Path) -> dict[str
 
 def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str, Any]:
     source_dir = outbox_root.expanduser() / "grabowski" / "chronik-outbox"
+    bundle_dir = source_dir / GRABOWSKI_BUNDLE_DIRNAME
     sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
-    prepared_sources: list[dict[str, Any]] = []
+    manifests = sorted(bundle_dir.glob("*.manifest.json")) if bundle_dir.is_dir() else []
+    bundle_files = sorted(bundle_dir.glob("*.bundle.jsonl")) if bundle_dir.is_dir() else []
+    all_prepared: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
-    target_scans: int | None = 0
-    target_records_scanned: int | None = 0
+    bundle_metadata: list[dict[str, Any]] = []
+    referenced_bundle_paths: set[str] = set()
     for source in sources:
         try:
-            prepared_sources.append(
+            all_prepared.append(
                 _prepare_grabowski_outbox_source(source, receipt_dir=receipt_dir)
             )
         except (OSError, ValueError, storage.StorageError) as exc:
             errors.append({"source_path": str(source), "error": str(exc)})
-    if prepared_sources:
+    for manifest_path in manifests:
+        try:
+            bundled, metadata = _load_grabowski_bundle(
+                manifest_path,
+                source_dir=source_dir,
+                receipt_dir=receipt_dir,
+            )
+            all_prepared.extend(bundled)
+            bundle_metadata.append(metadata)
+            referenced_bundle_paths.add(str(Path(metadata["bundle_path"]).resolve()))
+        except (OSError, ValueError, storage.StorageError) as exc:
+            errors.append({"source_path": str(manifest_path), "error": str(exc)})
+    orphan_bundles = [
+        path
+        for path in bundle_files
+        if str(path.resolve()) not in referenced_bundle_paths
+    ]
+    errors.extend(
+        {
+            "source_path": str(path),
+            "error": "orphan bundle has no valid manifest and was ignored",
+        }
+        for path in orphan_bundles
+    )
+    target_scans: int | None = 0
+    target_records_scanned: int | None = 0
+    prepared_sources: list[dict[str, Any]] = []
+    try:
+        prepared_sources = _merge_prepared_grabowski_sources(all_prepared)
+    except ValueError as exc:
+        target_scans = None
+        target_records_scanned = None
+        errors.append({"source_path": "<batch>", "error": str(exc)})
+    if prepared_sources and target_scans is not None:
         try:
             results, grouped, receipt_errors = _import_prepared_grabowski_sources(
                 prepared_sources
@@ -393,23 +867,250 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
             target_scans = None
             target_records_scanned = None
             errors.append({"source_path": "<batch>", "error": str(exc)})
+    bundled_sources_seen = sum(int(item["source_count"]) for item in bundle_metadata)
     return {
-        "schema_version": "chronik-grabowski-outbox-batch.v1",
+        "schema_version": "chronik-grabowski-outbox-batch.v2",
         "source_dir": str(source_dir),
         "receipt_dir": str(receipt_dir),
         "files_seen": len(sources),
+        "loose_files_seen": len(sources),
+        "bundle_manifests_seen": len(manifests),
+        "bundles_valid": len(bundle_metadata),
+        "bundled_sources_seen": bundled_sources_seen,
+        "sources_seen_total": len(sources) + bundled_sources_seen,
+        "sources_after_deduplication": len(prepared_sources),
+        "orphan_bundles": len(orphan_bundles),
         "files_imported_or_confirmed": len(results),
         "files_unchanged": sum(1 for result in results if result.get("unchanged") is True),
         "receipts_written": sum(1 for result in results if result.get("receipt_written") is True),
         "receipts_reused": sum(1 for result in results if result.get("receipt_reused") is True),
+        "loose_sources_imported_or_confirmed": sum(
+            1 for result in results if result.get("source_origin") == "loose"
+        ),
+        "bundled_sources_imported_or_confirmed": sum(
+            1 for result in results if result.get("source_origin") == "bundle"
+        ),
         "events_imported": sum(int(result.get("imported", 0)) for result in results),
         "events_skipped_existing": sum(int(result.get("skipped_existing", 0)) for result in results),
         "target_scans": target_scans,
         "target_records_scanned": target_records_scanned,
+        "bundle_inventory": bundle_metadata,
         "errors": errors,
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
+
+
+def compact_grabowski_outbox(
+    *,
+    outbox_root: Path,
+    receipt_dir: Path,
+    grace_seconds: int = 86400,
+    apply: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if type(grace_seconds) is not int or grace_seconds < 0:
+        raise ValueError("grace_seconds must be a non-negative integer")
+    if not isinstance(apply, bool):
+        raise ValueError("apply must be a boolean")
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        raise ValueError("now must include a timezone")
+    observed_at = observed_at.astimezone(timezone.utc)
+    source_dir = outbox_root.expanduser() / "grabowski" / "chronik-outbox"
+    bundle_dir = source_dir / GRABOWSKI_BUNDLE_DIRNAME
+    sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
+    skipped: Counter[str] = Counter()
+    errors: list[dict[str, str]] = []
+    eligible: list[dict[str, Any]] = []
+    ledger_payloads, ledger_records_scanned = _ledger_payloads_by_event_id()
+    observed_ns = int(observed_at.timestamp() * 1_000_000_000)
+    grace_ns = grace_seconds * 1_000_000_000
+    for source in sources:
+        try:
+            prepared = _prepare_grabowski_outbox_source(
+                source, receipt_dir=receipt_dir
+            )
+        except (OSError, ValueError, storage.StorageError) as exc:
+            skipped["invalid_source"] += 1
+            errors.append({"source_path": str(source), "error": str(exc)})
+            continue
+        if prepared["events"][-1]["kind"] not in GRABOWSKI_TERMINAL_KINDS:
+            skipped["nonterminal"] += 1
+            continue
+        source_mtime_ns = prepared.get("source_mtime_ns")
+        if (
+            type(source_mtime_ns) is not int
+            or observed_ns - source_mtime_ns < grace_ns
+        ):
+            skipped["grace_pending"] += 1
+            continue
+        if not _receipt_matches_prepared_source(
+            prepared, prepared.get("previous_receipt")
+        ):
+            skipped["receipt_invalid_or_missing"] += 1
+            continue
+        if any(
+            ledger_payloads.get(event["event_id"]) != canonical_bytes(event)
+            for event in prepared["events"]
+        ):
+            skipped["ledger_unconfirmed"] += 1
+            continue
+        eligible.append(prepared)
+    result: dict[str, Any] = {
+        "schema_version": "chronik-grabowski-outbox-compaction.v1",
+        "mode": "apply" if apply else "dry-run",
+        "source_dir": str(source_dir),
+        "receipt_dir": str(receipt_dir),
+        "bundle_dir": str(bundle_dir),
+        "grace_seconds": grace_seconds,
+        "observed_at": observed_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        "loose_sources_seen": len(sources),
+        "eligible_sources": len(eligible),
+        "eligible_events": sum(len(item["events"]) for item in eligible),
+        "eligible_source_bytes": sum(len(item["raw"]) for item in eligible),
+        "skipped_by_reason": dict(sorted(skipped.items())),
+        "ledger_records_scanned": ledger_records_scanned,
+        "bundle_path": None,
+        "bundle_sha256": None,
+        "bundle_bytes": 0,
+        "manifest_path": None,
+        "manifest_sha256": None,
+        "bundle_published": False,
+        "manifest_published": False,
+        "bundle_reused": False,
+        "sources_removed": 0,
+        "loose_sources_remaining": len(sources),
+        "errors": errors,
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+    if not apply or not eligible:
+        return result
+    stable: list[dict[str, Any]] = []
+    for prepared in eligible:
+        if _source_still_matches(prepared):
+            stable.append(prepared)
+        else:
+            skipped["source_changed_before_publish"] += 1
+            errors.append(
+                {
+                    "source_path": str(prepared["source"]),
+                    "error": "source changed before bundle publication",
+                }
+            )
+    result["skipped_by_reason"] = dict(sorted(skipped.items()))
+    result["eligible_sources"] = len(stable)
+    result["eligible_events"] = sum(len(item["events"]) for item in stable)
+    result["eligible_source_bytes"] = sum(len(item["raw"]) for item in stable)
+    if not stable:
+        return result
+    entries: list[dict[str, Any]] = []
+    bundle_parts: list[bytes] = []
+    bundle_offset = 0
+    for item in stable:
+        entries.append(_bundle_source_record(item, offset=bundle_offset))
+        bundle_parts.append(item["raw"])
+        bundle_offset += len(item["raw"])
+    bundle_raw = b"".join(bundle_parts)
+    bundle_sha256 = sha256_bytes(bundle_raw)
+    prefix = f"grabowski-{bundle_sha256}"
+    bundle_path = bundle_dir / f"{prefix}.bundle.jsonl"
+    manifest_path = bundle_dir / f"{prefix}.manifest.json"
+    result.update(
+        {
+            "bundle_path": str(bundle_path),
+            "bundle_sha256": bundle_sha256,
+            "bundle_bytes": len(bundle_raw),
+            "manifest_path": str(manifest_path),
+        }
+    )
+    try:
+        _ensure_bundle_directory(source_dir, bundle_dir)
+        result["bundle_published"] = _publish_immutable(bundle_path, bundle_raw)
+        if manifest_path.exists():
+            loaded, metadata = _load_grabowski_bundle(
+                manifest_path,
+                source_dir=source_dir,
+                receipt_dir=receipt_dir,
+            )
+            result["bundle_reused"] = True
+        else:
+            manifest = {
+                "schema_version": GRABOWSKI_BUNDLE_MANIFEST_SCHEMA,
+                "domain": DOMAIN,
+                "bundle_file": bundle_path.name,
+                "bundle_sha256": bundle_sha256,
+                "bundle_bytes": len(bundle_raw),
+                "source_count": len(entries),
+                "event_count": sum(len(item["events"]) for item in stable),
+                "sources": entries,
+                "created_at": utc_now(),
+                "historical_only": True,
+                "does_not_establish": DOES_NOT_ESTABLISH,
+            }
+            manifest["manifest_sha256"] = sha256_bytes(canonical_bytes(manifest))
+            manifest_raw = (
+                json.dumps(manifest, indent=2, sort_keys=True).encode("utf-8")
+                + b"\n"
+            )
+            result["manifest_published"] = _publish_immutable(
+                manifest_path, manifest_raw
+            )
+            loaded, metadata = _load_grabowski_bundle(
+                manifest_path,
+                source_dir=source_dir,
+                receipt_dir=receipt_dir,
+            )
+        expected_sources = entries
+        if metadata["sources"] != expected_sources:
+            raise ValueError("published bundle inventory does not match selection")
+        loaded_by_path = {
+            str(item["source"].resolve()): item["raw"] for item in loaded
+        }
+        if loaded_by_path != {
+            str(item["source"].resolve()): item["raw"] for item in stable
+        }:
+            raise ValueError("published bundle readback does not match source bytes")
+        result["manifest_sha256"] = metadata["manifest_sha256"]
+    except (OSError, ValueError, storage.StorageError) as exc:
+        errors.append({"source_path": str(manifest_path), "error": str(exc)})
+        return result
+    removed = 0
+    for prepared in stable:
+        source = prepared["source"]
+        if not _source_still_matches(prepared):
+            skipped["source_changed_before_remove"] += 1
+            errors.append(
+                {
+                    "source_path": str(source),
+                    "error": "source changed after bundle publication and was retained",
+                }
+            )
+            continue
+        try:
+            _unlink_loose_source(source)
+        except OSError as exc:
+            skipped["unlink_failed"] += 1
+            errors.append({"source_path": str(source), "error": f"unlink failed: {exc}"})
+        else:
+            removed += 1
+    if removed:
+        try:
+            _fsync_directory(source_dir)
+        except OSError as exc:
+            errors.append(
+                {
+                    "source_path": str(source_dir),
+                    "error": f"source directory fsync failed after removal: {exc}",
+                }
+            )
+    result["sources_removed"] = removed
+    result["loose_sources_remaining"] = (
+        len(list(source_dir.glob("*.jsonl"))) if source_dir.is_dir() else 0
+    )
+    result["skipped_by_reason"] = dict(sorted(skipped.items()))
+    return result
 
 
 def _scan_record_snapshot(

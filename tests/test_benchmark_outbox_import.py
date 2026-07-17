@@ -33,4 +33,9 @@ def test_benchmark_reports_single_scan_first_and_repeat(tmp_path):
     assert tier["repeat"]["target_scans"] == 1
     assert tier["first"]["events_imported"] == 6
     assert tier["repeat"]["events_skipped_existing"] == 6
+    assert tier["compaction"]["sources_removed"] == 3
+    assert tier["loose_files_before"] == 3
+    assert tier["loose_files_after"] == 0
+    assert tier["bundled_repeat"]["target_scans"] == 1
+    assert tier["bundled_repeat"]["events_skipped_existing"] == 6
     assert tier["passed"] is True

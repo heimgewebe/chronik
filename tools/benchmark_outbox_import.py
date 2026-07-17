@@ -88,6 +88,28 @@ def _measure(outbox_root: Path, receipt_dir: Path) -> dict:
     }
 
 
+def _measure_compaction(outbox_root: Path, receipt_dir: Path) -> dict:
+    started = time.perf_counter()
+    result = coding_memory.compact_grabowski_outbox(
+        outbox_root=outbox_root,
+        receipt_dir=receipt_dir,
+        grace_seconds=0,
+        apply=True,
+    )
+    elapsed = time.perf_counter() - started
+    return {
+        "elapsed_seconds": round(elapsed, 6),
+        "eligible_sources": result["eligible_sources"],
+        "eligible_events": result["eligible_events"],
+        "sources_removed": result["sources_removed"],
+        "loose_sources_remaining": result["loose_sources_remaining"],
+        "bundle_bytes": result["bundle_bytes"],
+        "bundle_sha256": result["bundle_sha256"],
+        "ledger_records_scanned": result["ledger_records_scanned"],
+        "errors": result["errors"],
+    }
+
+
 def benchmark_tier(
     *,
     name: str,
@@ -120,12 +142,33 @@ def benchmark_tier(
         receipt_dir = temp_root / "receipts"
         first = _measure(outbox_root, receipt_dir)
         repeat = _measure(outbox_root, receipt_dir)
-        worst_seconds = max(first["elapsed_seconds"], repeat["elapsed_seconds"])
+        loose_files_before = len(list(source_dir.glob("*.jsonl")))
+        compaction = _measure_compaction(outbox_root, receipt_dir)
+        loose_files_after = len(list(source_dir.glob("*.jsonl")))
+        bundled_repeat = _measure(outbox_root, receipt_dir)
+        worst_seconds = max(
+            first["elapsed_seconds"],
+            repeat["elapsed_seconds"],
+            bundled_repeat["elapsed_seconds"],
+        )
+        loose_seconds = repeat["elapsed_seconds"]
+        bundled_seconds = bundled_repeat["elapsed_seconds"]
+        speedup_ratio = (
+            round(loose_seconds / bundled_seconds, 3)
+            if bundled_seconds > 0
+            else None
+        )
         passed = (
             not first["errors"]
             and not repeat["errors"]
+            and not compaction["errors"]
+            and not bundled_repeat["errors"]
             and first["target_scans"] <= MAX_TARGET_SCANS
             and repeat["target_scans"] <= MAX_TARGET_SCANS
+            and bundled_repeat["target_scans"] <= MAX_TARGET_SCANS
+            and compaction["sources_removed"] == source_files
+            and loose_files_before == source_files
+            and loose_files_after == 0
             and worst_seconds <= max_seconds
             and worst_seconds <= TIMER_BUDGET_SECONDS
         )
@@ -139,6 +182,13 @@ def benchmark_tier(
             "max_target_scans": MAX_TARGET_SCANS,
             "first": first,
             "repeat": repeat,
+            "compaction": compaction,
+            "bundled_repeat": bundled_repeat,
+            "loose_files_before": loose_files_before,
+            "loose_files_after": loose_files_after,
+            "loose_repeat_seconds": loose_seconds,
+            "bundled_repeat_seconds": bundled_seconds,
+            "loose_to_bundled_speedup_ratio": speedup_ratio,
             "worst_seconds": worst_seconds,
             "passed": passed,
         }
@@ -147,7 +197,7 @@ def benchmark_tier(
 def run_benchmark(tiers: tuple[dict, ...] = DEFAULT_TIERS) -> dict:
     results = [benchmark_tier(**tier) for tier in tiers]
     return {
-        "schema_version": "chronik-outbox-import-benchmark.v1",
+        "schema_version": "chronik-outbox-import-benchmark.v2",
         "machine": {
             "platform": platform.platform(),
             "python": platform.python_version(),
