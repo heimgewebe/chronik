@@ -235,3 +235,42 @@ def test_snapshot_treats_only_lf_as_jsonl_record_boundary(tmp_path,monkeypatch):
     assert snapshot["total_record_count"]==1
     assert snapshot["invalid_record_count"]==1
     assert snapshot["diagnostics"][0]["next_offset"]==len(raw)
+
+
+def test_queries_keep_bounded_latest_candidates_without_materializing_all_rows(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    values = [
+        event(
+            "sha256:" + format(index, "064x"),
+            ts="2026-07-13T10:00:00Z",
+        )
+        for index in range(40)
+    ]
+    coding_memory.import_events(values)
+
+    def forbidden_materialization():
+        raise AssertionError("queries must not materialize the full record snapshot")
+
+    monkeypatch.setattr(coding_memory, "_record_snapshot", forbidden_materialization)
+    observed_heap_sizes = []
+    retain_latest = coding_memory._retain_latest
+
+    def track_heap(heap, **kwargs):
+        retain_latest(heap, **kwargs)
+        observed_heap_sizes.append((kwargs["limit"], len(heap)))
+
+    monkeypatch.setattr(coding_memory, "_retain_latest", track_heap)
+    history = coding_memory.query_history(repo="heimgewebe/example", limit=3)
+    summary = coding_memory.operator_summary(limit=4)
+
+    assert history["event_ids"] == [
+        "sha256:" + format(index, "064x") for index in (39, 38, 37)
+    ]
+    assert [row["event_id"] for row in summary["recent"]] == [
+        "sha256:" + format(index, "064x") for index in (39, 38, 37, 36)
+    ]
+    assert summary["event_count"] == 40
+    assert observed_heap_sizes
+    assert all(size <= limit for limit, size in observed_heap_sizes)
