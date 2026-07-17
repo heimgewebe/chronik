@@ -213,11 +213,11 @@ def test_append_rollback_failure_is_distinct(mock_data_dir, monkeypatch):
     def fail_write(fd, payload):
         raise OSError(28, "No space left on device")
 
-    def fail_rollback(fd, size):
+    def fail_rollback(fd, target_path, pre_append_size):
         raise OSError(5, "rollback failed")
 
     monkeypatch.setattr(storage.os, "write", fail_write)
-    monkeypatch.setattr(storage.os, "ftruncate", fail_rollback)
+    monkeypatch.setattr(storage, "_rollback_append", fail_rollback)
 
     with pytest.raises(
         storage.StorageRecoveryError, match="ledger integrity is uncertain"

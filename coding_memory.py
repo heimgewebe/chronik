@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import os
 import tempfile
@@ -9,7 +10,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from jsonschema import Draft7Validator
 
@@ -68,13 +69,13 @@ def _validator() -> Draft7Validator:
     return Draft7Validator(schema)
 
 
-def validate_event(event: dict[str, Any]) -> None:
+def validate_event(event: dict[str, Any]) -> datetime:
     errors = sorted(_validator().iter_errors(event), key=lambda error: list(error.absolute_path))
     if errors:
         error = errors[0]
         path = "/".join(str(part) for part in error.absolute_path) or "<root>"
         raise ValueError(f"invalid coding event at {path}: {error.message}")
-    _parse_timestamp(event["ts"], field="ts")
+    return _parse_timestamp(event["ts"], field="ts")
 
 
 def _envelope_lines(events: Iterable[dict[str, Any]]) -> list[str]:
@@ -322,19 +323,25 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
     }
 
 
-def _record_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
+def _scan_record_snapshot(
+    visit: Callable[[dict[str, Any], datetime, int], None],
+) -> dict[str, Any]:
+    """Validate complete records from one byte-bound snapshot and visit each once."""
     diagnostics: list[dict[str, Any]] = []
     invalid_record_count = 0
     total_record_count = 0
+    valid_record_count = 0
     raw_snapshot = storage.read_domain_snapshot(DOMAIN)
     complete_bytes = len(raw_snapshot)
     snapshot_sha256 = sha256_bytes(raw_snapshot)
     start_offset = 0
 
-    complete_lines = raw_snapshot.split(b"\n")[:-1] if raw_snapshot else []
-    for content in complete_lines:
-        next_offset = start_offset + len(content) + 1
+    while start_offset < complete_bytes:
+        newline_at = raw_snapshot.find(b"\n", start_offset)
+        if newline_at < 0:
+            break
+        content = raw_snapshot[start_offset:newline_at]
+        next_offset = newline_at + 1
         if not content.strip():
             start_offset = next_offset
             continue
@@ -347,32 +354,55 @@ def _record_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
             payload = envelope.get("payload")
             if not isinstance(payload, dict):
                 raise ValueError("payload must be an object")
-            validate_event(payload)
+            event_at = validate_event(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             invalid_record_count += 1
             if len(diagnostics) < MAX_INTEGRITY_DIAGNOSTICS:
-                diagnostics.append({
-                    "offset": start_offset,
-                    "next_offset": next_offset,
-                    "error": str(exc),
-                })
+                diagnostics.append(
+                    {
+                        "offset": start_offset,
+                        "next_offset": next_offset,
+                        "error": str(exc),
+                    }
+                )
             start_offset = next_offset
             continue
-        rows.append({"received_at": envelope.get("received_at"), "payload": payload})
+        row = {"received_at": envelope.get("received_at"), "payload": payload}
+        visit(row, event_at, valid_record_count)
+        valid_record_count += 1
         start_offset = next_offset
 
-    ledger_snapshot = {
+    return {
         "domain": DOMAIN,
         "sha256": snapshot_sha256,
         "complete_bytes": complete_bytes,
         "total_record_count": total_record_count,
-        "valid_record_count": len(rows),
+        "valid_record_count": valid_record_count,
         "invalid_record_count": invalid_record_count,
         "integrity_valid": invalid_record_count == 0,
         "diagnostics": diagnostics,
         "diagnostics_truncated": invalid_record_count > len(diagnostics),
     }
-    return rows, ledger_snapshot
+
+
+def _retain_latest(
+    heap: list[tuple[datetime, str, int, dict[str, Any]]],
+    *,
+    event_at: datetime,
+    event_id: str,
+    sequence: int,
+    value: dict[str, Any],
+    limit: int,
+) -> None:
+    """Keep only the newest bounded candidates using the public ordering contract."""
+    # The former stable reverse sort kept the earlier row first when public
+    # keys were equal. Negating the scan sequence preserves that exact contract.
+    candidate_key = (event_at, event_id, -sequence)
+    candidate = (*candidate_key, value)
+    if len(heap) < limit:
+        heapq.heappush(heap, candidate)
+    elif candidate_key > heap[0][:3]:
+        heapq.heapreplace(heap, candidate)
 
 
 def _event_operation(event: dict[str, Any]) -> str | None:
@@ -427,38 +457,79 @@ def validate_query(*, repo: str | None = None, host: str | None = None, componen
     return _parse_timestamp(since, field="since") if since is not None else None
 
 
-def query_history(*, repo: str | None = None, host: str | None = None, component: str | None = None, operation: str | None = None, task_class: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> dict[str, Any]:
-    since_at = validate_query(repo=repo, host=host, component=component, operation=operation, task_class=task_class, outcome=outcome, since=since, limit=limit)
-    rows, ledger_snapshot = _record_snapshot()
-    selected: list[dict[str, Any]] = []
-    for row in rows:
+def query_history(
+    *,
+    repo: str | None = None,
+    host: str | None = None,
+    component: str | None = None,
+    operation: str | None = None,
+    task_class: str | None = None,
+    outcome: str | None = None,
+    since: str | None = None,
+    limit: int = 20,
+) -> dict[str, Any]:
+    since_at = validate_query(
+        repo=repo,
+        host=host,
+        component=component,
+        operation=operation,
+        task_class=task_class,
+        outcome=outcome,
+        since=since,
+        limit=limit,
+    )
+    selected: list[tuple[datetime, str, int, dict[str, Any]]] = []
+
+    def consider(row: dict[str, Any], event_at: datetime, sequence: int) -> None:
         event = row["payload"]
         subject = event["subject"]
-        data = event.get("data", {})
         if not _matches_target(subject, repo=repo, host=host):
-            continue
+            return
         if component and _event_source_component(event) != component:
-            continue
+            return
         if operation and _event_operation(event) != operation:
-            continue
+            return
         if task_class and _event_task_class(event) != task_class:
-            continue
-        actual_outcome = data.get("outcome") or data.get("result")
-        if outcome and actual_outcome != outcome:
-            continue
-        event_at = _parse_timestamp(event["ts"], field="ts")
+            return
+        if outcome:
+            data = event.get("data")
+            actual_outcome = (
+                data.get("outcome") or data.get("result")
+                if isinstance(data, dict)
+                else None
+            )
+            if actual_outcome != outcome:
+                return
         if since_at is not None and event_at < since_at:
-            continue
-        selected.append({**row, "event_at": event_at})
-    selected.sort(key=lambda row: (row["event_at"], row["payload"]["event_id"]), reverse=True)
-    selected = selected[:limit]
-    query = {"repo": repo, "host": host, "component": component, "operation": operation, "task_class": task_class, "outcome": outcome, "since": since, "limit": limit}
+            return
+        _retain_latest(
+            selected,
+            event_at=event_at,
+            event_id=event["event_id"],
+            sequence=sequence,
+            value=row,
+            limit=limit,
+        )
+
+    ledger_snapshot = _scan_record_snapshot(consider)
+    selected.sort(key=lambda item: item[:3], reverse=True)
+    selected_rows = [item[3] for item in selected]
+    query = {
+        "repo": repo,
+        "host": host,
+        "component": component,
+        "operation": operation,
+        "task_class": task_class,
+        "outcome": outcome,
+        "since": since,
+        "limit": limit,
+    }
     return {
         "schema_version": "chronik-coding-history.v1",
         "query": query,
         "target": _target(repo=repo, host=host),
-        "events": [row["payload"] for row in selected],
-        "event_ids": [row["payload"]["event_id"] for row in selected],
+        "events": [row["payload"] for row in selected_rows],
+        "event_ids": [row["payload"]["event_id"] for row in selected_rows],
         "ledger_snapshot": ledger_snapshot,
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
@@ -469,40 +540,48 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
     if limit < 1 or limit > 500:
         raise ValueError("limit 1..500 is required")
     since_at = _parse_timestamp(since, field="since") if since is not None else None
-    rows, ledger_snapshot = _record_snapshot()
-    selected: list[tuple[datetime, dict[str, Any]]] = []
-    for row in rows:
+    event_count = 0
+    kind_counts: Counter[str] = Counter()
+    repo_counts: Counter[str] = Counter()
+    host_counts: Counter[str] = Counter()
+    target_counts: Counter[str] = Counter()
+    operation_counts: Counter[str] = Counter()
+    task_class_counts: Counter[str] = Counter()
+    blocker_counts: Counter[str] = Counter()
+    recent_heap: list[tuple[datetime, str, int, dict[str, Any]]] = []
+
+    def summarize(row: dict[str, Any], event_at: datetime, sequence: int) -> None:
+        nonlocal event_count
         event = row["payload"]
-        event_at = _parse_timestamp(event["ts"], field="ts")
         if since_at is not None and event_at < since_at:
-            continue
-        selected.append((event_at, event))
-    selected.sort(key=lambda item: (item[0], item[1]["event_id"]), reverse=True)
-    kind_counts = Counter(event["kind"] for _, event in selected)
-    repo_counts = Counter(event.get("subject", {}).get("repo", "unknown") for _, event in selected)
-    host_counts = Counter(
-        event.get("subject", {}).get("host")
-        for _, event in selected
-        if event.get("subject", {}).get("scope") == "host" and event.get("subject", {}).get("host")
-    )
-    target_counts = Counter()
-    operation_counts = Counter()
-    task_class_counts = Counter()
-    for _, event in selected:
+            return
+        event_count += 1
         subject = event.get("subject", {})
-        if subject.get("scope") == "host":
-            target_counts[f"host:{subject.get('host', 'unknown')}"] += 1
+        data = event.get("data", {})
+        kind_counts[event["kind"]] += 1
+        repo_counts[subject.get("repo", "unknown")] += 1
+        if subject.get("scope") == "host" and subject.get("host"):
+            host_counts[subject["host"]] += 1
+            target_counts[f"host:{subject['host']}"] += 1
         else:
             target_counts[f"repository:{subject.get('repo', 'unknown')}"] += 1
         operation_counts[_event_operation(event) or "unspecified"] += 1
         task_class_counts[_event_task_class(event) or "unspecified"] += 1
-    blocker_counts = Counter(
-        event.get("data", {}).get("blocker_code", "unspecified")
-        for _, event in selected
-        if event.get("kind") == "agent.run.blocked"
-    )
+        if event.get("kind") == "agent.run.blocked":
+            blocker_counts[data.get("blocker_code", "unspecified")] += 1
+        _retain_latest(
+            recent_heap,
+            event_at=event_at,
+            event_id=event["event_id"],
+            sequence=sequence,
+            value=event,
+            limit=limit,
+        )
+
+    ledger_snapshot = _scan_record_snapshot(summarize)
+    recent_heap.sort(key=lambda item: item[:3], reverse=True)
     recent = []
-    for _, event in selected[:limit]:
+    for _, _, _, event in recent_heap:
         subject = event.get("subject", {})
         recent.append(
             {
@@ -510,7 +589,11 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
                 "ts": event["ts"],
                 "kind": event["kind"],
                 "run_id": event.get("source", {}).get("run_id"),
-                "target": {"scope": "host", "host": subject.get("host")} if subject.get("scope") == "host" else {"scope": "repository", "repo": subject.get("repo")},
+                "target": (
+                    {"scope": "host", "host": subject.get("host")}
+                    if subject.get("scope") == "host"
+                    else {"scope": "repository", "repo": subject.get("repo")}
+                ),
                 "subject": subject,
                 "operation": _event_operation(event),
                 "task_class": _event_task_class(event),
@@ -520,7 +603,7 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
     return {
         "schema_version": "chronik-operator-summary.v1",
         "since": since,
-        "event_count": len(selected),
+        "event_count": event_count,
         "limit": limit,
         "counts_by_kind": dict(sorted(kind_counts.items())),
         "counts_by_subject_repo": dict(sorted(repo_counts.items())),
