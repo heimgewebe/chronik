@@ -14,7 +14,7 @@ if root_path in sys.path:
     sys.path.remove(root_path)
 sys.path.insert(0, root_path)
 
-import coding_memory
+import coding_memory  # noqa: E402
 
 
 def load(path: Path):
@@ -104,6 +104,12 @@ def main(argv=None):
     outbox.add_argument("--outbox-root", type=Path, default=Path.home() / ".local/state")
     outbox.add_argument("--receipt-dir", type=Path)
 
+    compact = sub.add_parser("compact-outbox")
+    compact.add_argument("--outbox-root", type=Path, default=Path.home() / ".local/state")
+    compact.add_argument("--receipt-dir", type=Path)
+    compact.add_argument("--grace-seconds", type=int, default=86400)
+    compact.add_argument("--apply", action="store_true")
+
     summary = sub.add_parser("summary")
     summary.add_argument("--since")
     summary.add_argument("--limit", type=int, default=20)
@@ -148,6 +154,14 @@ def main(argv=None):
                     outbox_root=args.outbox_root,
                     receipt_dir=receipt_dir.expanduser(),
                 )
+            elif args.command == "compact-outbox":
+                receipt_dir = args.receipt_dir or data_path / "import-receipts"
+                result = coding_memory.compact_grabowski_outbox(
+                    outbox_root=args.outbox_root,
+                    receipt_dir=receipt_dir.expanduser(),
+                    grace_seconds=args.grace_seconds,
+                    apply=args.apply,
+                )
             elif args.command == "query":
                 result = coding_memory.query_history(**query_filters)
             elif args.command == "summary":
@@ -159,7 +173,7 @@ def main(argv=None):
         return 2
 
     print(json.dumps(result, indent=2, sort_keys=True))
-    if args.command == "import-outbox" and result["errors"]:
+    if args.command in {"import-outbox", "compact-outbox"} and result["errors"]:
         return 2
     return 0
 
