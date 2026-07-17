@@ -56,12 +56,22 @@ def test_batch_import_is_idempotent_and_receipt_bound(tmp_path, monkeypatch):
     source = write_outbox(outbox, [event("agent.run.started", "a"), event("agent.run.completed", "b")])
 
     first = coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    receipt_path = next(receipts.glob("*.receipt.json"))
+    first_receipt = receipt_path.read_bytes()
+    first_stat = receipt_path.stat()
     second = coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
 
     assert first["events_imported"] == 2
     assert first["errors"] == []
+    assert first["receipts_written"] == 1
+    assert first["receipts_reused"] == 0
     assert second["events_imported"] == 0
     assert second["files_unchanged"] == 1
+    assert second["receipts_written"] == 0
+    assert second["receipts_reused"] == 1
+    assert receipt_path.read_bytes() == first_receipt
+    assert receipt_path.stat().st_ino == first_stat.st_ino
+    assert receipt_path.stat().st_mtime_ns == first_stat.st_mtime_ns
     assert len(list(receipts.glob("*.receipt.json"))) == 1
     rows = (data / "agent.ledger.jsonl").read_text(encoding="utf-8").splitlines()
     assert len(rows) == 2
@@ -69,6 +79,39 @@ def test_batch_import_is_idempotent_and_receipt_bound(tmp_path, monkeypatch):
     assert receipt["source_path"] == str(source.resolve())
     assert receipt["source_sha256"]
     assert receipt["receipt_sha256"]
+
+
+def test_reused_single_file_result_keeps_persisted_digest_separate_from_run_stats(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    source = write_outbox(
+        outbox,
+        [event("agent.run.started", "a"), event("agent.run.completed", "b")],
+    )
+    first = coding_memory.import_grabowski_outbox_file(
+        source, receipt_dir=receipts
+    )
+    second = coding_memory.import_grabowski_outbox_file(
+        source, receipt_dir=receipts
+    )
+    persisted = json.loads(Path(second["receipt_path"]).read_text(encoding="utf-8"))
+    unsigned = dict(persisted)
+    claimed = unsigned.pop("receipt_sha256")
+
+    assert first["receipt_written"] is True
+    assert first["receipt_reused"] is False
+    assert second["imported"] == 0
+    assert second["skipped_existing"] == 2
+    assert second["receipt_written"] is False
+    assert second["receipt_reused"] is True
+    assert second["receipt_digest_scope"] == "persisted_receipt"
+    assert second["receipt_sha256"] == claimed
+    assert claimed == coding_memory.sha256_bytes(
+        coding_memory.canonical_bytes(unsigned)
+    )
+    assert persisted["imported"] == 2
+    assert persisted["skipped_existing"] == 0
 
 
 def test_receipt_never_replaces_target_store_verification(tmp_path, monkeypatch):
@@ -81,6 +124,8 @@ def test_receipt_never_replaces_target_store_verification(tmp_path, monkeypatch)
 
     assert recovered["files_unchanged"] == 1
     assert recovered["events_imported"] == 2
+    assert recovered["receipts_written"] == 1
+    assert recovered["receipts_reused"] == 0
     assert (
         len((data / "agent.ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2
     )
@@ -101,6 +146,8 @@ def test_missing_receipt_is_rebuilt_after_store_verification(tmp_path, monkeypat
     assert recovered["events_skipped_existing"] == 1
     assert recovered["files_unchanged"] == 0
     assert recovered["target_scans"] == 1
+    assert recovered["receipts_written"] == 1
+    assert recovered["receipts_reused"] == 0
     assert receipt_path.exists()
     assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
 
@@ -122,8 +169,69 @@ def test_stale_receipt_cannot_override_store_verification(tmp_path, monkeypatch)
     assert recovered["events_skipped_existing"] == 1
     assert recovered["files_unchanged"] == 0
     assert recovered["target_records_scanned"] == 1
+    assert recovered["receipts_written"] == 1
+    assert recovered["receipts_reused"] == 0
     refreshed = json.loads(receipt_path.read_text())
     assert refreshed["source_sha256"] != "0" * 64
+    assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
+
+
+def test_matching_receipt_with_invalid_timestamp_is_repaired(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    receipt_path = next(receipts.glob("*.receipt.json"))
+    corrupt = json.loads(receipt_path.read_text())
+    corrupt["recorded_at"] = "not-a-timestamp"
+    unsigned = dict(corrupt)
+    unsigned.pop("receipt_sha256")
+    corrupt["receipt_sha256"] = coding_memory.sha256_bytes(
+        coding_memory.canonical_bytes(unsigned)
+    )
+    receipt_path.write_text(json.dumps(corrupt), encoding="utf-8")
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert recovered["events_imported"] == 0
+    assert recovered["events_skipped_existing"] == 1
+    assert recovered["receipts_written"] == 1
+    assert recovered["receipts_reused"] == 0
+    repaired = json.loads(receipt_path.read_text())
+    assert repaired["recorded_at"] != "not-a-timestamp"
+
+
+def test_matching_but_corrupt_receipt_is_repaired_after_store_verification(
+    tmp_path, monkeypatch
+):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    source = write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    receipt_path = next(receipts.glob("*.receipt.json"))
+    corrupt = json.loads(receipt_path.read_text())
+    corrupt["event_ids"] = ["sha256:" + "f" * 64]
+    unsigned = dict(corrupt)
+    unsigned.pop("receipt_sha256")
+    corrupt["receipt_sha256"] = coding_memory.sha256_bytes(
+        coding_memory.canonical_bytes(unsigned)
+    )
+    receipt_path.write_text(json.dumps(corrupt), encoding="utf-8")
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert recovered["events_imported"] == 0
+    assert recovered["events_skipped_existing"] == 1
+    assert recovered["files_unchanged"] == 1
+    assert recovered["receipts_written"] == 1
+    assert recovered["receipts_reused"] == 0
+    repaired = json.loads(receipt_path.read_text())
+    assert repaired["source_path"] == str(source.resolve())
+    assert repaired["event_ids"] == [event("agent.run.completed", "a")["event_id"]]
     assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 1
 
 
@@ -140,6 +248,8 @@ def test_appended_source_updates_receipt_and_imports_only_new_event(
 
     assert result["events_imported"] == 1
     assert result["events_skipped_existing"] == 1
+    assert result["receipts_written"] == 1
+    assert result["receipts_reused"] == 0
     assert len((data / "agent.ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 2
 
 
@@ -278,11 +388,15 @@ def test_multi_file_batch_scans_target_once_and_repeat_verifies_store(
     assert first["target_scans"] == 1
     assert first["target_records_scanned"] == 0
     assert first["events_imported"] == 3
+    assert first["receipts_written"] == 3
+    assert first["receipts_reused"] == 0
     assert second["target_scans"] == 1
     assert second["target_records_scanned"] == 3
     assert second["events_imported"] == 0
     assert second["events_skipped_existing"] == 3
     assert second["files_unchanged"] == 3
+    assert second["receipts_written"] == 0
+    assert second["receipts_reused"] == 3
     assert len((data / "agent.ledger.jsonl").read_text().splitlines()) == 3
 
 
