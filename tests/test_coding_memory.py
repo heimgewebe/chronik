@@ -237,9 +237,7 @@ def test_snapshot_treats_only_lf_as_jsonl_record_boundary(tmp_path,monkeypatch):
     assert snapshot["diagnostics"][0]["next_offset"]==len(raw)
 
 
-def test_queries_keep_bounded_latest_candidates_without_materializing_all_rows(
-    tmp_path, monkeypatch
-):
+def test_queries_keep_bounded_latest_candidates(tmp_path, monkeypatch):
     setup(tmp_path, monkeypatch)
     values = [
         event(
@@ -250,10 +248,6 @@ def test_queries_keep_bounded_latest_candidates_without_materializing_all_rows(
     ]
     coding_memory.import_events(values)
 
-    def forbidden_materialization():
-        raise AssertionError("queries must not materialize the full record snapshot")
-
-    monkeypatch.setattr(coding_memory, "_record_snapshot", forbidden_materialization)
     observed_heap_sizes = []
     retain_latest = coding_memory._retain_latest
 
@@ -274,3 +268,70 @@ def test_queries_keep_bounded_latest_candidates_without_materializing_all_rows(
     assert summary["event_count"] == 40
     assert observed_heap_sizes
     assert all(size <= limit for limit, size in observed_heap_sizes)
+
+
+def test_operator_summary_count_remains_since_filtered_while_snapshot_count_is_total(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    coding_memory.import_events(
+        [
+            event(ts="2026-07-13T09:00:00Z"),
+            event("sha256:" + "b" * 64, ts="2026-07-13T11:00:00Z"),
+        ]
+    )
+
+    summary = coding_memory.operator_summary(since="2026-07-13T10:00:00Z")
+
+    assert summary["event_count"] == 1
+    assert summary["ledger_snapshot"]["total_record_count"] == 2
+    assert [row["event_id"] for row in summary["recent"]] == [
+        "sha256:" + "b" * 64
+    ]
+
+
+def test_equal_public_sort_keys_preserve_earlier_snapshot_order_at_limit(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    first = event()
+    first["source"]["run_id"] = "first"
+    second = event()
+    second["source"]["run_id"] = "second"
+    target = tmp_path / "agent.ledger.jsonl"
+    target.write_text(
+        json.dumps({"payload": first}) + "\n" + json.dumps({"payload": second}) + "\n",
+        encoding="utf-8",
+    )
+
+    history = coding_memory.query_history(repo="heimgewebe/example", limit=1)
+    summary = coding_memory.operator_summary(limit=1)
+
+    assert history["events"][0]["source"]["run_id"] == "first"
+    assert summary["recent"][0]["run_id"] == "first"
+
+
+def test_queries_reuse_timestamp_parsed_during_validation(tmp_path, monkeypatch):
+    setup(tmp_path, monkeypatch)
+    coding_memory.import_events(
+        [
+            event(),
+            event("sha256:" + "b" * 64),
+            event("sha256:" + "c" * 64),
+        ]
+    )
+    parse_timestamp = coding_memory._parse_timestamp
+    calls = []
+
+    def counted_parse(value, *, field):
+        calls.append((value, field))
+        return parse_timestamp(value, field=field)
+
+    monkeypatch.setattr(coding_memory, "_parse_timestamp", counted_parse)
+
+    coding_memory.query_history(repo="heimgewebe/example")
+    assert len(calls) == 3
+
+    calls.clear()
+    coding_memory.operator_summary()
+    assert len(calls) == 3

@@ -69,13 +69,13 @@ def _validator() -> Draft7Validator:
     return Draft7Validator(schema)
 
 
-def validate_event(event: dict[str, Any]) -> None:
+def validate_event(event: dict[str, Any]) -> datetime:
     errors = sorted(_validator().iter_errors(event), key=lambda error: list(error.absolute_path))
     if errors:
         error = errors[0]
         path = "/".join(str(part) for part in error.absolute_path) or "<root>"
         raise ValueError(f"invalid coding event at {path}: {error.message}")
-    _parse_timestamp(event["ts"], field="ts")
+    return _parse_timestamp(event["ts"], field="ts")
 
 
 def _envelope_lines(events: Iterable[dict[str, Any]]) -> list[str]:
@@ -324,9 +324,9 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
 
 
 def _scan_record_snapshot(
-    visit: Callable[[dict[str, Any], int], None],
+    visit: Callable[[dict[str, Any], datetime, int], None],
 ) -> dict[str, Any]:
-    """Validate one byte-bound snapshot while releasing each decoded row promptly."""
+    """Validate complete records from one byte-bound snapshot and visit each once."""
     diagnostics: list[dict[str, Any]] = []
     invalid_record_count = 0
     total_record_count = 0
@@ -354,7 +354,7 @@ def _scan_record_snapshot(
             payload = envelope.get("payload")
             if not isinstance(payload, dict):
                 raise ValueError("payload must be an object")
-            validate_event(payload)
+            event_at = validate_event(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             invalid_record_count += 1
             if len(diagnostics) < MAX_INTEGRITY_DIAGNOSTICS:
@@ -368,7 +368,7 @@ def _scan_record_snapshot(
             start_offset = next_offset
             continue
         row = {"received_at": envelope.get("received_at"), "payload": payload}
-        visit(row, valid_record_count)
+        visit(row, event_at, valid_record_count)
         valid_record_count += 1
         start_offset = next_offset
 
@@ -385,13 +385,6 @@ def _scan_record_snapshot(
     }
 
 
-def _record_snapshot() -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Materialize a snapshot for compatibility with existing internal callers."""
-    rows: list[dict[str, Any]] = []
-    ledger_snapshot = _scan_record_snapshot(lambda row, _sequence: rows.append(row))
-    return rows, ledger_snapshot
-
-
 def _retain_latest(
     heap: list[tuple[datetime, str, int, dict[str, Any]]],
     *,
@@ -402,6 +395,8 @@ def _retain_latest(
     limit: int,
 ) -> None:
     """Keep only the newest bounded candidates using the public ordering contract."""
+    # The former stable reverse sort kept the earlier row first when public
+    # keys were equal. Negating the scan sequence preserves that exact contract.
     candidate_key = (event_at, event_id, -sequence)
     candidate = (*candidate_key, value)
     if len(heap) < limit:
@@ -485,10 +480,9 @@ def query_history(
     )
     selected: list[tuple[datetime, str, int, dict[str, Any]]] = []
 
-    def consider(row: dict[str, Any], sequence: int) -> None:
+    def consider(row: dict[str, Any], event_at: datetime, sequence: int) -> None:
         event = row["payload"]
         subject = event["subject"]
-        data = event.get("data", {})
         if not _matches_target(subject, repo=repo, host=host):
             return
         if component and _event_source_component(event) != component:
@@ -497,10 +491,15 @@ def query_history(
             return
         if task_class and _event_task_class(event) != task_class:
             return
-        actual_outcome = data.get("outcome") or data.get("result")
-        if outcome and actual_outcome != outcome:
-            return
-        event_at = _parse_timestamp(event["ts"], field="ts")
+        if outcome:
+            data = event.get("data")
+            actual_outcome = (
+                data.get("outcome") or data.get("result")
+                if isinstance(data, dict)
+                else None
+            )
+            if actual_outcome != outcome:
+                return
         if since_at is not None and event_at < since_at:
             return
         _retain_latest(
@@ -551,10 +550,9 @@ def operator_summary(*, since: str | None = None, limit: int = 20) -> dict[str, 
     blocker_counts: Counter[str] = Counter()
     recent_heap: list[tuple[datetime, str, int, dict[str, Any]]] = []
 
-    def summarize(row: dict[str, Any], sequence: int) -> None:
+    def summarize(row: dict[str, Any], event_at: datetime, sequence: int) -> None:
         nonlocal event_count
         event = row["payload"]
-        event_at = _parse_timestamp(event["ts"], field="ts")
         if since_at is not None and event_at < since_at:
             return
         event_count += 1
