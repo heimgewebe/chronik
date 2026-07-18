@@ -105,6 +105,14 @@ def _measure_compaction(outbox_root: Path, receipt_dir: Path) -> dict:
         "loose_sources_remaining": result["loose_sources_remaining"],
         "bundle_bytes": result["bundle_bytes"],
         "bundle_sha256": result["bundle_sha256"],
+        "archive_index_bytes": (
+            Path(result["archive_index_path"]).stat().st_size
+            if result["archive_index_sha256"] is not None
+            else 0
+        ),
+        "archive_index_sha256": result["archive_index_sha256"],
+        "archive_manifests_indexed": result["archive_manifests_indexed"],
+        "archived_sources_indexed": result["archived_sources_indexed"],
         "ledger_records_scanned": result["ledger_records_scanned"],
         "errors": result["errors"],
     }
@@ -167,6 +175,9 @@ def benchmark_tier(
             and repeat["target_scans"] <= MAX_TARGET_SCANS
             and bundled_repeat["target_scans"] <= MAX_TARGET_SCANS
             and compaction["sources_removed"] == source_files
+            and compaction["archive_index_sha256"] is not None
+            and compaction["archive_manifests_indexed"] == 1
+            and compaction["archived_sources_indexed"] == source_files
             and loose_files_before == source_files
             and loose_files_after == 0
             and worst_seconds <= max_seconds
