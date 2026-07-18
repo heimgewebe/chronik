@@ -144,10 +144,32 @@ def _file_identity(value: os.stat_result) -> tuple[int, int, int, int]:
     return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
 
 
-def _receipt_path(source: Path, receipt_dir: Path) -> Path:
+def _legacy_receipt_path(source: Path, receipt_dir: Path) -> Path:
     source_key = sha256_bytes(str(source.resolve()).encode("utf-8"))
     return receipt_dir / f"{source_key}.receipt.json"
 
+
+def _receipt_path(
+    source: Path, receipt_dir: Path, source_sha256: str | None = None
+) -> Path:
+    digest = source_sha256
+    if digest is None:
+        digest = sha256_bytes(source.read_bytes())
+    if (
+        not isinstance(digest, str)
+        or len(digest) != 64
+        or any(character not in "0123456789abcdef" for character in digest)
+    ):
+        raise ValueError("source_sha256 must be a SHA-256 hex digest")
+    source_key = sha256_bytes(
+        canonical_bytes(
+            {
+                "source_path": str(source.resolve()),
+                "source_sha256": digest,
+            }
+        )
+    )
+    return receipt_dir / f"{source_key}.receipt.json"
 
 def _load_receipt(path: Path) -> dict[str, Any] | None:
     try:
@@ -188,17 +210,29 @@ def _prepare_grabowski_source_bytes(
     for event in events:
         _validate_grabowski_source(event)
     source_sha256 = sha256_bytes(raw)
-    receipt_path = _receipt_path(source, receipt_dir)
+    receipt_path = _receipt_path(source, receipt_dir, source_sha256)
+    previous_receipt_path = receipt_path
     try:
         previous = _load_receipt(receipt_path)
     except ValueError:
         previous = None
+    if previous is None and not receipt_path.exists():
+        legacy_path = _legacy_receipt_path(source, receipt_dir)
+        try:
+            legacy = _load_receipt(legacy_path)
+        except ValueError:
+            legacy = None
+        if legacy is not None:
+            previous = legacy
+            previous_receipt_path = legacy_path
+            receipt_path = legacy_path
     return {
         "source": source,
         "raw": raw,
         "events": events,
         "source_sha256": source_sha256,
         "receipt_path": receipt_path,
+        "previous_receipt_path": previous_receipt_path,
         "previous_receipt": previous,
         "source_unchanged": previous is not None and previous.get("source_sha256") == source_sha256,
         "source_origin": source_origin,
@@ -538,22 +572,26 @@ def _grabowski_archive_index_document(
         for item in metadata
     ]
     sources: list[dict[str, Any]] = []
-    seen_names: set[str] = set()
+    seen_generations: set[tuple[str, str]] = set()
     for manifest_index, item in enumerate(metadata):
         for source in item["sources"]:
             source_name = source["source_name"]
-            if source_name in seen_names:
-                raise ValueError(f"duplicate archived source name: {source_name}")
-            seen_names.add(source_name)
+            source_sha256 = source["source_sha256"]
+            generation = (source_name, source_sha256)
+            if generation in seen_generations:
+                raise ValueError(
+                    f"duplicate archived source generation: {source_name} {source_sha256}"
+                )
+            seen_generations.add(generation)
             sources.append(
                 {
                     "source_name": source_name,
-                    "source_sha256": source["source_sha256"],
+                    "source_sha256": source_sha256,
                     "event_ids": list(source["event_ids"]),
                     "manifest_index": manifest_index,
                 }
             )
-    sources.sort(key=lambda item: item["source_name"])
+    sources.sort(key=lambda item: (item["source_name"], item["source_sha256"]))
     index = {
         "schema_version": GRABOWSKI_ARCHIVE_INDEX_SCHEMA,
         "domain": DOMAIN,
@@ -654,7 +692,7 @@ def _validate_grabowski_archive_index(
     sources = index.get("sources")
     if not isinstance(sources, list):
         raise ValueError(f"invalid archive index sources: {path}")
-    names: list[str] = []
+    generations: list[tuple[str, str]] = []
     source_keys = {"source_name", "source_sha256", "event_ids", "manifest_index"}
     for source in sources:
         if not isinstance(source, dict) or set(source) != source_keys:
@@ -681,9 +719,13 @@ def _validate_grabowski_archive_index(
             or manifest_index >= len(manifests)
         ):
             raise ValueError(f"invalid archive index source contract: {path}")
-        names.append(source_name)
-    if names != sorted(names) or len(names) != len(set(names)):
-        raise ValueError(f"archive index source names are not unique and sorted: {path}")
+        generations.append((source_name, source["source_sha256"]))
+    if generations != sorted(generations) or len(generations) != len(
+        set(generations)
+    ):
+        raise ValueError(
+            f"archive index source generations are not unique and sorted: {path}"
+        )
     if (
         type(index.get("manifest_count")) is not int
         or index["manifest_count"] != len(manifests)
@@ -749,18 +791,36 @@ def _refresh_grabowski_archive_index(
 def _merge_prepared_grabowski_sources(
     prepared_sources: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    merged: dict[str, dict[str, Any]] = {}
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
     for prepared in prepared_sources:
-        key = str(prepared["source"].resolve())
+        source_path = str(prepared["source"].resolve())
+        source_sha256 = prepared.get("source_sha256")
+        if not isinstance(source_sha256, str):
+            raise ValueError(f"prepared source lacks SHA-256 identity: {source_path}")
+        key = (source_path, source_sha256)
         previous = merged.get(key)
         if previous is None:
             merged[key] = prepared
             continue
         if previous["raw"] != prepared["raw"]:
-            raise ValueError(f"conflicting loose and bundled source bytes: {key}")
-        if previous.get("source_origin") == "bundle" and prepared.get("source_origin") == "loose":
+            raise ValueError(f"source SHA-256 collision: {source_path}")
+        if (
+            previous.get("source_origin") == "bundle"
+            and prepared.get("source_origin") == "loose"
+        ):
             merged[key] = prepared
-    return [merged[key] for key in sorted(merged)]
+    result = [merged[key] for key in sorted(merged)]
+    generation_counts = Counter(str(item["source"].resolve()) for item in result)
+    for prepared in result:
+        source_path = str(prepared["source"].resolve())
+        if generation_counts[source_path] <= 1:
+            continue
+        prepared["receipt_path"] = _receipt_path(
+            prepared["source"],
+            prepared["receipt_path"].parent,
+            prepared["source_sha256"],
+        )
+    return result
 
 
 def _fsync_directory(path: Path) -> None:
@@ -885,6 +945,7 @@ def _write_grabowski_outbox_receipt(
         prepared["source_unchanged"]
         and written == 0
         and skipped == len(events)
+        and prepared.get("previous_receipt_path") == receipt_path
         and _receipt_matches_prepared_source(prepared, previous_receipt)
     ):
         # The authoritative ledger was still scanned above. Reusing this intact
