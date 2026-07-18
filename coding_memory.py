@@ -32,6 +32,8 @@ GRABOWSKI_TERMINAL_KINDS = frozenset({"agent.run.completed", "agent.run.blocked"
 GRABOWSKI_BUNDLE_DIRNAME = "bundles"
 GRABOWSKI_BUNDLE_ENTRY_SCHEMA = "chronik-grabowski-outbox-bundle-source.v1"
 GRABOWSKI_BUNDLE_MANIFEST_SCHEMA = "chronik-grabowski-outbox-bundle-manifest.v1"
+GRABOWSKI_ARCHIVE_INDEX_FILENAME = "archive-index.v1.json"
+GRABOWSKI_ARCHIVE_INDEX_SCHEMA = "chronik-grabowski-outbox-archive-index.v1"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -524,6 +526,226 @@ def _load_grabowski_bundle(
     }
 
 
+def _grabowski_archive_index_document(
+    bundle_metadata: Iterable[dict[str, Any]],
+) -> dict[str, Any]:
+    metadata = sorted(bundle_metadata, key=lambda item: item["manifest_path"])
+    manifests = [
+        {
+            "file": Path(item["manifest_path"]).name,
+            "sha256": item["manifest_sha256"],
+        }
+        for item in metadata
+    ]
+    sources: list[dict[str, Any]] = []
+    seen_names: set[str] = set()
+    for manifest_index, item in enumerate(metadata):
+        for source in item["sources"]:
+            source_name = source["source_name"]
+            if source_name in seen_names:
+                raise ValueError(f"duplicate archived source name: {source_name}")
+            seen_names.add(source_name)
+            sources.append(
+                {
+                    "source_name": source_name,
+                    "source_sha256": source["source_sha256"],
+                    "event_ids": list(source["event_ids"]),
+                    "manifest_index": manifest_index,
+                }
+            )
+    sources.sort(key=lambda item: item["source_name"])
+    index = {
+        "schema_version": GRABOWSKI_ARCHIVE_INDEX_SCHEMA,
+        "domain": DOMAIN,
+        "manifest_count": len(manifests),
+        "source_count": len(sources),
+        "manifests": manifests,
+        "sources": sources,
+        "historical_only": True,
+        "authoritative": False,
+        "reconstructible": True,
+        "does_not_establish": [
+            *DOES_NOT_ESTABLISH,
+            "bundle_or_source_authority",
+            "future_outbox_write_suppression",
+        ],
+    }
+    index["index_sha256"] = sha256_bytes(canonical_bytes(index))
+    return index
+
+
+def _validate_grabowski_archive_index(
+    raw: bytes,
+    *,
+    path: Path,
+    expected: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if not raw.endswith(b"\n"):
+        raise ValueError(f"incomplete archive index: {path}")
+    try:
+        index = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid archive index JSON: {path}") from exc
+    expected_keys = {
+        "schema_version",
+        "domain",
+        "manifest_count",
+        "source_count",
+        "manifests",
+        "sources",
+        "historical_only",
+        "authoritative",
+        "reconstructible",
+        "does_not_establish",
+        "index_sha256",
+    }
+    if not isinstance(index, dict) or set(index) != expected_keys:
+        raise ValueError(f"invalid archive index fields: {path}")
+    if (
+        index["schema_version"] != GRABOWSKI_ARCHIVE_INDEX_SCHEMA
+        or index["domain"] != DOMAIN
+        or index["historical_only"] is not True
+        or index["authoritative"] is not False
+        or index["reconstructible"] is not True
+        or index["does_not_establish"]
+        != [
+            *DOES_NOT_ESTABLISH,
+            "bundle_or_source_authority",
+            "future_outbox_write_suppression",
+        ]
+    ):
+        raise ValueError(f"invalid archive index contract: {path}")
+    claimed_sha256 = index.get("index_sha256")
+    if not isinstance(claimed_sha256, str):
+        raise ValueError(f"invalid archive index digest: {path}")
+    unsigned = dict(index)
+    unsigned.pop("index_sha256")
+    if claimed_sha256 != sha256_bytes(canonical_bytes(unsigned)):
+        raise ValueError(f"archive index digest mismatch: {path}")
+
+    def valid_sha256(value: Any) -> bool:
+        return (
+            isinstance(value, str)
+            and len(value) == 64
+            and all(character in "0123456789abcdef" for character in value)
+        )
+
+    manifests = index.get("manifests")
+    if not isinstance(manifests, list):
+        raise ValueError(f"invalid archive index manifests: {path}")
+    manifest_files: list[str] = []
+    for manifest in manifests:
+        if not isinstance(manifest, dict) or set(manifest) != {"file", "sha256"}:
+            raise ValueError(f"invalid archive index manifest fields: {path}")
+        manifest_file = manifest.get("file")
+        if (
+            not isinstance(manifest_file, str)
+            or Path(manifest_file).name != manifest_file
+            or not manifest_file.endswith(".manifest.json")
+            or not valid_sha256(manifest.get("sha256"))
+        ):
+            raise ValueError(f"invalid archive index manifest contract: {path}")
+        manifest_files.append(manifest_file)
+    if manifest_files != sorted(manifest_files) or len(manifest_files) != len(
+        set(manifest_files)
+    ):
+        raise ValueError(f"archive index manifests are not unique and sorted: {path}")
+
+    sources = index.get("sources")
+    if not isinstance(sources, list):
+        raise ValueError(f"invalid archive index sources: {path}")
+    names: list[str] = []
+    source_keys = {"source_name", "source_sha256", "event_ids", "manifest_index"}
+    for source in sources:
+        if not isinstance(source, dict) or set(source) != source_keys:
+            raise ValueError(f"invalid archive index source fields: {path}")
+        source_name = source.get("source_name")
+        event_ids = source.get("event_ids")
+        manifest_index = source.get("manifest_index")
+        if (
+            not isinstance(source_name, str)
+            or Path(source_name).name != source_name
+            or not source_name.endswith(".jsonl")
+            or not valid_sha256(source.get("source_sha256"))
+            or not isinstance(event_ids, list)
+            or not event_ids
+            or len(event_ids) != len(set(event_ids))
+            or any(
+                not isinstance(event_id, str)
+                or not event_id.startswith("sha256:")
+                or not valid_sha256(event_id.removeprefix("sha256:"))
+                for event_id in event_ids
+            )
+            or type(manifest_index) is not int
+            or manifest_index < 0
+            or manifest_index >= len(manifests)
+        ):
+            raise ValueError(f"invalid archive index source contract: {path}")
+        names.append(source_name)
+    if names != sorted(names) or len(names) != len(set(names)):
+        raise ValueError(f"archive index source names are not unique and sorted: {path}")
+    if (
+        type(index.get("manifest_count")) is not int
+        or index["manifest_count"] != len(manifests)
+        or type(index.get("source_count")) is not int
+        or index["source_count"] != len(sources)
+    ):
+        raise ValueError(f"archive index inventory mismatch: {path}")
+    if expected is not None and index != expected:
+        raise ValueError(f"archive index readback mismatch: {path}")
+    return index
+
+
+def _refresh_grabowski_archive_index(
+    *,
+    source_dir: Path,
+    bundle_dir: Path,
+    receipt_dir: Path,
+) -> dict[str, Any] | None:
+    manifest_paths = (
+        sorted(bundle_dir.glob("*.manifest.json")) if bundle_dir.is_dir() else []
+    )
+    if not manifest_paths:
+        return None
+    metadata: list[dict[str, Any]] = []
+    for manifest_path in manifest_paths:
+        _, item = _load_grabowski_bundle(
+            manifest_path,
+            source_dir=source_dir,
+            receipt_dir=receipt_dir,
+        )
+        metadata.append(item)
+    index = _grabowski_archive_index_document(metadata)
+    index_path = bundle_dir / GRABOWSKI_ARCHIVE_INDEX_FILENAME
+    raw = canonical_bytes(index) + b"\n"
+    published = True
+    try:
+        existing_state = index_path.lstat()
+    except FileNotFoundError:
+        existing = None
+    else:
+        if not stat.S_ISREG(existing_state.st_mode):
+            raise ValueError(f"archive index must be a regular file: {index_path}")
+        existing = index_path.read_bytes()
+    if existing == raw:
+        published = False
+    else:
+        _atomic_write(index_path, raw)
+        _fsync_directory(bundle_dir)
+    readback = _read_immutable_artifact(index_path, label="archive index")
+    validated = _validate_grabowski_archive_index(
+        readback, path=index_path, expected=index
+    )
+    return {
+        "path": str(index_path),
+        "index_sha256": validated["index_sha256"],
+        "file_sha256": sha256_bytes(readback),
+        "manifest_count": validated["manifest_count"],
+        "source_count": validated["source_count"],
+        "published": published,
+    }
+
+
 def _merge_prepared_grabowski_sources(
     prepared_sources: Iterable[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -976,6 +1198,12 @@ def compact_grabowski_outbox(
         "bundle_bytes": 0,
         "manifest_path": None,
         "manifest_sha256": None,
+        "archive_index_path": str(bundle_dir / GRABOWSKI_ARCHIVE_INDEX_FILENAME),
+        "archive_index_sha256": None,
+        "archive_index_file_sha256": None,
+        "archive_index_published": False,
+        "archive_manifests_indexed": 0,
+        "archived_sources_indexed": 0,
         "bundle_published": False,
         "manifest_published": False,
         "bundle_reused": False,
@@ -985,7 +1213,34 @@ def compact_grabowski_outbox(
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
-    if not apply or not eligible:
+    if not apply:
+        return result
+    if not eligible:
+        try:
+            archive_index = _refresh_grabowski_archive_index(
+                source_dir=source_dir,
+                bundle_dir=bundle_dir,
+                receipt_dir=receipt_dir,
+            )
+        except (OSError, ValueError, storage.StorageError) as exc:
+            errors.append(
+                {
+                    "source_path": str(bundle_dir / GRABOWSKI_ARCHIVE_INDEX_FILENAME),
+                    "error": str(exc),
+                }
+            )
+        else:
+            if archive_index is not None:
+                result.update(
+                    {
+                        "archive_index_path": archive_index["path"],
+                        "archive_index_sha256": archive_index["index_sha256"],
+                        "archive_index_file_sha256": archive_index["file_sha256"],
+                        "archive_index_published": archive_index["published"],
+                        "archive_manifests_indexed": archive_index["manifest_count"],
+                        "archived_sources_indexed": archive_index["source_count"],
+                    }
+                )
         return result
     stable: list[dict[str, Any]] = []
     for prepared in eligible:
@@ -1025,6 +1280,7 @@ def compact_grabowski_outbox(
             "manifest_path": str(manifest_path),
         }
     )
+    failure_path = manifest_path
     try:
         _ensure_bundle_directory(source_dir, bundle_dir)
         result["bundle_published"] = _publish_immutable(bundle_path, bundle_raw)
@@ -1073,8 +1329,26 @@ def compact_grabowski_outbox(
         }:
             raise ValueError("published bundle readback does not match source bytes")
         result["manifest_sha256"] = metadata["manifest_sha256"]
+        failure_path = bundle_dir / GRABOWSKI_ARCHIVE_INDEX_FILENAME
+        archive_index = _refresh_grabowski_archive_index(
+            source_dir=source_dir,
+            bundle_dir=bundle_dir,
+            receipt_dir=receipt_dir,
+        )
+        if archive_index is None:
+            raise ValueError("archive index was not created for published bundle")
+        result.update(
+            {
+                "archive_index_path": archive_index["path"],
+                "archive_index_sha256": archive_index["index_sha256"],
+                "archive_index_file_sha256": archive_index["file_sha256"],
+                "archive_index_published": archive_index["published"],
+                "archive_manifests_indexed": archive_index["manifest_count"],
+                "archived_sources_indexed": archive_index["source_count"],
+            }
+        )
     except (OSError, ValueError, storage.StorageError) as exc:
-        errors.append({"source_path": str(manifest_path), "error": str(exc)})
+        errors.append({"source_path": str(failure_path), "error": str(exc)})
         return result
     removed = 0
     for prepared in stable:

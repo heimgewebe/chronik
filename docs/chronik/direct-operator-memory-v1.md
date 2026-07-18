@@ -199,6 +199,21 @@ Erst `--apply` erlaubt die Veröffentlichung eines Bundles und das anschließend
 Entfernen geeigneter loser Quellen. Der Import-Timer führt diese Kompaktierung
 nicht implizit aus.
 
+Vor dem ersten Entfernen veröffentlicht Chronik zusätzlich
+`bundles/archive-index.v1.json`. Diese kompakte, atomar ersetzte Projektion
+ordnet jeden archivierten Quelldateinamen seinem Quell-Digest, seinen Event-IDs
+und dem gebundenen Manifest zu. Chronik rekonstruiert und validiert den Index
+bei jedem Apply aus sämtlichen gültigen Bundle-Manifesten; fehlt er, wird er
+auch dann wiederhergestellt, wenn keine lose Quelle mehr kompaktierbar ist.
+Ein beschädigter, widersprüchlicher oder nicht lesbar zurückgeprüfter Index
+blockiert das Entfernen der Quelle.
+
+Der Archivindex ist keine zusätzliche Historien- oder Taskautorität. Die
+unveränderlichen Bundle-Dateien und ihre Manifeste bleiben die maßgebliche
+Replay-Evidenz. Der Index ist eine rekonstruierbare Schreibschutzprojektion,
+damit der Grabowski-Produzent nach einer Kompaktierung denselben logischen
+Quellpfad nicht erneut als verkürzte Teilhistorie anlegt.
+
 ### Autoritätsgrenzen
 
 - Der Chronik-Ledger bleibt die operative Import- und Abfrageautorität.

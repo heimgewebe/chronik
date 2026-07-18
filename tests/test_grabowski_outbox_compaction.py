@@ -154,6 +154,105 @@ def test_repeat_apply_is_noop(tmp_path, monkeypatch):
     assert len(list((source_dir / "bundles").glob("*.manifest.json"))) == 1
 
 
+def test_archive_index_is_published_and_validated_before_source_unlink(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    source = write_source(
+        source_dir,
+        "grabowski_task-indexed-a1.jsonl",
+        [event("agent.run.started", "a"), event("agent.run.completed", "b")],
+    )
+    import_first(outbox, receipts)
+    original_unlink = coding_memory._unlink_loose_source
+    observed = {}
+
+    def guarded_unlink(path):
+        index_path = source_dir / "bundles" / coding_memory.GRABOWSKI_ARCHIVE_INDEX_FILENAME
+        raw = index_path.read_bytes()
+        index = coding_memory._validate_grabowski_archive_index(
+            raw, path=index_path
+        )
+        observed.update(index)
+        assert index["source_count"] == 1
+        assert index["sources"][0]["source_name"] == source.name
+        assert index["sources"][0]["event_ids"] == [
+            event("agent.run.started", "a")["event_id"],
+            event("agent.run.completed", "b")["event_id"],
+        ]
+        original_unlink(path)
+
+    monkeypatch.setattr(coding_memory, "_unlink_loose_source", guarded_unlink)
+
+    result = compact(outbox, receipts, apply=True)
+
+    assert result["errors"] == []
+    assert result["sources_removed"] == 1
+    assert result["archive_index_published"] is True
+    assert result["archive_manifests_indexed"] == 1
+    assert result["archived_sources_indexed"] == 1
+    assert result["archive_index_sha256"] == observed["index_sha256"]
+    assert not source.exists()
+
+
+def test_repeat_apply_rebuilds_missing_archive_index_without_loose_sources(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    write_source(
+        source_dir,
+        "grabowski_task-rebuild-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    import_first(outbox, receipts)
+    first = compact(outbox, receipts, apply=True)
+    index_path = Path(first["archive_index_path"])
+    original = index_path.read_bytes()
+    index_path.unlink()
+
+    rebuilt = compact(outbox, receipts, apply=True)
+    unchanged = compact(outbox, receipts, apply=True)
+
+    assert rebuilt["eligible_sources"] == 0
+    assert rebuilt["sources_removed"] == 0
+    assert rebuilt["archive_index_published"] is True
+    assert rebuilt["archived_sources_indexed"] == 1
+    assert index_path.read_bytes() == original
+    assert unchanged["archive_index_published"] is False
+    assert unchanged["archive_index_file_sha256"] == rebuilt["archive_index_file_sha256"]
+
+
+def test_archive_index_readback_failure_retains_loose_source(tmp_path, monkeypatch):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    source = write_source(
+        source_dir,
+        "grabowski_task-index-failure-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    import_first(outbox, receipts)
+    original_atomic_write = coding_memory._atomic_write
+
+    def corrupt_index(path, data):
+        if path.name == coding_memory.GRABOWSKI_ARCHIVE_INDEX_FILENAME:
+            original_atomic_write(path, b"{broken\n")
+            return
+        original_atomic_write(path, data)
+
+    monkeypatch.setattr(coding_memory, "_atomic_write", corrupt_index)
+
+    result = compact(outbox, receipts, apply=True)
+
+    assert result["sources_removed"] == 0
+    assert source.exists()
+    assert Path(result["bundle_path"]).exists()
+    assert Path(result["manifest_path"]).exists()
+    assert result["archive_index_sha256"] is None
+    assert result["errors"][-1]["source_path"].endswith(
+        coding_memory.GRABOWSKI_ARCHIVE_INDEX_FILENAME
+    )
+    assert "invalid archive index JSON" in result["errors"][-1]["error"]
+
+
 def test_missing_corrupt_and_stale_receipts_are_not_compacted(tmp_path, monkeypatch):
     _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
     paths = [
