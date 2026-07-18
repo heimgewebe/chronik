@@ -222,6 +222,78 @@ def test_repeat_apply_rebuilds_missing_archive_index_without_loose_sources(
     assert unchanged["archive_index_file_sha256"] == rebuilt["archive_index_file_sha256"]
 
 
+def test_archive_index_allows_same_name_with_distinct_source_generations(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    name = "grabowski_task-generation-a1.jsonl"
+    first_source = write_source(
+        source_dir, name, [event("agent.run.completed", "a")]
+    )
+    first_raw = first_source.read_bytes()
+    import_first(outbox, receipts)
+    first = compact(outbox, receipts, apply=True)
+    assert first["errors"] == []
+
+    second_source = write_source(
+        source_dir, name, [event("agent.run.completed", "b")]
+    )
+    second_raw = second_source.read_bytes()
+    imported = import_first(outbox, receipts)
+    second = compact(outbox, receipts, apply=True)
+    repeated = compact(outbox, receipts, apply=True)
+
+    assert imported["sources_after_deduplication"] == 2
+    assert second["errors"] == []
+    assert second["sources_removed"] == 1
+    assert second["archive_manifests_indexed"] == 2
+    assert second["archived_sources_indexed"] == 2
+    assert repeated["errors"] == []
+    assert repeated["archive_index_published"] is False
+    index_path = Path(second["archive_index_path"])
+    index = coding_memory._validate_grabowski_archive_index(
+        index_path.read_bytes(), path=index_path
+    )
+    generations = [
+        (item["source_name"], item["source_sha256"])
+        for item in index["sources"]
+    ]
+    assert generations == sorted(
+        [
+            (name, coding_memory.sha256_bytes(first_raw)),
+            (name, coding_memory.sha256_bytes(second_raw)),
+        ]
+    )
+    assert len({item["manifest_index"] for item in index["sources"]}) == 2
+
+
+def test_archive_index_rejects_exact_duplicate_source_generation():
+    source = {
+        "source_name": "grabowski_task-duplicate-a1.jsonl",
+        "source_sha256": "a" * 64,
+        "event_ids": ["sha256:" + "b" * 64],
+    }
+    metadata = [
+        {
+            "manifest_path": "/tmp/one.manifest.json",
+            "manifest_sha256": "c" * 64,
+            "sources": [source],
+        },
+        {
+            "manifest_path": "/tmp/two.manifest.json",
+            "manifest_sha256": "d" * 64,
+            "sources": [source],
+        },
+    ]
+
+    try:
+        coding_memory._grabowski_archive_index_document(metadata)
+    except ValueError as exc:
+        assert "duplicate archived source generation" in str(exc)
+    else:
+        raise AssertionError("exact duplicate generation must fail closed")
+
+
 def test_archive_index_readback_failure_retains_loose_source(tmp_path, monkeypatch):
     _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
     source = write_source(
@@ -385,7 +457,7 @@ def test_unlink_failure_keeps_source_but_publishes_replay_bundle(tmp_path, monke
     assert readback["sources_after_deduplication"] == 1
 
 
-def test_source_change_after_publish_is_retained_and_import_fails_closed(
+def test_source_change_after_publish_is_retained_as_new_generation(
     tmp_path, monkeypatch
 ):
     data, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
@@ -415,12 +487,38 @@ def test_source_change_after_publish_is_retained_and_import_fails_closed(
     assert result["skipped_by_reason"] == {"source_changed_before_remove": 1}
     assert source.exists()
     (data / "agent.ledger.jsonl").unlink()
-    failed_import = coding_memory.import_grabowski_outbox(
+    replay = coding_memory.import_grabowski_outbox(
         outbox_root=outbox, receipt_dir=receipts
     )
-    assert failed_import["events_imported"] == 0
-    assert failed_import["target_scans"] is None
-    assert "conflicting loose and bundled source bytes" in failed_import["errors"][-1]["error"]
+    assert replay["errors"] == []
+    assert replay["events_imported"] == 2
+    assert replay["events_skipped_existing"] == 1
+    assert replay["sources_after_deduplication"] == 2
+    assert replay["receipts_written"] == 1
+    assert len(list(receipts.glob("*.receipt.json"))) == 2
+    assert (data / "agent.ledger.jsonl").exists()
+
+
+def test_same_path_same_event_id_with_changed_payload_fails_before_append(
+    tmp_path, monkeypatch
+):
+    data, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    original = event("agent.run.completed", "c")
+    source = write_source(source_dir, "grabowski_task-one-a1.jsonl", [original])
+    import_first(outbox, receipts)
+    compact(outbox, receipts, apply=True)
+    conflicting = dict(original)
+    conflicting["subject"] = {"repo": "heimgewebe/other"}
+    write_source(source_dir, source.name, [conflicting])
+    (data / "agent.ledger.jsonl").unlink()
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert result["events_imported"] == 0
+    assert result["target_scans"] is None
+    assert "conflicting event_id" in result["errors"][-1]["error"]
     assert not (data / "agent.ledger.jsonl").exists()
 
 

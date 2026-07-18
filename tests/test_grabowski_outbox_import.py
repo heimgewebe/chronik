@@ -512,3 +512,34 @@ def test_receipt_failure_preserves_ledger_stats_and_is_recoverable(
     assert recovered["target_scans"] == 1
     assert recovered["errors"] == []
     assert len(list(receipts.glob("*.receipt.json"))) == 1
+
+
+def test_legacy_path_only_receipt_is_reused_for_a_single_generation(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    source = write_outbox(
+        outbox,
+        [event("agent.run.completed", "c")],
+    )
+    first = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+    assert first["errors"] == []
+    generation_receipt = coding_memory._receipt_path(source, receipts)
+    legacy_receipt = coding_memory._legacy_receipt_path(source, receipts)
+    generation_receipt.replace(legacy_receipt)
+
+    reused = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+    repeated = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert reused["errors"] == []
+    assert reused["receipts_written"] == 0
+    assert reused["receipts_reused"] == 1
+    assert not generation_receipt.exists()
+    assert legacy_receipt.exists()
+    assert repeated["errors"] == []
+    assert repeated["receipts_written"] == 0
+    assert repeated["receipts_reused"] == 1

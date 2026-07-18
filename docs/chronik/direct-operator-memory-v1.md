@@ -178,6 +178,9 @@ Jeder Outbox-Import gleicht die Event-IDs weiterhin mit dem maßgeblichen Chroni
 
 `receipt_sha256` im Laufergebnis bindet ausdrücklich die unveränderte Receipt-Datei (`receipt_digest_scope=persisted_receipt`), nicht die aktuellen Laufzähler. `imported`, `skipped_existing` und die Scan-Zähler beschreiben den aktuellen Lauf.
 
+Ein Quellpfad darf nach einer Kompaktierung erneut verwendet werden. Chronik identifiziert deshalb jede Importgeneration durch den kanonischen Quellpfad zusammen mit dem exakten Quell-SHA-256. Generationsgebundene Receipts verwenden beide Werte. Intakte ältere, nur pfadgebundene Receipts bleiben bei einem eindeutigen Quellpfad ohne Dateivermehrung nutzbar; erst wenn mehrere Generationen desselben Pfades gleichzeitig vorliegen, werden sie nach der Ledgerprüfung auf SHA-gebundene Receiptpfade angehoben. Receipts bleiben nichtautoritativ. Byteidentische Generationen werden dedupliziert. Mehrere byteverschiedene Generationen dürfen nebeneinander bestehen, aber der gruppierte Ledger-Writer verwirft weiterhin vor jedem Append jede wiederholte `event_id` mit abweichendem kanonischem Payload.
+Der rekonstruierbare Archive-Index verwendet dieselbe Generationsidentität: `(source_name, source_sha256)` muss eindeutig und sortiert sein. Derselbe Dateiname darf deshalb in mehreren Bundles vorkommen, sofern die Quell-SHA-256 verschieden ist; eine exakt doppelte Generation scheitert geschlossen.
+
 Receipts bleiben nicht maßgeblich. Fehlen Ledger-Daten, werden sie trotz intaktem Receipt aus der Grabowski-Outbox rekonstruiert. Die Quelldateien bleiben deshalb Replay-Evidenz; Löschen oder Kompaktieren benötigt einen eigenen Verlustwiederherstellungsvertrag und folgt nicht aus der Receipt-Wiederverwendung.
 
 ## Terminalitätsgebundene Outbox-Kompaktierung
