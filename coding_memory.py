@@ -1,6 +1,7 @@
 """Local, idempotent coding-history import and evidence-bound queries."""
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import heapq
 import json
@@ -8,6 +9,7 @@ import os
 import stat
 import tempfile
 from collections import Counter
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -34,6 +36,7 @@ GRABOWSKI_BUNDLE_ENTRY_SCHEMA = "chronik-grabowski-outbox-bundle-source.v1"
 GRABOWSKI_BUNDLE_MANIFEST_SCHEMA = "chronik-grabowski-outbox-bundle-manifest.v1"
 GRABOWSKI_ARCHIVE_INDEX_FILENAME = "archive-index.v1.json"
 GRABOWSKI_ARCHIVE_INDEX_SCHEMA = "chronik-grabowski-outbox-archive-index.v1"
+GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME = ".writer-compaction.lock"
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -1184,7 +1187,65 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
     }
 
 
+
+@contextmanager
+def _grabowski_writer_compaction_lock(source_dir: Path):
+    source_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    try:
+        source_stat = source_dir.stat(follow_symlinks=False)
+    except OSError as exc:
+        raise ValueError("Grabowski outbox directory cannot be inspected safely") from exc
+    if not stat.S_ISDIR(source_stat.st_mode):
+        raise ValueError("Grabowski outbox directory must be a real directory")
+    lock_path = source_dir / GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags, 0o600)
+    try:
+        file_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ValueError("Grabowski writer-compaction lock must be a regular file")
+        os.fchmod(descriptor, 0o600)
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+
+
 def compact_grabowski_outbox(
+    *,
+    outbox_root: Path,
+    receipt_dir: Path,
+    grace_seconds: int = 86400,
+    apply: bool = False,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    if not isinstance(apply, bool):
+        raise ValueError("apply must be a boolean")
+    source_dir = outbox_root.expanduser() / "grabowski" / "chronik-outbox"
+    if apply:
+        with _grabowski_writer_compaction_lock(source_dir):
+            return _compact_grabowski_outbox_unlocked(
+                outbox_root=outbox_root,
+                receipt_dir=receipt_dir,
+                grace_seconds=grace_seconds,
+                apply=apply,
+                now=now,
+            )
+    return _compact_grabowski_outbox_unlocked(
+        outbox_root=outbox_root,
+        receipt_dir=receipt_dir,
+        grace_seconds=grace_seconds,
+        apply=apply,
+        now=now,
+    )
+
+
+def _compact_grabowski_outbox_unlocked(
     *,
     outbox_root: Path,
     receipt_dir: Path,

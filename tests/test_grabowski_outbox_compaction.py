@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -193,6 +195,84 @@ def test_archive_index_is_published_and_validated_before_source_unlink(
     assert result["archived_sources_indexed"] == 1
     assert result["archive_index_sha256"] == observed["index_sha256"]
     assert not source.exists()
+
+
+
+def test_apply_holds_writer_compaction_lock_through_source_unlink(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    source = write_source(
+        source_dir,
+        "grabowski_task-locked-a1.jsonl",
+        [event("agent.run.started", "a"), event("agent.run.completed", "b")],
+    )
+    import_first(outbox, receipts)
+    original_unlink = coding_memory._unlink_loose_source
+    observed = {}
+
+    def guarded_unlink(path):
+        lock_path = (
+            source_dir / coding_memory.GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME
+        )
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CLOEXEC)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                observed["blocked"] = True
+            else:
+                observed["blocked"] = False
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
+        assert observed["blocked"] is True
+        original_unlink(path)
+
+    monkeypatch.setattr(coding_memory, "_unlink_loose_source", guarded_unlink)
+
+    result = compact(outbox, receipts, apply=True)
+
+    lock_path = source_dir / coding_memory.GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME
+    assert result["errors"] == []
+    assert result["sources_removed"] == 1
+    assert observed == {"blocked": True}
+    assert lock_path.is_file()
+    assert lock_path.stat().st_mode & 0o777 == 0o600
+    assert not source.exists()
+
+
+def test_apply_rejects_symlinked_outbox_directory(tmp_path, monkeypatch):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    redirected = tmp_path / "redirected-outbox"
+    source_dir.rmdir()
+    redirected.mkdir()
+    source_dir.symlink_to(redirected, target_is_directory=True)
+
+    try:
+        compact(outbox, receipts, apply=True)
+    except ValueError as exc:
+        assert "must be a real directory" in str(exc)
+    else:
+        raise AssertionError("symlinked outbox directory was accepted")
+
+    assert list(redirected.iterdir()) == []
+
+
+def test_dry_run_does_not_create_writer_compaction_lock(tmp_path, monkeypatch):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    write_source(
+        source_dir,
+        "grabowski_task-dry-lock-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    import_first(outbox, receipts)
+
+    result = compact(outbox, receipts, apply=False)
+
+    lock_path = source_dir / coding_memory.GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME
+    assert result["mode"] == "dry-run"
+    assert not lock_path.exists()
 
 
 def test_repeat_apply_rebuilds_missing_archive_index_without_loose_sources(
