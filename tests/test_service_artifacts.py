@@ -68,3 +68,25 @@ def test_operator_docs_close_ai_context_loop():
     assert "not an orchestrator" in runbook
     assert "requires explicit approval" in runbook
     assert "CHRONIK_TOKEN=dev" in runbook
+
+
+def test_runtime_activation_gate_requires_explicit_effect_scope_and_rollback():
+    runbook = (ROOT / "docs" / "runbook.md").read_text(encoding="utf-8")
+
+    for effect in (
+        "systemctl enable",
+        "systemctl start",
+        "systemctl restart",
+        "installing or deploying",
+        "fleet mutation",
+        "secret handling",
+    ):
+        assert effect in runbook
+
+    assert "performs no service, deployment, fleet, or secret action" in runbook
+    assert "health/version smoke" in runbook
+    assert "append/read smoke" in runbook
+    assert "rollback triggers" in runbook
+    assert "inactive and disabled" in runbook
+    assert "no Chronik process or listener remains" in runbook
+    assert "must not contain tokens" in runbook
