@@ -98,6 +98,19 @@ def test_get_events_pagination(client, mock_storage):
     # Next cursor should remain same (idempotent)
     assert data["next_cursor"] == cursor3
 
+def test_get_events_rejects_cursor_inside_record(client, mock_storage):
+    domain = "test.cursor-boundary"
+    create_event_file(mock_storage, domain, [b'{"id":1}\n', b'{"id":2}\n'])
+
+    response = client.get(
+        f"/v1/events?domain={domain}&limit=1&cursor=1",
+        headers={"X-Auth": "test-token"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "cursor must point to a record boundary"
+
+
 def test_get_events_boundary_condition(client, mock_storage):
     """
     Test reading exactly to the end of file with limit > remaining.

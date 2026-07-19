@@ -107,6 +107,7 @@ def test_write_payload_unique_groups_scans_once_and_allocates_counts(mock_data_d
     )
     assert result["target_scans"] == 1
     assert result["target_records_scanned"] == 1
+    assert result["target_identity_index_entries"] == 1
     assert result["written"] == 2
     assert result["skipped"] == 2
     assert result["groups"] == [
@@ -114,6 +115,58 @@ def test_write_payload_unique_groups_scans_once_and_allocates_counts(mock_data_d
         {"group_id": "second", "requested": 2, "written": 1, "skipped": 1},
     ]
     assert len((mock_data_dir / "agent.ledger.jsonl").read_text().splitlines()) == 3
+
+
+def test_write_payload_unique_groups_indexes_history_with_bounded_fingerprints(
+    mock_data_dir,
+):
+    historical = [
+        _unique_line(f"old-{index}", "x" * 2048)
+        for index in range(128)
+    ]
+    historical.append(_unique_line("candidate", "same"))
+    storage.write_payload("agent.ledger", historical)
+
+    result = storage.write_payload_unique_groups(
+        "agent.ledger",
+        [("batch", [_unique_line("candidate", "same"), _unique_line("new", "value")])],
+    )
+
+    assert result["target_records_scanned"] == 129
+    assert result["target_identity_index_entries"] == 129
+    assert result["written"] == 1
+    assert result["skipped"] == 1
+
+
+def test_write_payload_unique_groups_rejects_unrelated_historical_conflict(
+    mock_data_dir,
+):
+    storage.write_payload(
+        "agent.ledger",
+        [_unique_line("damaged", "first"), _unique_line("damaged", "second")],
+    )
+
+    with pytest.raises(storage.StorageError, match="conflicting event_id: damaged"):
+        storage.write_payload_unique_groups(
+            "agent.ledger", [("batch", [_unique_line("new", "value")])]
+        )
+
+
+def test_scan_domain_rejects_cursor_inside_record(mock_data_dir):
+    storage.write_payload("agent.ledger", ['{"id":1}', '{"id":2}'])
+
+    with pytest.raises(storage.StorageCursorError, match="record boundary"):
+        list(storage.scan_domain("agent.ledger", start_offset=1))
+
+
+def test_scan_domain_accepts_emitted_record_boundary(mock_data_dir):
+    first = '{"id":1}'
+    storage.write_payload("agent.ledger", [first, '{"id":2}'])
+    boundary = len(first.encode("utf-8")) + 1
+
+    assert list(storage.scan_domain("agent.ledger", start_offset=boundary)) == [
+        (boundary, boundary + len('{"id":2}'.encode("utf-8")) + 1, '{"id":2}')
+    ]
 
 
 def test_write_payload_unique_groups_rejects_cross_group_conflict_before_write(

@@ -30,6 +30,7 @@ from slowapi.util import get_remote_address
 from storage import (
     DomainError,
     StorageError,
+    StorageCursorError,
     StorageFullError,
     StorageBusyError,
     read_tail,
@@ -669,6 +670,10 @@ async def events_v1(
 
     try:
         events, next_cursor, has_more = await run_in_threadpool(_fetch_events_helper, dom, cursor, limit)
+    except StorageCursorError as exc:
+        raise HTTPException(
+            status_code=400, detail="cursor must point to a record boundary"
+        ) from exc
     except StorageBusyError as exc:
         raise HTTPException(status_code=429, detail="busy, try again") from exc
     except StorageError as exc:

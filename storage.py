@@ -19,6 +19,7 @@ __all__ = [
     "DATA_DIR",
     "DomainError",
     "StorageError",
+    "StorageCursorError",
     "StorageFullError",
     "StorageBusyError",
     "StorageRecoveryError",
@@ -47,6 +48,10 @@ class DomainError(ValueError):
 
 class StorageError(Exception):
     """Base class for storage-related errors."""
+
+
+class StorageCursorError(StorageError):
+    """Raised when a byte cursor does not point to a JSONL record boundary."""
 
 
 class StorageFullError(StorageError):
@@ -466,6 +471,9 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
 
     If start_offset is beyond EOF, yields nothing.
     """
+    if type(start_offset) is not int or start_offset < 0:
+        raise StorageCursorError("start_offset must be a non-negative integer")
+
     try:
         target_path = safe_target_path(domain)
     except DomainError as exc:
@@ -477,6 +485,15 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
     try:
         # Use safe open to prevent symlink attacks, but no file lock
         with _safe_open_read(target_path) as fh:
+            observed_size = os.fstat(fh.fileno()).st_size
+            if start_offset > observed_size:
+                return
+            if start_offset:
+                fh.seek(start_offset - 1)
+                if fh.read(1) != b"\n":
+                    raise StorageCursorError(
+                        "start_offset must point to a JSONL record boundary"
+                    )
             fh.seek(start_offset)
             while True:
                 # Capture start offset before reading
@@ -663,6 +680,11 @@ def _parse_unique_payload(
     return identity if isinstance(identity, str) else None, canonical_payload
 
 
+def _payload_fingerprint(canonical_payload: bytes) -> tuple[int, bytes]:
+    """Return one bounded content identity for an already canonical payload."""
+    return len(canonical_payload), hashlib.sha256(canonical_payload).digest()
+
+
 def write_payload_unique_groups(
     domain: str,
     groups: Iterable[tuple[str, Iterable[str]]],
@@ -704,6 +726,7 @@ def write_payload_unique_groups(
             "skipped": 0,
             "target_scans": 0,
             "target_records_scanned": 0,
+            "target_identity_index_entries": 0,
             "groups": [
                 {"group_id": gid, "requested": len(lines), "written": 0, "skipped": 0}
                 for gid, lines in materialized
@@ -715,7 +738,10 @@ def write_payload_unique_groups(
         raise StorageError("invalid target path") from exc
     with _locked_open(target_path, "a+") as fh:
         fh.seek(0)
-        existing = {}
+        # Preserve global conflict detection without retaining every historical
+        # payload. Chronik already uses SHA-256 as a content-identity primitive;
+        # length plus the binary digest bounds the per-record index value.
+        existing: dict[str, tuple[int, bytes]] = {}
         target_records_scanned = 0
         for raw in fh:
             target_records_scanned += 1
@@ -724,14 +750,17 @@ def write_payload_unique_groups(
             except (TypeError, ValueError):
                 continue
             if identity:
+                fingerprint = _payload_fingerprint(canonical_payload)
                 previous = existing.get(identity)
-                if previous is not None and previous != canonical_payload:
+                if previous is not None and previous != fingerprint:
                     raise StorageError(f"conflicting {identity_key}: {identity}")
-                existing.setdefault(identity, canonical_payload)
+                existing.setdefault(identity, fingerprint)
+        target_identity_index_entries = len(existing)
         for _, parsed in parsed_groups:
             for identity, _, canonical_payload in parsed:
+                fingerprint = _payload_fingerprint(canonical_payload)
                 previous = existing.get(identity)
-                if previous is not None and previous != canonical_payload:
+                if previous is not None and previous != fingerprint:
                     raise StorageError(f"conflicting {identity_key}: {identity}")
         total_written = 0
         total_skipped = 0
@@ -745,8 +774,9 @@ def write_payload_unique_groups(
                     group_skipped += 1
                     total_skipped += 1
                     continue
+                fingerprint = _payload_fingerprint(canonical_payload)
                 append_lines.append(line)
-                existing[identity] = canonical_payload
+                existing[identity] = fingerprint
                 group_written += 1
                 total_written += 1
             group_results.append(
@@ -763,6 +793,7 @@ def write_payload_unique_groups(
         "skipped": total_skipped,
         "target_scans": 1,
         "target_records_scanned": target_records_scanned,
+        "target_identity_index_entries": target_identity_index_entries,
         "groups": group_results,
     }
 
