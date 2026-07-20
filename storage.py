@@ -471,7 +471,11 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
 
     If start_offset is beyond EOF, yields nothing.
     """
-    if type(start_offset) is not int or start_offset < 0:
+    if (
+        isinstance(start_offset, bool)
+        or not isinstance(start_offset, int)
+        or start_offset < 0
+    ):
         raise StorageCursorError("start_offset must be a non-negative integer")
 
     try:
@@ -485,16 +489,26 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
     try:
         # Use safe open to prevent symlink attacks, but no file lock
         with _safe_open_read(target_path) as fh:
-            observed_size = os.fstat(fh.fileno()).st_size
-            if start_offset > observed_size:
-                return
             if start_offset:
-                fh.seek(start_offset - 1)
-                if fh.read(1) != b"\n":
+                try:
+                    fh.seek(start_offset - 1)
+                except (OverflowError, ValueError):
+                    return
+                except OSError as exc:
+                    if exc.errno in {errno.EINVAL, errno.EOVERFLOW}:
+                        return
+                    raise
+                previous = fh.read(1)
+                if not previous:
+                    # Preserve the documented polling contract: a cursor beyond
+                    # the current EOF yields no records and can be retried later.
+                    return
+                if previous != b"\n":
                     raise StorageCursorError(
                         "start_offset must point to a JSONL record boundary"
                     )
-            fh.seek(start_offset)
+                # Reading the boundary byte already positions the handle exactly
+                # at start_offset; a second seek would be redundant.
             while True:
                 # Capture start offset before reading
                 current_start = fh.tell()
@@ -680,9 +694,12 @@ def _parse_unique_payload(
     return identity if isinstance(identity, str) else None, canonical_payload
 
 
-def _payload_fingerprint(canonical_payload: bytes) -> tuple[int, bytes]:
-    """Return one bounded content identity for an already canonical payload."""
-    return len(canonical_payload), hashlib.sha256(canonical_payload).digest()
+def _payload_fingerprint(canonical_payload: bytes) -> bytes:
+    """Return a fixed-width length-and-SHA-256 content identity."""
+    return (
+        len(canonical_payload).to_bytes(8, "big", signed=False)
+        + hashlib.sha256(canonical_payload).digest()
+    )
 
 
 def write_payload_unique_groups(
@@ -702,7 +719,7 @@ def write_payload_unique_groups(
         seen_group_ids.add(group_id)
         materialized.append((group_id, list(lines)))
     parsed_groups = []
-    candidate_payloads = {}
+    candidate_payloads: dict[str, bytes] = {}
     candidate_count = 0
     for group_id, lines in materialized:
         parsed = []
@@ -714,10 +731,11 @@ def write_payload_unique_groups(
             if not identity:
                 raise StorageError(f"missing {identity_key}")
             previous = candidate_payloads.get(identity)
-            if previous is not None and previous != canonical_payload:
+            if previous is None:
+                candidate_payloads[identity] = canonical_payload
+            elif previous != canonical_payload:
                 raise StorageError(f"conflicting {identity_key}: {identity}")
-            candidate_payloads.setdefault(identity, canonical_payload)
-            parsed.append((identity, line, canonical_payload))
+            parsed.append((identity, line, _payload_fingerprint(canonical_payload)))
             candidate_count += 1
         parsed_groups.append((group_id, parsed))
     if candidate_count == 0:
@@ -732,6 +750,9 @@ def write_payload_unique_groups(
                 for gid, lines in materialized
             ],
         }
+    # Exact candidate conflict checks are complete; release their full
+    # canonical payloads before scanning a potentially large historical ledger.
+    del candidate_payloads
     try:
         target_path = safe_target_path(domain)
     except DomainError as exc:
@@ -741,7 +762,7 @@ def write_payload_unique_groups(
         # Preserve global conflict detection without retaining every historical
         # payload. Chronik already uses SHA-256 as a content-identity primitive;
         # length plus the binary digest bounds the per-record index value.
-        existing: dict[str, tuple[int, bytes]] = {}
+        existing: dict[str, bytes] = {}
         target_records_scanned = 0
         for raw in fh:
             target_records_scanned += 1
@@ -752,13 +773,13 @@ def write_payload_unique_groups(
             if identity:
                 fingerprint = _payload_fingerprint(canonical_payload)
                 previous = existing.get(identity)
-                if previous is not None and previous != fingerprint:
+                if previous is None:
+                    existing[identity] = fingerprint
+                elif previous != fingerprint:
                     raise StorageError(f"conflicting {identity_key}: {identity}")
-                existing.setdefault(identity, fingerprint)
         target_identity_index_entries = len(existing)
         for _, parsed in parsed_groups:
-            for identity, _, canonical_payload in parsed:
-                fingerprint = _payload_fingerprint(canonical_payload)
+            for identity, _, fingerprint in parsed:
                 previous = existing.get(identity)
                 if previous is not None and previous != fingerprint:
                     raise StorageError(f"conflicting {identity_key}: {identity}")
@@ -769,12 +790,11 @@ def write_payload_unique_groups(
         for group_id, parsed in parsed_groups:
             group_written = 0
             group_skipped = 0
-            for identity, line, canonical_payload in parsed:
+            for identity, line, fingerprint in parsed:
                 if identity in existing:
                     group_skipped += 1
                     total_skipped += 1
                     continue
-                fingerprint = _payload_fingerprint(canonical_payload)
                 append_lines.append(line)
                 existing[identity] = fingerprint
                 group_written += 1

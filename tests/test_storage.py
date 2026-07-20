@@ -96,6 +96,40 @@ def _unique_line(event_id: str, value: str) -> str:
     )
 
 
+def test_payload_fingerprint_is_fixed_width_and_length_bound():
+    small = storage._payload_fingerprint(b"payload")
+    large_payload = b"payload" * 100_000
+    large = storage._payload_fingerprint(large_payload)
+
+    assert len(small) == 40
+    assert len(large) == 40
+    assert int.from_bytes(small[:8], "big") == len(b"payload")
+    assert int.from_bytes(large[:8], "big") == len(large_payload)
+    assert small[8:] != large[8:]
+
+
+def test_write_payload_unique_groups_does_not_rehash_parsed_candidates(
+    mock_data_dir, monkeypatch
+):
+    storage.write_payload("agent.ledger", [_unique_line("existing", "same")])
+    calls = []
+    real_fingerprint = storage._payload_fingerprint
+
+    def counted_fingerprint(payload):
+        calls.append(payload)
+        return real_fingerprint(payload)
+
+    monkeypatch.setattr(storage, "_payload_fingerprint", counted_fingerprint)
+    result = storage.write_payload_unique_groups(
+        "agent.ledger",
+        [("batch", [_unique_line("existing", "same"), _unique_line("new", "value")])],
+    )
+
+    assert result["written"] == 1
+    assert result["skipped"] == 1
+    assert len(calls) == 3  # two candidates plus one historical record
+
+
 def test_write_payload_unique_groups_scans_once_and_allocates_counts(mock_data_dir):
     storage.write_payload("agent.ledger", [_unique_line("existing", "same")])
     result = storage.write_payload_unique_groups(
@@ -150,6 +184,55 @@ def test_write_payload_unique_groups_rejects_unrelated_historical_conflict(
         storage.write_payload_unique_groups(
             "agent.ledger", [("batch", [_unique_line("new", "value")])]
         )
+
+
+def test_scan_domain_accepts_crlf_record_boundary(mock_data_dir):
+    first = b'{"id":1}\r\n'
+    second = b'{"id":2}\r\n'
+    (mock_data_dir / "agent.ledger.jsonl").write_bytes(first + second)
+
+    records = list(storage.scan_domain("agent.ledger", start_offset=len(first)))
+
+    assert records[0][:2] == (len(first), len(first) + len(second))
+    assert json.loads(records[0][2]) == {"id": 2}
+
+
+def test_scan_domain_accepts_boundary_after_empty_record(mock_data_dir):
+    prefix = b'{"id":1}\n\n'
+    final = b'{"id":3}\n'
+    (mock_data_dir / "agent.ledger.jsonl").write_bytes(prefix + final)
+
+    assert [
+        json.loads(item[2])
+        for item in storage.scan_domain("agent.ledger", start_offset=len(prefix))
+    ] == [{"id": 3}]
+
+
+def test_scan_domain_rejects_boolean_cursor(mock_data_dir):
+    storage.write_payload("agent.ledger", ['{"id":1}'])
+
+    with pytest.raises(storage.StorageCursorError, match="non-negative integer"):
+        list(storage.scan_domain("agent.ledger", start_offset=True))
+
+
+def test_scan_domain_accepts_integer_subclass_cursor(mock_data_dir):
+    class Cursor(int):
+        pass
+
+    first = '{"id":1}'
+    storage.write_payload("agent.ledger", [first, '{"id":2}'])
+    boundary = Cursor(len(first.encode("utf-8")) + 1)
+
+    assert [item[2] for item in storage.scan_domain("agent.ledger", boundary)] == [
+        '{"id":2}'
+    ]
+
+
+def test_scan_domain_cursor_beyond_eof_remains_retryable(mock_data_dir):
+    storage.write_payload("agent.ledger", ['{"id":1}'])
+
+    assert list(storage.scan_domain("agent.ledger", start_offset=10_000)) == []
+    assert list(storage.scan_domain("agent.ledger", start_offset=1 << 100)) == []
 
 
 def test_scan_domain_rejects_cursor_inside_record(mock_data_dir):
