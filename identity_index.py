@@ -22,6 +22,61 @@ INDEX_APPLICATION_ID = 0x43485249  # "CHRI"
 INDEX_DIR_NAME = ".chronik-identity-index-v1"
 ZERO_DIGEST = b"\x00" * 32
 
+_EXPECTED_SCHEMA_SQL = {
+    ("table", "identities"): """
+        CREATE TABLE identities (
+            identity_key TEXT NOT NULL,
+            identity TEXT NOT NULL,
+            fingerprint BLOB NOT NULL CHECK(length(fingerprint) = 40),
+            record_start INTEGER NOT NULL CHECK(record_start >= 0),
+            record_end INTEGER NOT NULL CHECK(record_end > record_start),
+            row_digest BLOB NOT NULL CHECK(length(row_digest) = 32),
+            PRIMARY KEY(identity_key, identity)
+        ) WITHOUT ROWID
+    """,
+    ("table", "identity_counts"): """
+        CREATE TABLE identity_counts (
+            identity_key TEXT PRIMARY KEY,
+            entry_count INTEGER NOT NULL CHECK(entry_count >= 0)
+        ) WITHOUT ROWID
+    """,
+    ("table", "index_state"): """
+        CREATE TABLE index_state (
+            identity_key TEXT PRIMARY KEY,
+            ledger_dev TEXT NOT NULL,
+            ledger_ino TEXT NOT NULL,
+            ledger_mtime_ns TEXT NOT NULL,
+            ledger_ctime_ns TEXT NOT NULL,
+            indexed_offset INTEGER NOT NULL CHECK(indexed_offset >= 0),
+            chain_digest BLOB NOT NULL CHECK(length(chain_digest) = 32),
+            record_count INTEGER NOT NULL CHECK(record_count >= 0),
+            identity_count INTEGER NOT NULL CHECK(identity_count >= 0),
+            last_record_start INTEGER NOT NULL,
+            last_record_digest BLOB NOT NULL CHECK(length(last_record_digest) = 32),
+            state_digest BLOB NOT NULL CHECK(length(state_digest) = 32)
+        ) WITHOUT ROWID
+    """,
+    ("trigger", "identities_count_insert"): """
+        CREATE TRIGGER identities_count_insert
+        AFTER INSERT ON identities
+        BEGIN
+            INSERT INTO identity_counts(identity_key, entry_count)
+            VALUES (NEW.identity_key, 1)
+            ON CONFLICT(identity_key) DO UPDATE SET
+                entry_count = entry_count + 1;
+        END
+    """,
+    ("trigger", "identities_count_delete"): """
+        CREATE TRIGGER identities_count_delete
+        AFTER DELETE ON identities
+        BEGIN
+            UPDATE identity_counts
+            SET entry_count = entry_count - 1
+            WHERE identity_key = OLD.identity_key;
+        END
+    """,
+}
+
 
 class IdentityIndexError(Exception):
     """Base class for persistent identity-index failures."""
@@ -221,6 +276,24 @@ def _table_columns(connection: sqlite3.Connection, table: str) -> list[tuple[str
     return [(str(row[1]), str(row[2]).upper(), int(row[5])) for row in rows]
 
 
+def _normalize_schema_sql(value: str) -> str:
+    return " ".join(value.split()).casefold()
+
+
+def _schema_sql(connection: sqlite3.Connection) -> dict[tuple[str, str], str]:
+    rows = connection.execute(
+        """
+        SELECT type, name, sql
+        FROM sqlite_master
+        WHERE type IN ('table', 'trigger') AND name NOT LIKE 'sqlite_%'
+        """
+    ).fetchall()
+    return {
+        (str(object_type), str(name)): _normalize_schema_sql(str(sql))
+        for object_type, name, sql in rows
+    }
+
+
 class IdentityIndex:
     """One securely validated SQLite acceleration database."""
 
@@ -378,6 +451,14 @@ class IdentityIndex:
                 raise IdentityIndexCorruptError("identity index schema tables mismatch")
             if triggers != {"identities_count_insert", "identities_count_delete"}:
                 raise IdentityIndexCorruptError("identity index schema triggers mismatch")
+            expected_schema_sql = {
+                key: _normalize_schema_sql(value)
+                for key, value in _EXPECTED_SCHEMA_SQL.items()
+            }
+            if _schema_sql(self.connection) != expected_schema_sql:
+                raise IdentityIndexCorruptError(
+                    "identity index schema definitions mismatch"
+                )
             if _table_columns(self.connection, "identities") != [
                 ("identity_key", "TEXT", 1),
                 ("identity", "TEXT", 2),

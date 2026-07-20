@@ -182,6 +182,30 @@ def test_corrupt_database_is_not_silently_rebuilt(mock_data_dir):
         _write("agent.ledger", _line("new", "value"))
 
 
+def test_same_name_trigger_definition_mutation_fails_closed(mock_data_dir):
+    _write("agent.ledger", _line("seed", "same"))
+    with sqlite3.connect(_index_path(mock_data_dir)) as connection:
+        connection.execute("PRAGMA writable_schema=ON")
+        connection.execute(
+            """
+            UPDATE sqlite_master
+            SET sql = ?
+            WHERE type = 'trigger' AND name = 'identities_count_insert'
+            """,
+            (
+                "CREATE TRIGGER identities_count_insert "
+                "AFTER INSERT ON identities BEGIN SELECT 1; END",
+            ),
+        )
+        connection.execute("PRAGMA writable_schema=OFF")
+
+    with pytest.raises(
+        storage.StorageRecoveryError,
+        match="schema definitions mismatch",
+    ):
+        _write("agent.ledger", _line("new", "value"))
+
+
 def test_symlinked_database_is_rejected(mock_data_dir):
     storage.write_payload("agent.ledger", [_line("seed", "same")])
     index_path = _index_path(mock_data_dir)
