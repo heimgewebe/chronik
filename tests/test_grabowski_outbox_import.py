@@ -145,7 +145,9 @@ def test_missing_receipt_is_rebuilt_after_store_verification(tmp_path, monkeypat
     assert recovered["events_imported"] == 0
     assert recovered["events_skipped_existing"] == 1
     assert recovered["files_unchanged"] == 0
-    assert recovered["target_scans"] == 1
+    assert recovered["target_scans"] == 0
+    assert recovered["target_records_scanned"] == 0
+    assert recovered["identity_index_mode"] == "steady"
     assert recovered["receipts_written"] == 1
     assert recovered["receipts_reused"] == 0
     assert receipt_path.exists()
@@ -168,7 +170,9 @@ def test_stale_receipt_cannot_override_store_verification(tmp_path, monkeypatch)
     assert recovered["events_imported"] == 0
     assert recovered["events_skipped_existing"] == 1
     assert recovered["files_unchanged"] == 0
-    assert recovered["target_records_scanned"] == 1
+    assert recovered["target_scans"] == 0
+    assert recovered["target_records_scanned"] == 0
+    assert recovered["identity_index_mode"] == "steady"
     assert recovered["receipts_written"] == 1
     assert recovered["receipts_reused"] == 0
     refreshed = json.loads(receipt_path.read_text())
@@ -390,8 +394,9 @@ def test_multi_file_batch_scans_target_once_and_repeat_verifies_store(
     assert first["events_imported"] == 3
     assert first["receipts_written"] == 3
     assert first["receipts_reused"] == 0
-    assert second["target_scans"] == 1
-    assert second["target_records_scanned"] == 3
+    assert second["target_scans"] == 0
+    assert second["target_records_scanned"] == 0
+    assert second["identity_index_mode"] == "steady"
     assert second["events_imported"] == 0
     assert second["events_skipped_existing"] == 3
     assert second["files_unchanged"] == 3
@@ -509,7 +514,9 @@ def test_receipt_failure_preserves_ledger_stats_and_is_recoverable(
 
     assert recovered["events_imported"] == 0
     assert recovered["events_skipped_existing"] == 1
-    assert recovered["target_scans"] == 1
+    assert recovered["target_scans"] == 0
+    assert recovered["target_records_scanned"] == 0
+    assert recovered["identity_index_mode"] == "steady"
     assert recovered["errors"] == []
     assert len(list(receipts.glob("*.receipt.json"))) == 1
 

@@ -15,6 +15,14 @@ from typing import Final, Iterable, Iterator, Tuple
 
 from filelock import FileLock, Timeout
 
+from identity_index import (
+    IdentityIndexCommitUncertain,
+    IdentityIndexDriftError,
+    IdentityIndexError,
+    open_identity_index,
+    reset_identity_index_for_authoritative_replay,
+)
+
 __all__ = [
     "DATA_DIR",
     "DomainError",
@@ -702,13 +710,27 @@ def _payload_fingerprint(canonical_payload: bytes) -> bytes:
     )
 
 
+def _raise_identity_index_error(exc: IdentityIndexError) -> None:
+    """Map derived-index failures without weakening ledger conflict semantics."""
+    message = str(exc)
+    if isinstance(exc, IdentityIndexDriftError) and message.startswith("conflicting "):
+        raise StorageError(message) from exc
+    raise StorageRecoveryError(f"identity index unavailable: {message}") from exc
+
+
 def write_payload_unique_groups(
     domain: str,
     groups: Iterable[tuple[str, Iterable[str]]],
     *,
     identity_key: str = "event_id",
+    authoritative_replay: bool = False,
 ) -> dict[str, object]:
-    """Append grouped JSON lines with one target-ledger scan under one lock."""
+    """Append grouped JSON lines through a ledger-authoritative persistent index.
+
+    authoritative_replay is reserved for callers that have validated a complete
+    source inventory and are reconstructing an absent ledger.  It may reset only
+    the derived index and only while the newly opened ledger is empty.
+    """
     materialized = []
     seen_group_ids = set()
     for group_id, lines in groups:
@@ -718,6 +740,7 @@ def write_payload_unique_groups(
             raise StorageError(f"duplicate group_id: {group_id}")
         seen_group_ids.add(group_id)
         materialized.append((group_id, list(lines)))
+
     parsed_groups = []
     candidate_payloads: dict[str, bytes] = {}
     candidate_count = 0
@@ -738,6 +761,7 @@ def write_payload_unique_groups(
             parsed.append((identity, line, _payload_fingerprint(canonical_payload)))
             candidate_count += 1
         parsed_groups.append((group_id, parsed))
+
     if candidate_count == 0:
         return {
             "written": 0,
@@ -745,77 +769,144 @@ def write_payload_unique_groups(
             "target_scans": 0,
             "target_records_scanned": 0,
             "target_identity_index_entries": 0,
+            "identity_index_mode": "unused",
+            "identity_index_full_rebuild": False,
+            "identity_index_entries_after": 0,
             "groups": [
                 {"group_id": gid, "requested": len(lines), "written": 0, "skipped": 0}
                 for gid, lines in materialized
             ],
         }
-    # Exact candidate conflict checks are complete; release their full
-    # canonical payloads before scanning a potentially large historical ledger.
+
     del candidate_payloads
     try:
         target_path = safe_target_path(domain)
     except DomainError as exc:
         raise StorageError("invalid target path") from exc
+
     with _locked_open(target_path, "a+") as fh:
-        fh.seek(0)
-        # Preserve global conflict detection without retaining every historical
-        # payload. Chronik already uses SHA-256 as a content-identity primitive;
-        # length plus the binary digest bounds the per-record index value.
-        existing: dict[str, bytes] = {}
-        target_records_scanned = 0
-        for raw in fh:
-            target_records_scanned += 1
-            try:
-                identity, canonical_payload = _parse_unique_payload(raw, identity_key)
-            except (TypeError, ValueError):
-                continue
-            if identity:
-                fingerprint = _payload_fingerprint(canonical_payload)
-                previous = existing.get(identity)
-                if previous is None:
-                    existing[identity] = fingerprint
-                elif previous != fingerprint:
-                    raise StorageError(f"conflicting {identity_key}: {identity}")
-        target_identity_index_entries = len(existing)
-        for _, parsed in parsed_groups:
-            for identity, _, fingerprint in parsed:
-                previous = existing.get(identity)
-                if previous is not None and previous != fingerprint:
-                    raise StorageError(f"conflicting {identity_key}: {identity}")
-        total_written = 0
-        total_skipped = 0
-        group_results = []
-        append_lines = []
-        for group_id, parsed in parsed_groups:
-            group_written = 0
-            group_skipped = 0
-            for identity, line, fingerprint in parsed:
-                if identity in existing:
-                    group_skipped += 1
-                    total_skipped += 1
-                    continue
-                append_lines.append(line)
-                existing[identity] = fingerprint
-                group_written += 1
-                total_written += 1
-            group_results.append(
-                {
-                    "group_id": group_id,
-                    "requested": len(parsed),
-                    "written": group_written,
-                    "skipped": group_skipped,
+        try:
+            if authoritative_replay:
+                replay_stat = _target_stat_for_fd(target_path, fh.fileno())
+                if replay_stat.st_size != 0:
+                    raise StorageRecoveryError(
+                        "authoritative replay requires an empty reconstructed ledger"
+                    )
+                reset_identity_index_for_authoritative_replay(target_path)
+            with open_identity_index(target_path, timeout=LOCK_TIMEOUT) as index:
+                sync = index.synchronize(
+                    fh,
+                    identity_key=identity_key,
+                    parse_payload=_parse_unique_payload,
+                    fingerprint_payload=_payload_fingerprint,
+                )
+                candidate_ids = [
+                    identity
+                    for _, parsed in parsed_groups
+                    for identity, _, _ in parsed
+                ]
+                existing = index.lookup(
+                    fh,
+                    state=sync.state,
+                    identity_key=identity_key,
+                    identities=candidate_ids,
+                    parse_payload=_parse_unique_payload,
+                    fingerprint_payload=_payload_fingerprint,
+                )
+                for _, parsed in parsed_groups:
+                    for identity, _, fingerprint in parsed:
+                        previous = existing.get(identity)
+                        if previous is not None and previous != fingerprint:
+                            raise StorageError(f"conflicting {identity_key}: {identity}")
+
+                total_written = 0
+                total_skipped = 0
+                group_results = []
+                append_lines: list[str] = []
+                append_rows: list[tuple[str, bytes]] = []
+                planned = set(existing)
+                for group_id, parsed in parsed_groups:
+                    group_written = 0
+                    group_skipped = 0
+                    for identity, line, fingerprint in parsed:
+                        if identity in planned:
+                            group_skipped += 1
+                            total_skipped += 1
+                            continue
+                        append_lines.append(line)
+                        append_rows.append((identity, fingerprint))
+                        planned.add(identity)
+                        group_written += 1
+                        total_written += 1
+                    group_results.append(
+                        {
+                            "group_id": group_id,
+                            "requested": len(parsed),
+                            "written": group_written,
+                            "skipped": group_skipped,
+                        }
+                    )
+
+                final_state = sync.state
+                if append_lines:
+                    pre_append = _target_stat_for_fd(target_path, fh.fileno())
+                    raw_records = [(line + "\n").encode("utf-8") for line in append_lines]
+                    index.begin_append()
+                    ledger_appended = False
+                    try:
+                        _append_jsonl_transaction(fh, target_path, append_lines)
+                        ledger_appended = True
+                        post_append = _target_stat_for_fd(target_path, fh.fileno())
+                        final_state = index.stage_append(
+                            state=sync.state,
+                            ledger_stat=post_append,
+                            identity_key=identity_key,
+                            rows=append_rows,
+                            raw_records=raw_records,
+                        )
+                    except BaseException:
+                        try:
+                            index.rollback()
+                        except IdentityIndexError as rollback_exc:
+                            raise StorageRecoveryError(
+                                "identity index rollback failed; ledger state requires inspection"
+                            ) from rollback_exc
+                        if ledger_appended:
+                            try:
+                                _rollback_append(
+                                    fh.fileno(), target_path, pre_append.st_size
+                                )
+                            except BaseException as rollback_exc:
+                                raise StorageRecoveryError(
+                                    "ledger rollback after identity index failure failed"
+                                ) from rollback_exc
+                        raise
+                    try:
+                        index.commit()
+                    except IdentityIndexCommitUncertain as exc:
+                        # The ledger is already durable.  Do not risk making the
+                        # index lead the authority by rolling the ledger back.
+                        raise StorageRecoveryError(
+                            "identity index commit outcome uncertain; ledger may be ahead"
+                        ) from exc
+
+                return {
+                    "written": total_written,
+                    "skipped": total_skipped,
+                    "target_scans": 0 if sync.mode == "steady" else 1,
+                    "target_records_scanned": sync.records_scanned,
+                    "target_identity_index_entries": sync.entry_count,
+                    "identity_index_mode": sync.mode,
+                    "identity_index_full_rebuild": sync.mode == "rebuild",
+                    "identity_index_entries_after": sync.entry_count + len(append_rows),
+                    "identity_index_offset": final_state.indexed_offset,
+                    "groups": group_results,
                 }
-            )
-        _append_jsonl_transaction(fh, target_path, append_lines)
-    return {
-        "written": total_written,
-        "skipped": total_skipped,
-        "target_scans": 1,
-        "target_records_scanned": target_records_scanned,
-        "target_identity_index_entries": target_identity_index_entries,
-        "groups": group_results,
-    }
+        except StorageError:
+            raise
+        except IdentityIndexError as exc:
+            _raise_identity_index_error(exc)
+
 
 
 def write_payload_unique(
