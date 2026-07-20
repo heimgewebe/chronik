@@ -1022,6 +1022,8 @@ def _write_grabowski_outbox_receipt(
 
 def _import_prepared_grabowski_sources(
     prepared_sources: list[dict[str, Any]],
+    *,
+    authoritative_replay: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, object], list[tuple[str, Exception]]]:
     grouped = storage.write_payload_unique_groups(
         DOMAIN,
@@ -1029,6 +1031,7 @@ def _import_prepared_grabowski_sources(
             (str(index), _envelope_lines(prepared["events"]))
             for index, prepared in enumerate(prepared_sources)
         ],
+        authoritative_replay=authoritative_replay,
     )
     raw_group_results = grouped.get("groups")
     if not isinstance(raw_group_results, list):
@@ -1128,20 +1131,39 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
     )
     target_scans: int | None = 0
     target_records_scanned: int | None = 0
+    identity_index_mode: str | None = "unused"
+    identity_index_full_rebuild: bool | None = False
+    identity_index_entries_after: int | None = 0
     prepared_sources: list[dict[str, Any]] = []
     try:
         prepared_sources = _merge_prepared_grabowski_sources(all_prepared)
     except ValueError as exc:
         target_scans = None
         target_records_scanned = None
+        identity_index_mode = None
+        identity_index_full_rebuild = None
+        identity_index_entries_after = None
         errors.append({"source_path": "<batch>", "error": str(exc)})
     if prepared_sources and target_scans is not None:
         try:
+            target_path = storage.safe_target_path(DOMAIN)
+            target_missing_or_empty = (
+                not target_path.exists() or target_path.stat().st_size == 0
+            )
+            authoritative_replay = target_missing_or_empty and not errors
             results, grouped, receipt_errors = _import_prepared_grabowski_sources(
-                prepared_sources
+                prepared_sources,
+                authoritative_replay=authoritative_replay,
             )
             target_scans = int(grouped.get("target_scans", 0))
             target_records_scanned = int(grouped.get("target_records_scanned", 0))
+            identity_index_mode = str(grouped.get("identity_index_mode", "unknown"))
+            identity_index_full_rebuild = bool(
+                grouped.get("identity_index_full_rebuild", False)
+            )
+            identity_index_entries_after = int(
+                grouped.get("identity_index_entries_after", 0)
+            )
             errors.extend(
                 {
                     "source_path": source_path,
@@ -1152,6 +1174,9 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
         except (OSError, ValueError, storage.StorageError) as exc:
             target_scans = None
             target_records_scanned = None
+            identity_index_mode = None
+            identity_index_full_rebuild = None
+            identity_index_entries_after = None
             errors.append({"source_path": "<batch>", "error": str(exc)})
     bundled_sources_seen = sum(int(item["source_count"]) for item in bundle_metadata)
     return {
@@ -1180,6 +1205,9 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
         "events_skipped_existing": sum(int(result.get("skipped_existing", 0)) for result in results),
         "target_scans": target_scans,
         "target_records_scanned": target_records_scanned,
+        "identity_index_mode": identity_index_mode,
+        "identity_index_full_rebuild": identity_index_full_rebuild,
+        "identity_index_entries_after": identity_index_entries_after,
         "bundle_inventory": bundle_metadata,
         "errors": errors,
         "historical_only": True,

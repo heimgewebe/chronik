@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 
-def test_benchmark_reports_single_scan_first_and_repeat(tmp_path):
+def test_benchmark_reports_persistent_index_reuse(tmp_path):
     root = Path(__file__).parents[1]
     output = tmp_path / "benchmark.json"
     result = subprocess.run(
@@ -29,13 +29,16 @@ def test_benchmark_reports_single_scan_first_and_repeat(tmp_path):
     report = json.loads(output.read_text())
     tier = report["tiers"][0]
     assert report["passed"] is True
-    assert tier["first"]["target_scans"] == 1
-    assert tier["repeat"]["target_scans"] == 1
+    assert tier["first"]["target_scans"] == 0
+    assert tier["first"]["target_records_scanned"] == 0
+    assert tier["repeat"]["target_scans"] == 0
+    assert tier["repeat"]["target_records_scanned"] == 0
     assert tier["first"]["events_imported"] == 6
     assert tier["repeat"]["events_skipped_existing"] == 6
     assert tier["compaction"]["sources_removed"] == 3
     assert tier["loose_files_before"] == 3
     assert tier["loose_files_after"] == 0
-    assert tier["bundled_repeat"]["target_scans"] == 1
+    assert tier["bundled_repeat"]["target_scans"] == 0
+    assert tier["bundled_repeat"]["target_records_scanned"] == 0
     assert tier["bundled_repeat"]["events_skipped_existing"] == 6
     assert tier["passed"] is True

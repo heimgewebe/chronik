@@ -108,7 +108,7 @@ def test_payload_fingerprint_is_fixed_width_and_length_bound():
     assert small[8:] != large[8:]
 
 
-def test_write_payload_unique_groups_does_not_rehash_parsed_candidates(
+def test_write_payload_unique_groups_verifies_index_hits_against_ledger(
     mock_data_dir, monkeypatch
 ):
     storage.write_payload("agent.ledger", [_unique_line("existing", "same")])
@@ -127,7 +127,10 @@ def test_write_payload_unique_groups_does_not_rehash_parsed_candidates(
 
     assert result["written"] == 1
     assert result["skipped"] == 1
-    assert len(calls) == 3  # two candidates plus one historical record
+    existing_payload = b'{"event_id":"existing","value":"same"}'
+    new_payload = b'{"event_id":"new","value":"value"}'
+    assert calls.count(new_payload) == 1
+    assert calls.count(existing_payload) == 3
 
 
 def test_write_payload_unique_groups_scans_once_and_allocates_counts(mock_data_dir):
