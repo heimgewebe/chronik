@@ -1652,6 +1652,12 @@ def _event_source_component(event: dict[str, Any]) -> str | None:
     return source.get("component") if isinstance(source, dict) else None
 
 
+def _event_subject_component(event: dict[str, Any]) -> str | None:
+    """Return the task-context component from the event subject."""
+    subject = event.get("subject")
+    return subject.get("component") if isinstance(subject, dict) else None
+
+
 def _target(*, repo: str | None, host: str | None) -> dict[str, str]:
     if repo is not None:
         return {"scope": "repository", "repo": repo}
@@ -1665,7 +1671,7 @@ def _matches_target(subject: dict[str, Any], *, repo: str | None, host: str | No
     return subject.get("scope") == "host" and subject.get("host") == host
 
 
-def validate_query(*, repo: str | None = None, host: str | None = None, component: str | None = None, operation: str | None = None, task_class: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> datetime | None:
+def validate_query(*, repo: str | None = None, host: str | None = None, component: str | None = None, subject_component: str | None = None, operation: str | None = None, task_class: str | None = None, outcome: str | None = None, since: str | None = None, limit: int = 20) -> datetime | None:
     if (repo is None) == (host is None):
         raise ValueError("exactly one of repo or host is required")
     if repo is not None and not repo.strip():
@@ -1688,6 +1694,7 @@ def query_history(
     repo: str | None = None,
     host: str | None = None,
     component: str | None = None,
+    subject_component: str | None = None,
     operation: str | None = None,
     task_class: str | None = None,
     outcome: str | None = None,
@@ -1698,6 +1705,7 @@ def query_history(
         repo=repo,
         host=host,
         component=component,
+        subject_component=subject_component,
         operation=operation,
         task_class=task_class,
         outcome=outcome,
@@ -1712,6 +1720,8 @@ def query_history(
         if not _matches_target(subject, repo=repo, host=host):
             return
         if component and _event_source_component(event) != component:
+            return
+        if subject_component and _event_subject_component(event) != subject_component:
             return
         if operation and _event_operation(event) != operation:
             return
@@ -1750,6 +1760,8 @@ def query_history(
         "since": since,
         "limit": limit,
     }
+    if subject_component is not None:
+        query["subject_component"] = subject_component
     return {
         "schema_version": "chronik-coding-history.v1",
         "query": query,
