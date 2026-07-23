@@ -78,6 +78,18 @@ def test_query_cli_prefers_repository_module_when_pythonpath_contains_root(tmp_p
     assert not missing.exists()
 
 
+def test_query_cli_subject_component_is_explicit_and_preserves_legacy_shape(tmp_path):
+    import subprocess, sys
+    missing = tmp_path / "missing"
+    tool = str(Path(__file__).parents[1] / "tools" / "coding_memory.py")
+    legacy = subprocess.run([sys.executable, tool, "--data-dir", str(missing), "query", "--repo", "heimgewebe/example"], text=True, capture_output=True)
+    filtered = subprocess.run([sys.executable, tool, "--data-dir", str(missing), "query", "--repo", "heimgewebe/example", "--subject-component", "target-api"], text=True, capture_output=True)
+    assert legacy.returncode == 0 and filtered.returncode == 0
+    assert "subject_component" not in json.loads(legacy.stdout)["query"]
+    assert json.loads(filtered.stdout)["query"]["subject_component"] == "target-api"
+    assert not missing.exists()
+
+
 def test_query_cli_validates_filters_without_creating_data_dir(tmp_path):
     import subprocess, sys
     missing = tmp_path / "missing"
@@ -129,6 +141,34 @@ def test_query_component_never_allows_subject_to_override_present_source(tmp_pat
     coding_memory.import_events([value])
     assert coding_memory.query_history(repo="heimgewebe/example",component="grabowski")["event_ids"]==[]
     assert coding_memory.query_history(repo="heimgewebe/example",component="other-producer")["event_ids"]==[value["event_id"]]
+
+
+def test_query_subject_component_is_separate_from_source_component(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); value=event(component="target-api",source_component="grabowski")
+    coding_memory.import_events([value])
+    result=coding_memory.query_history(
+        repo="heimgewebe/example",
+        component="grabowski",
+        subject_component="target-api",
+    )
+    assert result["event_ids"]==[value["event_id"]]
+    assert result["query"]["component"]=="grabowski"
+    assert result["query"]["subject_component"]=="target-api"
+    assert coding_memory.query_history(repo="heimgewebe/example",subject_component="grabowski")["event_ids"]==[]
+
+
+def test_query_subject_component_supports_host_targets(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); value=event("sha256:"+"e"*64,component="target-runtime",operation="recovery",outcome="blocked")
+    value["kind"]="agent.run.blocked"; value["subject"]={"scope":"host","host":"heim-pc","component":"target-runtime"}
+    value["data"].update({"result":"blocked","operation":"recovery","task_class":"recovery"}); coding_memory.import_events([value])
+    assert coding_memory.query_history(host="heim-pc",subject_component="target-runtime")["event_ids"]==[value["event_id"]]
+    assert coding_memory.query_history(host="heim-pc",subject_component="other")["event_ids"]==[]
+
+
+def test_query_envelope_omits_subject_component_when_unused_for_v1_compatibility(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch); coding_memory.import_events([event()])
+    result=coding_memory.query_history(repo="heimgewebe/example",component="grabowski")
+    assert "subject_component" not in result["query"]
 
 
 def test_query_component_has_no_legacy_subject_fallback(tmp_path,monkeypatch):

@@ -28,7 +28,7 @@ def load(path: Path):
 
 
 def filters(args):
-    return {
+    query_filters = {
         "repo": args.repo,
         "host": args.host,
         "component": args.component,
@@ -38,6 +38,9 @@ def filters(args):
         "since": args.since,
         "limit": args.limit,
     }
+    if args.subject_component is not None:
+        query_filters["subject_component"] = args.subject_component
+    return query_filters
 
 
 def empty_snapshot():
@@ -119,7 +122,8 @@ def main(argv=None):
         target = command.add_mutually_exclusive_group(required=True)
         target.add_argument("--repo")
         target.add_argument("--host")
-        command.add_argument("--component")
+        command.add_argument("--component", help="Filter canonical producer source.component")
+        command.add_argument("--subject-component", help="Filter task-context subject.component")
         command.add_argument("--operation", choices=sorted(coding_memory.OPERATIONS))
         command.add_argument("--task-class", choices=sorted(coding_memory.TASK_CLASSES))
         command.add_argument("--outcome", choices=sorted(coding_memory.OUTCOMES))
