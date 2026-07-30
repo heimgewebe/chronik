@@ -5,6 +5,7 @@ import secrets
 import string
 import errno
 import fcntl
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock
 from fastapi.testclient import TestClient
@@ -39,6 +40,27 @@ def create_event_file(mock_storage, domain, lines):
 
 def _test_secret() -> str:
     return "test-token"
+
+
+AGENT_EVENT_FIXTURE = (
+    Path(__file__).resolve().parent
+    / "fixtures"
+    / "agent-ledger"
+    / "agent-run-completed.v0.json"
+)
+
+
+def _agent_event() -> dict:
+    return json.loads(AGENT_EVENT_FIXTURE.read_text(encoding="utf-8"))
+
+
+def _agent_ledger_post(client, payload):
+    return client.post(
+        "/v1/ingest?domain=agent.ledger",
+        headers={"X-Auth": _test_secret(), "Content-Type": "application/json"},
+        json=payload,
+    )
+
 
 # --- Pagination Tests (New Logic) ---
 
@@ -676,6 +698,137 @@ def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path, client):
         assert "received_at" in data2
         assert data2["domain"] == domain
         assert data2["payload"] == payload[1]
+
+
+def test_agent_ledger_empty_batch_preserves_noop_response(
+    monkeypatch, tmp_path: Path, client
+):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    response = client.post(
+        "/ingest/agent.ledger",
+        headers={"X-Auth": _test_secret(), "Content-Type": "application/json"},
+        json=[],
+    )
+
+    assert response.status_code == 202
+    assert response.text == "ok"
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_agent_ledger_identical_replay_is_idempotent(monkeypatch, tmp_path: Path, client):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    event = _agent_event()
+
+    accepted = _agent_ledger_post(client, event)
+    replayed = _agent_ledger_post(client, event)
+
+    assert accepted.status_code == 202
+    assert accepted.json() == {
+        "domain": "agent.ledger",
+        "result": "accepted",
+        "requested": 1,
+        "written": 1,
+        "skipped_existing": 0,
+    }
+    assert replayed.status_code == 202
+    assert replayed.json() == {
+        "domain": "agent.ledger",
+        "result": "replayed",
+        "requested": 1,
+        "written": 0,
+        "skipped_existing": 1,
+    }
+    target = storage.safe_target_path("agent.ledger")
+    assert len(target.read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_agent_ledger_conflicting_replay_fails_closed(monkeypatch, tmp_path: Path, client):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    event = _agent_event()
+    conflict = _agent_event()
+    conflict["data"]["summary"] = "Different content for the same event identity."
+
+    assert _agent_ledger_post(client, event).status_code == 202
+    response = _agent_ledger_post(client, conflict)
+
+    assert response.status_code == 409
+    assert response.json() == {"detail": "conflicting event_id"}
+    target = storage.safe_target_path("agent.ledger")
+    stored = [json.loads(line) for line in target.read_text(encoding="utf-8").splitlines()]
+    assert len(stored) == 1
+    assert stored[0]["payload"] == event
+
+
+def test_agent_ledger_mixed_batch_reports_new_and_replayed(monkeypatch, tmp_path: Path, client):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    existing = _agent_event()
+    new_event = _agent_event()
+    new_event["event_id"] = "01JZ0000000000000000000002"
+    new_event["source"]["run_id"] = "run-20260702-120001"
+
+    assert _agent_ledger_post(client, existing).status_code == 202
+    response = _agent_ledger_post(client, [existing, new_event])
+
+    assert response.status_code == 202
+    assert response.json() == {
+        "domain": "agent.ledger",
+        "result": "mixed",
+        "requested": 2,
+        "written": 1,
+        "skipped_existing": 1,
+    }
+    target = storage.safe_target_path("agent.ledger")
+    stored = [json.loads(line)["payload"]["event_id"] for line in target.read_text().splitlines()]
+    assert stored == [existing["event_id"], new_event["event_id"]]
+
+
+def test_agent_ledger_conflicting_batch_appends_nothing(monkeypatch, tmp_path: Path, client):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    existing = _agent_event()
+    conflict = _agent_event()
+    conflict["data"]["result"] = "blocked"
+    new_event = _agent_event()
+    new_event["event_id"] = "01JZ0000000000000000000003"
+    new_event["source"]["run_id"] = "run-20260702-120002"
+
+    assert _agent_ledger_post(client, existing).status_code == 202
+    response = _agent_ledger_post(client, [new_event, conflict])
+
+    assert response.status_code == 409
+    target = storage.safe_target_path("agent.ledger")
+    stored = [json.loads(line)["payload"]["event_id"] for line in target.read_text().splitlines()]
+    assert stored == [existing["event_id"]]
+
+
+def test_agent_ledger_requires_event_id(monkeypatch, tmp_path: Path, client):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    event = _agent_event()
+    del event["event_id"]
+
+    response = _agent_ledger_post(client, event)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "missing event_id"}
+    assert not list(tmp_path.glob("*.jsonl"))
+
+
+def test_agent_ledger_concurrent_identical_delivery_writes_once(
+    monkeypatch, tmp_path: Path, client
+):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    event = _agent_event()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(lambda _: _agent_ledger_post(client, event), range(2)))
+
+    assert [response.status_code for response in responses] == [202, 202]
+    assert sorted(response.json()["result"] for response in responses) == [
+        "accepted",
+        "replayed",
+    ]
+    target = storage.safe_target_path("agent.ledger")
+    assert len(target.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_symlink_attack_rejected_after_resolve(monkeypatch, tmp_path):

@@ -23,6 +23,29 @@ POST /v1/ingest?domain=agent.ledger
 
 Die Domain ist bewusst **nicht** Teil des Event-Payloads. Chronik setzt die Storage-Domain im Envelope.
 
+## Zustellungs-Idempotenz
+
+Für `agent.ledger` ist `event_id` die stabile Zustellidentität. Chronik prüft diese Identität unter derselben exklusiven Ledger-Sperre wie den Append:
+
+- eine neue `event_id` wird genau einmal an das Ledger angehängt;
+- dieselbe `event_id` mit kanonisch identischem Eventinhalt ist ein erfolgreicher Replay und erzeugt keine zweite Ledgerzeile;
+- dieselbe `event_id` mit abweichendem kanonischem Eventinhalt wird als HTTP `409` abgewiesen;
+- ein Batch mit einem Identitätskonflikt wird vollständig vor dem Append abgewiesen.
+
+Erfolgreiche Requests liefern HTTP `202` mit einem JSON-Ergebnis:
+
+```json
+{
+  "domain": "agent.ledger",
+  "result": "accepted",
+  "requested": 1,
+  "written": 1,
+  "skipped_existing": 0
+}
+```
+
+`result` ist `accepted`, `replayed` oder `mixed`. Damit kann ein Producer nach einem Timeout oder verlorenen Response sicher erneut zustellen. Der Vertrag behauptet keine Exactly-once-Netzwerkübertragung; er stellt ausschließlich sicher, dass wiederholte Zustellung zum gleichen Ledgerzustand konvergiert. Andere Domains behalten ihre bisherige Append-Semantik und ihre bisherige Plaintext-Antwort.
+
 ## Erlaubte Kinds
 
 - `agent.run.started`
