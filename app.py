@@ -39,6 +39,7 @@ from storage import (
     list_domains,
     sanitize_domain,
     write_payload,
+    write_payload_unique,
 )
 from provenance import ProvenanceError, validate_provenance, has_provenance
 from validation import (
@@ -482,18 +483,45 @@ def _raise_storage_http_exception(exc: StorageError) -> NoReturn:
     # Fallback for other storage errors (e.g. symlinks, invalid paths)
     # We assume most are client errors (bad domain/path), but some might be internal
     msg = str(exc).lower()
+    if msg.startswith("conflicting event_id:"):
+        raise HTTPException(status_code=409, detail="conflicting event_id") from exc
+    if msg == "missing event_id":
+        raise HTTPException(status_code=400, detail="missing event_id") from exc
     if "invalid target" in msg:
         raise HTTPException(status_code=400, detail="invalid target") from exc
     raise HTTPException(status_code=500, detail="storage error") from exc
 
 
-def _process_and_write_combined(dom: str, items: list[Any]) -> None:
-    """Helper to run both processing and writing in a single threadpool task.
+def _agent_ledger_result(*, requested: int, written: int, skipped: int) -> dict[str, Any]:
+    if written == requested:
+        result = "accepted"
+    elif skipped == requested:
+        result = "replayed"
+    else:
+        result = "mixed"
+    return {
+        "domain": "agent.ledger",
+        "result": result,
+        "requested": requested,
+        "written": written,
+        "skipped_existing": skipped,
+    }
 
-    This reduces context switching overhead compared to running them separately.
-    """
+
+def _process_and_write_combined(dom: str, items: list[Any]) -> dict[str, Any] | None:
+    """Process one request and preserve existing semantics outside agent.ledger."""
     lines_to_write = _process_items(items, dom)
+    if not lines_to_write:
+        return None
+    if dom == "agent.ledger":
+        written, skipped = write_payload_unique(dom, lines_to_write, identity_key="event_id")
+        return _agent_ledger_result(
+            requested=len(lines_to_write),
+            written=written,
+            skipped=skipped,
+        )
     write_payload(dom, lines_to_write)
+    return None
 
 
 @app.post(
@@ -558,10 +586,12 @@ async def ingest_v1(
         dom = _sanitize_domain(first_item_domain)
 
     try:
-        await run_in_threadpool(_process_and_write_combined, dom, items)
+        result = await run_in_threadpool(_process_and_write_combined, dom, items)
     except StorageError as exc:
         _raise_storage_http_exception(exc)
 
+    if result is not None:
+        return JSONResponse(result, status_code=202)
     return PlainTextResponse("ok", status_code=202)
 
 
@@ -592,10 +622,12 @@ async def ingest(
     # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
     items = obj if isinstance(obj, list) else [obj]
     try:
-        await run_in_threadpool(_process_and_write_combined, dom, items)
+        result = await run_in_threadpool(_process_and_write_combined, dom, items)
     except StorageError as exc:
         _raise_storage_http_exception(exc)
 
+    if result is not None:
+        return JSONResponse(result, status_code=202)
     return PlainTextResponse("ok", status_code=202)
 
 
