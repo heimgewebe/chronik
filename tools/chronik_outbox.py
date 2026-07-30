@@ -8,24 +8,30 @@ files that already have successful flush receipts.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable
+from typing import Any, Callable, Iterable, Iterator
 from urllib.parse import urlencode
 
 import httpx
 import jsonschema
+from filelock import FileLock, Timeout
 from jsonschema import Draft7Validator
 
 DOMAIN = "agent.ledger"
 DEFAULT_STATE_ROOT = Path(".local/state")
 SCHEMA_PATH = Path(__file__).resolve().parents[1] / "docs" / "chronik" / "agent-run-event-v0.schema.json"
 SAFE_PART = re.compile(r"[^A-Za-z0-9_.-]+")
+SHA256_HEX = re.compile(r"[0-9a-f]{64}")
+OUTBOX_LOCK_TIMEOUT = 10.0
+RECEIPT_VERSION = 1
 
 
 class OutboxError(RuntimeError):
@@ -38,6 +44,20 @@ class OutboxFileStatus:
     events: int
     bytes: int
     flushed: bool
+
+
+@dataclass(frozen=True)
+class OutboxSnapshot:
+    raw: bytes
+    events: tuple[dict[str, Any], ...]
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ReceiptProgress:
+    source_bytes: int
+    event_count: int
+    source_sha256: str
 
 
 def load_json(path: Path) -> Any:
@@ -81,13 +101,173 @@ def receipt_path(path: Path) -> Path:
     return path.parent / ".flushed" / f"{path.name}.receipt.json"
 
 
+def lock_path(path: Path) -> Path:
+    return path.parent / ".locks" / f"{path.name}.lock"
+
+
+def canonical_source_path(path: Path) -> str:
+    return str(path.resolve())
+
+
+@contextmanager
+def outbox_lock(path: Path) -> Iterator[None]:
+    lock = lock_path(path)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with FileLock(str(lock), timeout=OUTBOX_LOCK_TIMEOUT):
+            yield
+    except Timeout as exc:
+        raise OutboxError(f"timed out waiting for outbox lock: {path}") from exc
+
+
+def _parse_events(path: Path, raw: bytes) -> tuple[dict[str, Any], ...]:
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OutboxError(f"{path}: invalid utf-8") from exc
+
+    events: list[dict[str, Any]] = []
+    for line_number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise OutboxError(f"{path}:{line_number}: invalid jsonl") from exc
+        validate_event(event)
+        events.append(event)
+    return tuple(events)
+
+
+def _snapshot_unlocked(path: Path) -> OutboxSnapshot:
+    raw = path.read_bytes()
+    return OutboxSnapshot(
+        raw=raw,
+        events=_parse_events(path, raw),
+        sha256=hashlib.sha256(raw).hexdigest(),
+    )
+
+
+def _load_receipt(path: Path) -> tuple[bool, dict[str, Any] | None]:
+    receipt = receipt_path(path)
+    try:
+        value = load_json(receipt)
+    except FileNotFoundError:
+        return False, None
+    except (OSError, TypeError, ValueError):
+        return True, None
+    return True, value if isinstance(value, dict) else None
+
+
+def _receipt_progress(path: Path, snapshot: OutboxSnapshot) -> ReceiptProgress | None:
+    exists, receipt = _load_receipt(path)
+    if not exists:
+        return None
+    if receipt is None or receipt.get("receipt_version") != RECEIPT_VERSION:
+        raise OutboxError(f"{path}: existing receipt is not snapshot-bound")
+
+    source_bytes = receipt.get("source_bytes")
+    event_count = receipt.get("event_count")
+    source_sha256 = receipt.get("source_sha256")
+    valid_scalars = (
+        isinstance(source_bytes, int)
+        and not isinstance(source_bytes, bool)
+        and isinstance(event_count, int)
+        and not isinstance(event_count, bool)
+        and isinstance(source_sha256, str)
+        and SHA256_HEX.fullmatch(source_sha256) is not None
+    )
+    if not valid_scalars:
+        raise OutboxError(f"{path}: existing receipt has invalid snapshot fields")
+    if (
+        receipt.get("domain") != DOMAIN
+        or receipt.get("source_path") != canonical_source_path(path)
+        or source_bytes < 0
+        or source_bytes > len(snapshot.raw)
+        or event_count < 0
+    ):
+        raise OutboxError(f"{path}: existing receipt does not match the outbox identity")
+
+    prefix = snapshot.raw[:source_bytes]
+    if source_bytes > 0 and not prefix.endswith(b"\n"):
+        raise OutboxError(f"{path}: receipt ends inside a JSONL record")
+    if hashlib.sha256(prefix).hexdigest() != source_sha256:
+        raise OutboxError(f"{path}: receipt prefix hash does not match the outbox")
+    if len(_parse_events(path, prefix)) != event_count:
+        raise OutboxError(f"{path}: receipt event count does not match its prefix")
+    return ReceiptProgress(
+        source_bytes=source_bytes,
+        event_count=event_count,
+        source_sha256=source_sha256,
+    )
+
+
+def _receipt_covers_snapshot(progress: ReceiptProgress | None, snapshot: OutboxSnapshot) -> bool:
+    return (
+        progress is not None
+        and progress.source_bytes == len(snapshot.raw)
+        and progress.event_count == len(snapshot.events)
+        and progress.source_sha256 == snapshot.sha256
+    )
+
+
+def _fsync_directory(path: Path) -> None:
+    directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def _write_receipt(path: Path, snapshot: OutboxSnapshot, status_code: int) -> Path:
+    receipt = receipt_path(path)
+    receipt.parent.mkdir(parents=True, exist_ok=True)
+    payload = (
+        json.dumps(
+            {
+                "receipt_version": RECEIPT_VERSION,
+                "domain": DOMAIN,
+                "source_path": canonical_source_path(path),
+                "source_bytes": len(snapshot.raw),
+                "source_sha256": snapshot.sha256,
+                "event_count": len(snapshot.events),
+                "flushed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                "status_code": status_code,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    temporary = receipt.with_name(f".{receipt.name}.tmp")
+    try:
+        with temporary.open("wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, receipt)
+        _fsync_directory(receipt.parent)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return receipt
+
+
 def append_event(event: dict[str, Any], state_root: Path = DEFAULT_STATE_ROOT) -> Path:
     validate_event(event)
     path = outbox_path(event, state_root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(event, sort_keys=True, separators=(",", ":")))
-        handle.write("\n")
+    encoded = (
+        json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        + b"\n"
+    )
+    with outbox_lock(path):
+        with path.open("ab") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
     return path
 
 
@@ -96,30 +276,28 @@ def iter_outbox_files(state_root: Path = DEFAULT_STATE_ROOT) -> Iterable[Path]:
 
 
 def read_events(path: Path) -> list[dict[str, Any]]:
-    events: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line_number, line in enumerate(handle, start=1):
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise OutboxError(f"{path}:{line_number}: invalid jsonl") from exc
-            validate_event(event)
-            events.append(event)
-    return events
+    with outbox_lock(path):
+        return list(_snapshot_unlocked(path).events)
 
 
 def status(state_root: Path = DEFAULT_STATE_ROOT) -> list[OutboxFileStatus]:
     entries: list[OutboxFileStatus] = []
     for path in iter_outbox_files(state_root):
-        event_count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+        try:
+            with outbox_lock(path):
+                snapshot = _snapshot_unlocked(path)
+                try:
+                    progress = _receipt_progress(path, snapshot)
+                except OutboxError:
+                    progress = None
+        except FileNotFoundError:
+            continue
         entries.append(
             OutboxFileStatus(
                 path=path,
-                events=event_count,
-                bytes=path.stat().st_size,
-                flushed=receipt_path(path).exists(),
+                events=len(snapshot.events),
+                bytes=len(snapshot.raw),
+                flushed=_receipt_covers_snapshot(progress, snapshot),
             )
         )
     return entries
@@ -148,33 +326,34 @@ def flush_file(
     timeout: float = 5.0,
     sender: Callable[[str, list[dict[str, Any]], str, float], tuple[int, str]] | None = None,
 ) -> Path:
-    events = read_events(path)
-    if not events:
-        raise OutboxError(f"{path} contains no events")
+    with outbox_lock(path):
+        snapshot = _snapshot_unlocked(path)
+        progress = _receipt_progress(path, snapshot)
+        if _receipt_covers_snapshot(progress, snapshot):
+            return receipt_path(path)
+        source_bytes = progress.source_bytes if progress is not None else 0
+        pending_events = list(_parse_events(path, snapshot.raw[source_bytes:]))
+    if not pending_events:
+        raise OutboxError(f"{path} contains no pending events")
+
     resolved_token = token or token_from_env()
     url = f"{base_url.rstrip('/')}/v1/ingest?{urlencode({'domain': DOMAIN})}"
-    status_code, text = (sender or post_json)(url, events, resolved_token, timeout)
+    status_code, text = (sender or post_json)(url, pending_events, resolved_token, timeout)
     if not 200 <= status_code < 300:
         raise OutboxError(f"flush failed for {path}: HTTP {status_code}: {text}")
 
-    receipt = receipt_path(path)
-    receipt.parent.mkdir(parents=True, exist_ok=True)
-    receipt.write_text(
-        json.dumps(
-            {
-                "domain": DOMAIN,
-                "source_path": str(path),
-                "event_count": len(events),
-                "flushed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "status_code": status_code,
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return receipt
+    with outbox_lock(path):
+        try:
+            current_raw = path.read_bytes()
+        except OSError as exc:
+            raise OutboxError(
+                f"flush succeeded for {path}, but the source cannot be verified; no receipt written"
+            ) from exc
+        if not current_raw.startswith(snapshot.raw):
+            raise OutboxError(
+                f"flush succeeded for {path}, but the source changed non-append-only; no receipt written"
+            )
+        return _write_receipt(path, snapshot, status_code)
 
 
 def flush_all(
@@ -187,7 +366,13 @@ def flush_all(
 ) -> list[Path]:
     receipts: list[Path] = []
     for path in iter_outbox_files(state_root):
-        if receipt_path(path).exists():
+        try:
+            with outbox_lock(path):
+                snapshot = _snapshot_unlocked(path)
+                progress = _receipt_progress(path, snapshot)
+                if _receipt_covers_snapshot(progress, snapshot):
+                    continue
+        except FileNotFoundError:
             continue
         receipts.append(flush_file(path, base_url=base_url, token=token, timeout=timeout, sender=sender))
     return receipts
@@ -196,9 +381,20 @@ def flush_all(
 def compact(state_root: Path = DEFAULT_STATE_ROOT) -> list[Path]:
     removed: list[Path] = []
     for path in iter_outbox_files(state_root):
-        if receipt_path(path).exists():
-            path.unlink()
-            removed.append(path)
+        try:
+            with outbox_lock(path):
+                snapshot = _snapshot_unlocked(path)
+                try:
+                    progress = _receipt_progress(path, snapshot)
+                except OutboxError:
+                    continue
+                if not _receipt_covers_snapshot(progress, snapshot):
+                    continue
+                path.unlink()
+                _fsync_directory(path.parent)
+        except FileNotFoundError:
+            continue
+        removed.append(path)
     return removed
 
 

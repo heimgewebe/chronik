@@ -86,9 +86,12 @@ python -m tools.chronik_outbox --state-root /tmp/chronik-state compact
 
 Regeln:
 
-- `append` validiert gegen das v0-Schema und schreibt eine JSONL-Datei pro Producer/Run.
-- `flush` sendet an `POST /v1/ingest?domain=agent.ledger` und erstellt ein Receipt.
-- `compact` entfernt nur Dateien, für die ein Flush-Receipt existiert.
+- `append` validiert gegen das v0-Schema und schreibt unter einem dateigebundenen Lock in eine JSONL-Datei pro Producer/Run.
+- `flush` sendet nur den noch nicht quittierten JSONL-Suffix an `POST /v1/ingest?domain=agent.ledger`.
+- Ein Receipt bindet den erfolgreich gesendeten Präfix an kanonischen Quellpfad, Byteanzahl, Ereignisanzahl und SHA-256.
+- Ein Append während des Netzaufrufs bleibt als neuer, nicht quittierter Suffix erhalten.
+- `compact` entfernt eine Datei nur, wenn das Receipt exakt den vollständigen aktuellen Dateisnapshot abdeckt.
+- Alte, beschädigte oder nicht snapshotgebundene Receipts berechtigen weder zum erneuten automatischen Flush noch zur Kompaktierung; sie erfordern eine gesonderte Prüfung.
 - Kein Agentenlauf darf vom Outbox-Prototyp abhängig werden.
 
 ## Beispiele
