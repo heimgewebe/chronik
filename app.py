@@ -248,8 +248,23 @@ from prometheus_client import Counter, Histogram
 # Event ingestion metrics
 events_ingested_total = Counter(
     "chronik_events_ingested_total",
-    "Total number of events ingested",
+    "Validated events presented for ingestion; not proof of durable persistence",
     ["domain", "event_type"],
+)
+
+events_persisted_total = Counter(
+    "chronik_events_persisted_total",
+    "Events durably appended to authoritative Chronik storage",
+    ["domain"],
+)
+
+agent_ledger_delivery_total = Counter(
+    "chronik_agent_ledger_delivery_total",
+    "Agent ledger ingest requests by bounded delivery outcome",
+    ["result"],
+)
+AGENT_LEDGER_DELIVERY_RESULTS: Final[frozenset[str]] = frozenset(
+    {"accepted", "replayed", "mixed", "conflict", "invalid_identity"}
 )
 
 events_rejected_total = Counter(
@@ -260,7 +275,7 @@ events_rejected_total = Counter(
 
 events_signal_strength = Counter(
     "chronik_events_signal_strength_total",
-    "Events by signal strength level",
+    "Validated delivery attempts by signal strength level; not durable writes",
     ["domain", "signal_strength"],
 )
 
@@ -473,19 +488,45 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
     return lines
 
 
-def _raise_storage_http_exception(exc: StorageError) -> NoReturn:
-    """Map storage errors to HTTP exceptions."""
+def _record_persisted_events(dom: str, count: int) -> None:
+    """Record confirmed durable events without changing the ingest outcome."""
+    if count <= 0:
+        return
+    try:
+        events_persisted_total.labels(domain=_sanitize_metric_label(dom)).inc(count)
+    except Exception:
+        logger.exception("failed to record durable event metric", extra={"domain": dom})
+
+
+def _record_agent_ledger_outcome(result: str) -> None:
+    """Record one fixed agent.ledger result without affecting ledger semantics."""
+    if result not in AGENT_LEDGER_DELIVERY_RESULTS:
+        logger.error("unsupported agent.ledger delivery result")
+        return
+    try:
+        agent_ledger_delivery_total.labels(result=result).inc()
+    except Exception:
+        logger.exception("failed to record agent.ledger delivery metric")
+
+
+def _raise_storage_http_exception(
+    exc: StorageError, *, domain: str | None = None
+) -> NoReturn:
+    """Map storage errors to HTTP exceptions without claiming persistence."""
     if isinstance(exc, StorageFullError):
         raise HTTPException(status_code=507, detail="insufficient storage") from exc
     if isinstance(exc, StorageBusyError):
         raise HTTPException(status_code=429, detail="busy, try again") from exc
 
-    # Fallback for other storage errors (e.g. symlinks, invalid paths)
-    # We assume most are client errors (bad domain/path), but some might be internal
+    # Fallback for other storage errors (e.g. symlinks, invalid paths).
     msg = str(exc).lower()
     if msg.startswith("conflicting event_id:"):
+        if domain == "agent.ledger":
+            _record_agent_ledger_outcome("conflict")
         raise HTTPException(status_code=409, detail="conflicting event_id") from exc
     if msg == "missing event_id":
+        if domain == "agent.ledger":
+            _record_agent_ledger_outcome("invalid_identity")
         raise HTTPException(status_code=400, detail="missing event_id") from exc
     if "invalid target" in msg:
         raise HTTPException(status_code=400, detail="invalid target") from exc
@@ -515,12 +556,16 @@ def _process_and_write_combined(dom: str, items: list[Any]) -> dict[str, Any] | 
         return None
     if dom == "agent.ledger":
         written, skipped = write_payload_unique(dom, lines_to_write, identity_key="event_id")
-        return _agent_ledger_result(
+        result = _agent_ledger_result(
             requested=len(lines_to_write),
             written=written,
             skipped=skipped,
         )
+        _record_persisted_events(dom, written)
+        _record_agent_ledger_outcome(str(result["result"]))
+        return result
     write_payload(dom, lines_to_write)
+    _record_persisted_events(dom, len(lines_to_write))
     return None
 
 
@@ -588,7 +633,7 @@ async def ingest_v1(
     try:
         result = await run_in_threadpool(_process_and_write_combined, dom, items)
     except StorageError as exc:
-        _raise_storage_http_exception(exc)
+        _raise_storage_http_exception(exc, domain=dom)
 
     if result is not None:
         return JSONResponse(result, status_code=202)
@@ -624,7 +669,7 @@ async def ingest(
     try:
         result = await run_in_threadpool(_process_and_write_combined, dom, items)
     except StorageError as exc:
-        _raise_storage_http_exception(exc)
+        _raise_storage_http_exception(exc, domain=dom)
 
     if result is not None:
         return JSONResponse(result, status_code=202)

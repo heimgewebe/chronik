@@ -46,6 +46,17 @@ Erfolgreiche Requests liefern HTTP `202` mit einem JSON-Ergebnis:
 
 `result` ist `accepted`, `replayed` oder `mixed`. Damit kann ein Producer nach einem Timeout oder verlorenen Response sicher erneut zustellen. Der Vertrag behauptet keine Exactly-once-Netzwerkübertragung; er stellt ausschließlich sicher, dass wiederholte Zustellung zum gleichen Ledgerzustand konvergiert. Andere Domains behalten ihre bisherige Append-Semantik und ihre bisherige Plaintext-Antwort.
 
+## Metriksemantik
+
+Chronik trennt Zustellversuche von dauerhaft geschriebenen Ereignissen:
+
+- `chronik_events_ingested_total{domain,event_type}` ist aus Kompatibilitätsgründen weiterhin vorhanden. Der Counter zählt validierte Ereignisse, die dem Ingest-Pfad übergeben wurden. Er ist **kein** Beleg für einen dauerhaften Ledger-Append.
+- `chronik_events_signal_strength_total{domain,signal_strength}` beschreibt ebenfalls validierte Zustellversuche und keine dauerhaften Writes.
+- `chronik_events_persisted_total{domain}` steigt erst, nachdem die zuständige Storage-Operation erfolgreich zurückgekehrt ist. Bei `agent.ledger` entspricht die Erhöhung exakt dem Feld `written` des Idempotenz-Ergebnisses.
+- `chronik_agent_ledger_delivery_total{result}` zählt Requests mit der festen Ergebnisvokabel `accepted`, `replayed`, `mixed`, `conflict` oder `invalid_identity`. Der Counter verwendet keine `event_id`, Payloadwerte, Repositorynamen oder andere unbeschränkte Labels.
+
+Daraus folgt: Ein identischer Replay erhöht die Zustellversuchs- und Ergebniszähler, aber nicht `chronik_events_persisted_total`. Ein Identitätskonflikt oder eine fehlende Identität erhöht ebenfalls keinen Durable-Write-Counter.
+
 ## Erlaubte Kinds
 
 - `agent.run.started`
