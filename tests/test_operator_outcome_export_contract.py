@@ -78,6 +78,34 @@ def test_secret_shaped_text_and_private_paths_are_rejected():
             contract.validate_operator_outcome_export(export)
 
 
+def test_secret_shaped_text_in_free_form_arrays_is_rejected():
+    for leaked in ("Authorization: Bearer secret-value", "/home/alex/private/receipt.json"):
+        export = load_fixture()
+        export["payload"]["does_not_establish"] = ["causal_route_superiority", leaked]
+        export["payload_sha256"] = contract.sha256_json(export["payload"])
+        export["event_id"] = contract.event_id_for(export)
+        with pytest.raises(ValueError, match="forbidden"):
+            contract.validate_operator_outcome_export(export)
+
+
+def test_redaction_walk_reaches_bare_strings_inside_arrays():
+    located = {path: value for path, key, value in contract._walk({"a": ["first", "second"]})}
+    assert located["$.a[0]"] == "first"
+    assert located["$.a[1]"] == "second"
+
+
+def test_redaction_walk_still_flags_raw_keys_nested_in_arrays():
+    export = load_fixture()
+    export["payload"]["friction"] = [{
+        "kind": "unknown",
+        "surface": "runtime",
+        "resolved": False,
+        "stdout": "build output",
+    }]
+    with pytest.raises(ValueError, match="raw output field is forbidden"):
+        contract._validate_redaction_boundary(export)
+
+
 def test_future_inverted_freshness_is_rejected_and_status_is_not_persisted():
     export = load_fixture()
     assert "status" not in export["freshness"]
