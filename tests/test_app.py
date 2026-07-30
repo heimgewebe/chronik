@@ -30,6 +30,17 @@ def mock_storage(monkeypatch, tmp_path):
     monkeypatch.setenv("CHRONIK_TOKEN", "test-token")
     return tmp_path
 
+
+@pytest.fixture
+def isolated_rate_limiter():
+    """Keep request-heavy metric regressions from leaking into later tests."""
+    app.limiter.reset()
+    try:
+        yield
+    finally:
+        app.limiter.reset()
+
+
 def create_event_file(mock_storage, domain, lines):
     """Helper to create a domain file with specific lines."""
     p = mock_storage / f"{domain}.jsonl"
@@ -60,6 +71,10 @@ def _agent_ledger_post(client, payload):
         headers={"X-Auth": _test_secret(), "Content-Type": "application/json"},
         json=payload,
     )
+
+
+def _counter_value(counter, **labels) -> float:
+    return float(counter.labels(**labels)._value.get())
 
 
 # --- Pagination Tests (New Logic) ---
@@ -572,6 +587,19 @@ def test_metrics_endpoint_exposed(client):
     response = client.get("/metrics")
     assert response.status_code == 200
     assert "http_requests" in response.text
+    assert (
+        "# HELP chronik_events_ingested_total Validated events presented for "
+        "ingestion; not proof of durable persistence"
+    ) in response.text
+    assert (
+        "# HELP chronik_events_persisted_total Events durably appended to "
+        "authoritative Chronik storage"
+    ) in response.text
+    assert (
+        "# HELP chronik_events_signal_strength_total Validated delivery attempts "
+        "by signal strength level; not durable writes"
+    ) in response.text
+    assert "chronik_agent_ledger_delivery_total" in response.text
 
 
 def test_lock_timeout_returns_429(monkeypatch, client):
@@ -698,6 +726,100 @@ def test_ingest_v1_ndjson(monkeypatch, tmp_path: Path, client):
         assert "received_at" in data2
         assert data2["domain"] == domain
         assert data2["payload"] == payload[1]
+
+
+def test_agent_ledger_metrics_separate_attempts_writes_and_outcomes(
+    monkeypatch, tmp_path: Path, client, isolated_rate_limiter
+):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    event = _agent_event()
+    second = _agent_event()
+    second["event_id"] = "01JZ0000000000000000000099"
+    second["source"]["run_id"] = "run-20260702-129999"
+    conflict = _agent_event()
+    conflict["data"]["summary"] = "Conflicting content."
+    invalid = _agent_event()
+    del invalid["event_id"]
+
+    persisted_before = _counter_value(
+        app.events_persisted_total, domain="agent.ledger"
+    )
+    attempts_before = _counter_value(
+        app.events_ingested_total,
+        domain="agent.ledger",
+        event_type="agent.run.completed",
+    )
+    outcomes_before = {
+        result: _counter_value(app.agent_ledger_delivery_total, result=result)
+        for result in ("accepted", "replayed", "mixed", "conflict", "invalid_identity")
+    }
+
+    assert _agent_ledger_post(client, event).json()["result"] == "accepted"
+    assert _agent_ledger_post(client, event).json()["result"] == "replayed"
+    assert _agent_ledger_post(client, [event, second]).json()["result"] == "mixed"
+    assert _agent_ledger_post(client, conflict).status_code == 409
+    assert _agent_ledger_post(client, invalid).status_code == 400
+
+    assert _counter_value(
+        app.events_persisted_total, domain="agent.ledger"
+    ) == persisted_before + 2
+    assert _counter_value(
+        app.events_ingested_total,
+        domain="agent.ledger",
+        event_type="agent.run.completed",
+    ) == attempts_before + 6
+    for result in outcomes_before:
+        assert _counter_value(
+            app.agent_ledger_delivery_total, result=result
+        ) == outcomes_before[result] + 1
+
+
+def test_persisted_metric_changes_only_after_generic_storage_success(
+    monkeypatch, tmp_path: Path, client, isolated_rate_limiter
+):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    domain = "metrics.example"
+    before = _counter_value(app.events_persisted_total, domain=domain)
+
+    success = client.post(
+        f"/v1/ingest?domain={domain}",
+        headers={"X-Auth": _test_secret(), "Content-Type": "application/json"},
+        json=[{"data": "one"}, {"data": "two"}],
+    )
+    assert success.status_code == 202
+    assert _counter_value(app.events_persisted_total, domain=domain) == before + 2
+
+    def fail_write(_domain, _lines):
+        raise storage.StorageError("synthetic write failure")
+
+    monkeypatch.setattr(app, "write_payload", fail_write)
+    failed = client.post(
+        f"/v1/ingest?domain={domain}",
+        headers={"X-Auth": _test_secret(), "Content-Type": "application/json"},
+        json={"data": "three"},
+    )
+    assert failed.status_code == 500
+    assert _counter_value(app.events_persisted_total, domain=domain) == before + 2
+
+
+def test_metric_backend_failure_does_not_change_durable_ingest(
+    monkeypatch, tmp_path: Path, client, isolated_rate_limiter
+):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+
+    class BrokenCounter:
+        def labels(self, **_labels):
+            raise RuntimeError("synthetic metrics failure")
+
+    monkeypatch.setattr(app, "events_persisted_total", BrokenCounter())
+    monkeypatch.setattr(app, "agent_ledger_delivery_total", BrokenCounter())
+
+    response = _agent_ledger_post(client, _agent_event())
+
+    assert response.status_code == 202
+    assert response.json()["result"] == "accepted"
+    target = storage.safe_target_path("agent.ledger")
+    assert len(target.read_text(encoding="utf-8").splitlines()) == 1
 
 
 def test_agent_ledger_empty_batch_preserves_noop_response(
