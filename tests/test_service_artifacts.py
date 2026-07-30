@@ -89,6 +89,22 @@ def test_operator_docs_close_ai_context_loop(runbook_content: str):
     assert "CHRONIK_TOKEN=dev" in runbook_content
 
 
+def test_agent_test_commands_use_project_virtualenv(runbook_content: str):
+    agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+
+    assert "python3 -m pytest" not in agents
+    assert "python3 -m pytest" not in runbook_content
+    assert "./scripts/setup-venv.sh" in agents
+    assert "./scripts/setup-venv.sh" in runbook_content
+    assert "./.venv/bin/python -m pytest -q tests/" in agents
+    assert "./.venv/bin/python -m pytest -q tests/" in runbook_content
+    assert "make test" in agents
+    assert "test:" in makefile
+    assert "./scripts/setup-venv.sh" in makefile
+    assert "./.venv/bin/python -m pytest -q" in makefile
+
+
 def test_runtime_activation_gate_has_ordered_phases(runbook_content: str):
     headings = (
         "### Effects requiring separate approval",

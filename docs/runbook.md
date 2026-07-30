@@ -34,8 +34,9 @@ Default service paths:
 Repository-only validation:
 
 ```bash
-python3 scripts/check_role.py .ai-context.yml
-python3 -m pytest -q tests/test_service_artifacts.py tests/test_chronik_outbox.py tests/test_agent_ledger_view.py
+./scripts/setup-venv.sh
+./.venv/bin/python scripts/check_role.py .ai-context.yml
+./.venv/bin/python -m pytest -q tests/test_service_artifacts.py tests/test_chronik_outbox.py tests/test_agent_ledger_view.py
 ```
 
 These checks do not start or enable a user service.
