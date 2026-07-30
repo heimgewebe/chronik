@@ -66,29 +66,38 @@ def _parse_utc_second(value: str, *, label: str) -> datetime:
 
 
 def _walk(value: Any, *, path: str = "$"):
+    """Yield ``(path, key, item)`` for every dict entry and every list element.
+
+    List elements carry no field name, so ``key`` is ``None`` for them. They are
+    still yielded: free-form arrays such as ``payload.does_not_establish`` hold
+    bare strings that must pass the same redaction boundary as object values.
+    """
     if isinstance(value, dict):
         for key, item in value.items():
             yield path, key, item
             yield from _walk(item, path=f"{path}.{key}")
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            yield from _walk(item, path=f"{path}[{index}]")
+            item_path = f"{path}[{index}]"
+            yield item_path, None, item
+            yield from _walk(item, path=item_path)
 
 
 def _validate_redaction_boundary(export: dict[str, Any]) -> None:
     for path, key, value in _walk(export):
-        if key.lower() in _RAW_KEYS:
+        if key is not None and key.lower() in _RAW_KEYS:
             raise ValueError(f"raw output field is forbidden at {path}.{key}")
         if not isinstance(value, str):
             continue
+        location = f"{path}.{key}" if key is not None else path
         if _PRIVATE_PATH_RE.search(value):
-            raise ValueError(f"private absolute path is forbidden at {path}.{key}")
+            raise ValueError(f"private absolute path is forbidden at {location}")
         if (
             _PRIVATE_KEY_MARKER in value
             or any(prefix in value for prefix in _SECRET_PREFIXES)
             or _SECRET_ASSIGNMENT_RE.search(value)
         ):
-            raise ValueError(f"secret-shaped material is forbidden at {path}.{key}")
+            raise ValueError(f"secret-shaped material is forbidden at {location}")
 
 
 def validate_operator_outcome_export(export: dict[str, Any]) -> dict[str, Any]:
