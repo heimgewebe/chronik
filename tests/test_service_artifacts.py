@@ -64,6 +64,9 @@ def test_outbox_import_units_are_direct_bounded_and_hardened():
     timer = (ROOT / "deploy" / "systemd" / "user" / "chronik-outbox-import.timer").read_text(encoding="utf-8")
 
     assert "import-outbox" in service
+    assert "--output-mode summary" in service
+    assert "LogRateLimitIntervalSec=30s" in service
+    assert "LogRateLimitBurst=200" in service
     assert "plexer" not in service.lower()
     assert "ReadOnlyPaths=%h/.local/state/grabowski/chronik-outbox" in service
     assert "ReadWritePaths=%h/.local/state/chronik" in service

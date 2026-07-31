@@ -5,8 +5,10 @@ ConditionPathIsDirectory=%h/.local/state/grabowski/chronik-outbox
 
 [Service]
 Type=oneshot
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=200
 WorkingDirectory=%h/.local/lib/chronik/current
-ExecStart=%h/repos/chronik/.venv/bin/python %h/.local/lib/chronik/current/tools/coding_memory.py --data-dir %h/.local/state/chronik/data import-outbox --outbox-root %h/.local/state --receipt-dir %h/.local/state/chronik/import-receipts
+ExecStart=%h/repos/chronik/.venv/bin/python %h/.local/lib/chronik/current/tools/coding_memory.py --data-dir %h/.local/state/chronik/data import-outbox --outbox-root %h/.local/state --receipt-dir %h/.local/state/chronik/import-receipts --output-mode summary
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true
