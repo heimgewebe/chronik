@@ -17,6 +17,66 @@ sys.path.insert(0, root_path)
 import coding_memory  # noqa: E402
 
 
+OUTBOX_SUMMARY_KEYS = (
+    "files_seen",
+    "loose_files_seen",
+    "bundle_manifests_seen",
+    "bundles_valid",
+    "bundled_sources_seen",
+    "sources_seen_total",
+    "sources_after_deduplication",
+    "orphan_bundles",
+    "files_imported_or_confirmed",
+    "files_unchanged",
+    "receipts_written",
+    "receipts_reused",
+    "loose_sources_imported_or_confirmed",
+    "bundled_sources_imported_or_confirmed",
+    "events_imported",
+    "events_skipped_existing",
+    "target_scans",
+    "target_records_scanned",
+    "identity_index_mode",
+    "identity_index_full_rebuild",
+    "identity_index_entries_after",
+)
+OUTBOX_SUMMARY_ERROR_LIMIT = 3
+OUTBOX_SUMMARY_SOURCE_LIMIT = 160
+OUTBOX_SUMMARY_ERROR_TEXT_LIMIT = 320
+
+
+def _bounded_text(value: object, limit: int) -> str:
+    text = str(value)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def outbox_summary(result: dict) -> dict:
+    errors = result.get("errors") if isinstance(result.get("errors"), list) else []
+    summary = {
+        "schema_version": "chronik-grabowski-outbox-summary.v1",
+        "result_schema_version": result.get("schema_version"),
+        **{key: result.get(key) for key in OUTBOX_SUMMARY_KEYS},
+        "error_count": len(errors),
+        "error_samples": [
+            {
+                "source_path": _bounded_text(
+                    item.get("source_path", "<unknown>"),
+                    OUTBOX_SUMMARY_SOURCE_LIMIT,
+                ),
+                "error": _bounded_text(
+                    item.get("error", "unknown error"),
+                    OUTBOX_SUMMARY_ERROR_TEXT_LIMIT,
+                ),
+            }
+            for item in errors[:OUTBOX_SUMMARY_ERROR_LIMIT]
+            if isinstance(item, dict)
+        ],
+        "errors_truncated": len(errors) > OUTBOX_SUMMARY_ERROR_LIMIT,
+        "historical_only": result.get("historical_only") is True,
+    }
+    return summary
+
+
 def load(path: Path):
     text = path.read_text(encoding="utf-8").strip()
     if not text:
@@ -106,6 +166,12 @@ def main(argv=None):
     outbox = sub.add_parser("import-outbox")
     outbox.add_argument("--outbox-root", type=Path, default=Path.home() / ".local/state")
     outbox.add_argument("--receipt-dir", type=Path)
+    outbox.add_argument(
+        "--output-mode",
+        choices=("full", "summary"),
+        default="full",
+        help="Emit the full result or one bounded single-line summary.",
+    )
 
     compact = sub.add_parser("compact-outbox")
     compact.add_argument("--outbox-root", type=Path, default=Path.home() / ".local/state")
@@ -176,7 +242,10 @@ def main(argv=None):
         print(f"chronik-coding-memory: {exc}", file=sys.stderr)
         return 2
 
-    print(json.dumps(result, indent=2, sort_keys=True))
+    if args.command == "import-outbox" and args.output_mode == "summary":
+        print(json.dumps(outbox_summary(result), sort_keys=True, separators=(",", ":")))
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True))
     if args.command in {"import-outbox", "compact-outbox"} and result["errors"]:
         return 2
     return 0

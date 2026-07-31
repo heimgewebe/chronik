@@ -329,6 +329,113 @@ def test_import_outbox_cli_returns_nonzero_on_any_invalid_source(tmp_path):
     assert json.loads(result.stdout)["errors"]
 
 
+def test_import_outbox_cli_summary_is_single_line_and_bounded(tmp_path):
+    import subprocess
+    import sys
+
+    data = tmp_path / "data"
+    receipts = tmp_path / "receipts"
+    outbox = tmp_path / "state"
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    root = Path(__file__).parents[1]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "coding_memory.py"),
+            "--data-dir",
+            str(data),
+            "import-outbox",
+            "--outbox-root",
+            str(outbox),
+            "--receipt-dir",
+            str(receipts),
+            "--output-mode",
+            "summary",
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    assert len(result.stdout.splitlines()) == 1
+    assert len(result.stdout.encode("utf-8")) < 4096
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "chronik-grabowski-outbox-summary.v1"
+    assert payload["events_imported"] == 1
+    assert payload["error_count"] == 0
+    assert payload["error_samples"] == []
+    assert "bundle_inventory" not in payload
+
+
+def test_import_outbox_cli_summary_preserves_bounded_error_signal(tmp_path):
+    import subprocess
+    import sys
+
+    data = tmp_path / "data"
+    receipts = tmp_path / "receipts"
+    outbox = tmp_path / "state"
+    write_outbox(
+        outbox,
+        [event("agent.run.completed", "e", source_repo="heimgewebe/other")],
+    )
+    root = Path(__file__).parents[1]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "coding_memory.py"),
+            "--data-dir",
+            str(data),
+            "import-outbox",
+            "--outbox-root",
+            str(outbox),
+            "--receipt-dir",
+            str(receipts),
+            "--output-mode",
+            "summary",
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 2
+    assert len(result.stdout.splitlines()) == 1
+    assert len(result.stdout.encode("utf-8")) < 4096
+    payload = json.loads(result.stdout)
+    assert payload["error_count"] == 1
+    assert len(payload["error_samples"]) == 1
+    assert "not produced by canonical Grabowski" in payload["error_samples"][0]["error"]
+    assert payload["errors_truncated"] is False
+
+
+def test_outbox_summary_has_a_hard_worst_case_size_bound():
+    from tools import coding_memory as coding_memory_cli
+
+    result = {
+        "schema_version": "chronik-grabowski-outbox-batch.v2",
+        **{key: 0 for key in coding_memory_cli.OUTBOX_SUMMARY_KEYS},
+        "identity_index_mode": "unused",
+        "identity_index_full_rebuild": False,
+        "errors": [
+            {
+                "source_path": "/very/long/" + "source" * 200,
+                "error": "failure " * 500,
+            }
+            for _ in range(20)
+        ],
+        "historical_only": True,
+    }
+
+    summary = coding_memory_cli.outbox_summary(result)
+    encoded = json.dumps(summary, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+    assert len(encoded) < 4096
+    assert summary["error_count"] == 20
+    assert len(summary["error_samples"]) == 3
+    assert summary["errors_truncated"] is True
+
+
 def test_import_preserves_repository_target_identity(tmp_path, monkeypatch):
     data, receipts, outbox = configure(tmp_path, monkeypatch)
     value = event("agent.run.completed", "d")

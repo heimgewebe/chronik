@@ -159,7 +159,12 @@ Die Unit `chronik-outbox-import.service` ist ein gehärteter One-shot-Importer.
 Der Timer startet sie alle zwei Minuten. Dieselbe One-shot-Unit wird von systemd
 nicht parallel ein zweites Mal gestartet; ein noch aktiver Lauf verhindert damit
 überlappende Importer. Die Unit darf die Grabowski-Outbox nur lesen und
-ausschließlich unter `~/.local/state/chronik` schreiben.
+ausschließlich unter `~/.local/state/chronik` schreiben. Für systemd nutzt die
+Unit `import-outbox --output-mode summary`: Pro Lauf entsteht genau ein kompakter
+JSON-Einzeiler mit Zählern. Dateiinventare werden nicht ausgegeben; höchstens drei
+gekürzte Fehlerstichproben bleiben sichtbar. Zusätzlich begrenzt die Unit die
+Journalrate auf 200 Meldungen je 30 Sekunden. Der CLI-Standard bleibt `full`,
+damit bestehende interaktive und maschinelle Aufrufer kompatibel bleiben.
 
 Der HTTP-Dienst `chronik.service` ist für diesen Pfad nicht erforderlich. Er
 soll nur aktiviert werden, wenn ein konkreter externer Konsument den HTTP-Ingest
