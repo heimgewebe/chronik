@@ -32,6 +32,7 @@ SAFE_PART = re.compile(r"[^A-Za-z0-9_.-]+")
 SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 OUTBOX_LOCK_TIMEOUT = 10.0
 RECEIPT_VERSION = 1
+HTTP_ERROR_DETAIL_MAX_BYTES = 1024
 
 
 class OutboxError(RuntimeError):
@@ -80,6 +81,39 @@ def safe_part(value: str, label: str) -> str:
     if not cleaned:
         raise OutboxError(f"{label} is empty after sanitization")
     return cleaned[:160]
+
+
+def _json_single_line(value: object) -> str:
+    """Render untrusted text without literal line or separator controls."""
+    text = str(value).encode("utf-8", errors="backslashreplace").decode("utf-8")
+    rendered = json.dumps(text, ensure_ascii=False)[1:-1]
+    safe: list[str] = []
+    for char in rendered:
+        codepoint = ord(char)
+        if 0x7F <= codepoint <= 0x9F or codepoint in {0x2028, 0x2029}:
+            safe.append(f"\\u{codepoint:04x}")
+        else:
+            safe.append(char)
+    return "".join(safe)
+
+
+def _bounded_http_error_detail(value: object) -> str:
+    """Return one escaped diagnostic within the HTTP error byte budget."""
+    limit = HTTP_ERROR_DETAIL_MAX_BYTES
+    text = str(value)
+    rendered = _json_single_line(text)
+    if len(rendered.encode("utf-8")) <= limit:
+        return rendered
+
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        candidate = _json_single_line(text[:middle] + "…")
+        if len(candidate.encode("utf-8")) <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return _json_single_line(text[:low] + "…")
 
 
 def producer_and_run_id(event: dict[str, Any]) -> tuple[str, str]:
@@ -340,7 +374,8 @@ def flush_file(
     url = f"{base_url.rstrip('/')}/v1/ingest?{urlencode({'domain': DOMAIN})}"
     status_code, text = (sender or post_json)(url, pending_events, resolved_token, timeout)
     if not 200 <= status_code < 300:
-        raise OutboxError(f"flush failed for {path}: HTTP {status_code}: {text}")
+        detail = _bounded_http_error_detail(text)
+        raise OutboxError(f"flush failed for {path}: HTTP {status_code}: {detail}")
 
     with outbox_lock(path):
         try:
