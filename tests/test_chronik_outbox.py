@@ -243,7 +243,7 @@ def test_flush_failure_keeps_pending_file_and_no_receipt(tmp_path):
     event = load_event()
     path = chronik_outbox.append_event(event, tmp_path)
 
-    with pytest.raises(chronik_outbox.OutboxError):
+    with pytest.raises(chronik_outbox.OutboxError, match="HTTP 503: down"):
         chronik_outbox.flush_file(
             path,
             base_url="http://chronik.test",
@@ -253,6 +253,45 @@ def test_flush_failure_keeps_pending_file_and_no_receipt(tmp_path):
 
     assert path.exists()
     assert not chronik_outbox.receipt_path(path).exists()
+
+
+@pytest.mark.parametrize("filler", ["X", "🧪", '"', "\\"])
+def test_flush_failure_bounds_and_escapes_untrusted_http_body(tmp_path, filler):
+    path = chronik_outbox.append_event(load_event(), tmp_path)
+    body = "upstream failure\r\nSECOND-LINE\t" + filler * 5000
+
+    with pytest.raises(chronik_outbox.OutboxError) as raised:
+        chronik_outbox.flush_file(
+            path,
+            base_url="http://chronik.test",
+            token="secret",
+            sender=lambda url, payload, token, timeout: (503, body),
+        )
+
+    prefix = f"flush failed for {path}: HTTP 503: "
+    message = str(raised.value)
+    assert message.startswith(prefix)
+    detail = message[len(prefix) :]
+    assert len(detail.encode("utf-8")) <= chronik_outbox.HTTP_ERROR_DETAIL_MAX_BYTES
+    assert r"\r\nSECOND-LINE\t" in detail
+    assert "\r" not in message
+    assert "\n" not in message
+    assert "\t" not in message
+    assert detail.endswith("…")
+    assert path.exists()
+    assert not chronik_outbox.receipt_path(path).exists()
+
+
+def test_http_error_detail_escapes_unicode_separators_and_lone_surrogates():
+    detail = chronik_outbox._bounded_http_error_detail(
+        "first\u0085second\u2028third\u2029fourth\ud800"
+    )
+
+    assert r"\u0085" in detail
+    assert r"\u2028" in detail
+    assert r"\u2029" in detail
+    assert r"\\ud800" in detail
+    assert all(char not in detail for char in ("\u0085", "\u2028", "\u2029"))
 
 
 def test_preview_renders_views_without_receipts(tmp_path):
