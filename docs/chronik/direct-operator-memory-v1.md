@@ -162,9 +162,15 @@ nicht parallel ein zweites Mal gestartet; ein noch aktiver Lauf verhindert damit
 ausschließlich unter `~/.local/state/chronik` schreiben. Für systemd nutzt die
 Unit `import-outbox --output-mode summary`: Pro Lauf entsteht genau ein kompakter
 JSON-Einzeiler mit Zählern. Dateiinventare werden nicht ausgegeben; höchstens drei
-gekürzte Fehlerstichproben bleiben sichtbar. Zusätzlich begrenzt die Unit die
-Journalrate auf 200 Meldungen je 30 Sekunden. Der CLI-Standard bleibt `full`,
-damit bestehende interaktive und maschinelle Aufrufer kompatibel bleiben.
+gekürzte Fehlerstichproben bleiben sichtbar. Die Zeile bleibt garantiert unter
+4096 Bytes: Gekürzt wird nach der JSON-kodierten Bytelänge, nicht nach
+Zeichenzahl, weil Escaping ein Zeichen auf bis zu zwölf Bytes ausdehnen kann.
+Reicht das nicht, entfallen zusätzlich Fehlerstichproben; `errors_truncated`
+bleibt dann `true`. Die aggregierte `error_count` und der Exitcode `2` bei
+Fehlern bleiben in jedem Fall erhalten. Zusätzlich begrenzt die Unit die
+Journalrate unabhängig vom User-Manager auf 200 Meldungen je 30 Sekunden. Der
+CLI-Standard bleibt `full`, damit bestehende interaktive und maschinelle Aufrufer
+kompatibel bleiben.
 
 Der HTTP-Dienst `chronik.service` ist für diesen Pfad nicht erforderlich. Er
 soll nur aktiviert werden, wenn ein konkreter externer Konsument den HTTP-Ingest

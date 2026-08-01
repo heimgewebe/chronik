@@ -43,19 +43,45 @@ OUTBOX_SUMMARY_KEYS = (
 OUTBOX_SUMMARY_ERROR_LIMIT = 3
 OUTBOX_SUMMARY_SOURCE_LIMIT = 160
 OUTBOX_SUMMARY_ERROR_TEXT_LIMIT = 320
+OUTBOX_SUMMARY_LABEL_LIMIT = 96
+OUTBOX_SUMMARY_MAX_BYTES = 4096
+
+
+def _encoded_length(text: str) -> int:
+    """Bytes this string costs inside the emitted summary line, quotes included."""
+    return len(json.dumps(text).encode("utf-8"))
 
 
 def _bounded_text(value: object, limit: int) -> str:
+    """Truncate so the JSON-encoded form stays within ``limit`` bytes.
+
+    Escaping expands non-ASCII and control characters (one code point can cost
+    twelve bytes as an escaped surrogate pair), so a character count is not a
+    size bound for the journal line.
+    """
     text = str(value)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    if _encoded_length(text) <= limit:
+        return text
+    low, high = 0, len(text)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if _encoded_length(text[:middle] + "…") <= limit:
+            low = middle
+        else:
+            high = middle - 1
+    return text[:low] + "…"
+
+
+def _bounded_label(value: object) -> object:
+    return _bounded_text(value, OUTBOX_SUMMARY_LABEL_LIMIT) if isinstance(value, str) else value
 
 
 def outbox_summary(result: dict) -> dict:
     errors = result.get("errors") if isinstance(result.get("errors"), list) else []
     summary = {
         "schema_version": "chronik-grabowski-outbox-summary.v1",
-        "result_schema_version": result.get("schema_version"),
-        **{key: result.get(key) for key in OUTBOX_SUMMARY_KEYS},
+        "result_schema_version": _bounded_label(result.get("schema_version")),
+        **{key: _bounded_label(result.get(key)) for key in OUTBOX_SUMMARY_KEYS},
         "error_count": len(errors),
         "error_samples": [
             {
@@ -75,6 +101,36 @@ def outbox_summary(result: dict) -> dict:
         "historical_only": result.get("historical_only") is True,
     }
     return summary
+
+
+def _encode_summary(summary: dict) -> str:
+    return json.dumps(summary, sort_keys=True, separators=(",", ":"))
+
+
+def _emitted_bytes(line: str) -> int:
+    """Journal cost of the line, including the terminator ``print`` appends."""
+    return len(line.encode("utf-8")) + 1
+
+
+def outbox_summary_line(result: dict) -> str:
+    """Render one summary line that stays below the hard journal size bound."""
+    summary = outbox_summary(result)
+    line = _encode_summary(summary)
+    while _emitted_bytes(line) >= OUTBOX_SUMMARY_MAX_BYTES and summary["error_samples"]:
+        summary["error_samples"] = summary["error_samples"][:-1]
+        summary["errors_truncated"] = True
+        line = _encode_summary(summary)
+    if _emitted_bytes(line) >= OUTBOX_SUMMARY_MAX_BYTES:
+        line = _encode_summary(
+            {
+                "schema_version": summary["schema_version"],
+                "error_count": summary["error_count"],
+                "error_samples": [],
+                "errors_truncated": True,
+                "historical_only": summary["historical_only"],
+            }
+        )
+    return line
 
 
 def load(path: Path):
@@ -243,7 +299,7 @@ def main(argv=None):
         return 2
 
     if args.command == "import-outbox" and args.output_mode == "summary":
-        print(json.dumps(outbox_summary(result), sort_keys=True, separators=(",", ":")))
+        print(outbox_summary_line(result))
     else:
         print(json.dumps(result, indent=2, sort_keys=True))
     if args.command in {"import-outbox", "compact-outbox"} and result["errors"]:
