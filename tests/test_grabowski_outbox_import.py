@@ -436,6 +436,124 @@ def test_outbox_summary_has_a_hard_worst_case_size_bound():
     assert summary["errors_truncated"] is True
 
 
+@pytest.mark.parametrize(
+    "filler",
+    [
+        "s",
+        "ä",  # two UTF-8 bytes, six once JSON-escaped
+        "\x01",  # control character, six bytes once escaped
+        "\U0001f600",  # astral plane, twelve bytes as an escaped surrogate pair
+        "\n",
+        '"\\',
+    ],
+    ids=["ascii", "latin1", "control", "astral", "newline", "quote-backslash"],
+)
+def test_outbox_summary_line_stays_bounded_for_any_error_text(filler):
+    from tools import coding_memory as coding_memory_cli
+
+    result = {
+        "schema_version": "chronik-grabowski-outbox-batch.v2" + filler * 500,
+        **{key: 0 for key in coding_memory_cli.OUTBOX_SUMMARY_KEYS},
+        "identity_index_mode": filler * 500,
+        "identity_index_full_rebuild": False,
+        "errors": [
+            {"source_path": filler * 2000, "error": filler * 5000} for _ in range(20)
+        ],
+        "historical_only": True,
+    }
+
+    line = coding_memory_cli.outbox_summary_line(result)
+
+    # +1 for the newline print() appends, so the whole journal write is bounded.
+    assert len(line.encode("utf-8")) + 1 < coding_memory_cli.OUTBOX_SUMMARY_MAX_BYTES
+    assert coding_memory_cli.OUTBOX_SUMMARY_MAX_BYTES == 4096
+    assert "\n" not in line
+    payload = json.loads(line)
+    assert payload["error_count"] == 20
+    assert len(payload["error_samples"]) <= 3
+    assert payload["errors_truncated"] is True
+
+
+def test_outbox_summary_line_falls_back_when_a_counter_itself_is_oversized():
+    from tools import coding_memory as coding_memory_cli
+
+    result = {
+        "schema_version": "chronik-grabowski-outbox-batch.v2",
+        **{key: 0 for key in coding_memory_cli.OUTBOX_SUMMARY_KEYS},
+        "files_seen": list(range(50000)),
+        "identity_index_mode": "unused",
+        "identity_index_full_rebuild": False,
+        "errors": [{"source_path": "/a.jsonl", "error": "boom"}],
+        "historical_only": True,
+    }
+
+    line = coding_memory_cli.outbox_summary_line(result)
+    payload = json.loads(line)
+
+    assert len(line.encode("utf-8")) + 1 < coding_memory_cli.OUTBOX_SUMMARY_MAX_BYTES
+    assert payload["error_count"] == 1
+    assert payload["errors_truncated"] is True
+    assert payload["schema_version"] == "chronik-grabowski-outbox-summary.v1"
+    # Dropping error samples cannot help here, so the minimal payload is used.
+    assert "files_seen" not in payload
+
+
+def test_outbox_summary_keeps_short_error_text_intact():
+    from tools import coding_memory as coding_memory_cli
+
+    result = {
+        "schema_version": "chronik-grabowski-outbox-batch.v2",
+        **{key: 0 for key in coding_memory_cli.OUTBOX_SUMMARY_KEYS},
+        "identity_index_mode": "unused",
+        "identity_index_full_rebuild": False,
+        "errors": [{"source_path": "/a/b.jsonl", "error": "unreadable: Ümläut"}],
+        "historical_only": True,
+    }
+
+    payload = json.loads(coding_memory_cli.outbox_summary_line(result))
+
+    assert payload["error_samples"] == [
+        {"source_path": "/a/b.jsonl", "error": "unreadable: Ümläut"}
+    ]
+    assert payload["errors_truncated"] is False
+    assert payload["identity_index_mode"] == "unused"
+    assert payload["result_schema_version"] == "chronik-grabowski-outbox-batch.v2"
+
+
+def test_import_outbox_cli_default_output_mode_keeps_the_full_schema(tmp_path):
+    import subprocess
+    import sys
+
+    data = tmp_path / "data"
+    receipts = tmp_path / "receipts"
+    outbox = tmp_path / "state"
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    root = Path(__file__).parents[1]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(root / "tools" / "coding_memory.py"),
+            "--data-dir",
+            str(data),
+            "import-outbox",
+            "--outbox-root",
+            str(outbox),
+            "--receipt-dir",
+            str(receipts),
+        ],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == 0
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == "chronik-grabowski-outbox-batch.v2"
+    assert payload["errors"] == []
+    assert "bundle_inventory" in payload
+    assert "error_samples" not in payload
+
+
 def test_import_preserves_repository_target_identity(tmp_path, monkeypatch):
     data, receipts, outbox = configure(tmp_path, monkeypatch)
     value = event("agent.run.completed", "d")
