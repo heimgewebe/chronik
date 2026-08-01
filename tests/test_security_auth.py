@@ -1,4 +1,6 @@
+import app as app_module
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from app import app
 
@@ -6,6 +8,71 @@ from app import app
 def client():
     with TestClient(app) as c:
         yield c
+
+
+@pytest.mark.parametrize(
+    ("configured", "provided", "expected_tokens", "expected_status"),
+    [
+        ("only", "only", ("only",), None),
+        ("first,second", "first", ("first", "second"), None),
+        (
+            "first,second,third",
+            "third",
+            ("first", "second", "third"),
+            None,
+        ),
+        (
+            "alpha,, beta\nalpha,\r\n gamma,beta",
+            "invalid",
+            ("alpha", "beta", "gamma"),
+            401,
+        ),
+    ],
+    ids=[
+        "single-match",
+        "first-match",
+        "last-match",
+        "no-match-with-empty-and-duplicate-entries",
+    ],
+)
+def test_auth_compares_every_deduplicated_token(
+    monkeypatch, configured, provided, expected_tokens, expected_status
+):
+    monkeypatch.setenv("CHRONIK_TOKEN", configured)
+    comparisons = []
+
+    def recording_compare_digest(candidate, configured_token):
+        comparisons.append((candidate, configured_token))
+        return candidate == configured_token
+
+    monkeypatch.setattr(
+        app_module.secrets, "compare_digest", recording_compare_digest
+    )
+
+    if expected_status is None:
+        app_module._require_auth(provided)
+    else:
+        with pytest.raises(HTTPException) as exc_info:
+            app_module._require_auth(provided)
+        assert exc_info.value.status_code == expected_status
+
+    assert comparisons == [(provided, token) for token in expected_tokens]
+
+
+def test_auth_all_empty_config_fails_closed_without_comparison(monkeypatch):
+    monkeypatch.setenv("CHRONIK_TOKEN", ", ,\n\r")
+
+    def unexpected_compare_digest(candidate, configured_token):
+        pytest.fail("compare_digest called without a configured token")
+
+    monkeypatch.setattr(
+        app_module.secrets, "compare_digest", unexpected_compare_digest
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        app_module._require_auth("candidate")
+
+    assert exc_info.value.status_code == 500
 
 def test_auth_single_token(client, monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", "secret123")
