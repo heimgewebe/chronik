@@ -33,6 +33,7 @@ SHA256_HEX = re.compile(r"[0-9a-f]{64}")
 OUTBOX_LOCK_TIMEOUT = 10.0
 RECEIPT_VERSION = 1
 HTTP_ERROR_DETAIL_MAX_BYTES = 1024
+DEFAULT_MAX_BODY_BYTES = 1024 * 1024
 
 
 class OutboxError(RuntimeError):
@@ -253,7 +254,7 @@ def _fsync_directory(path: Path) -> None:
         os.close(directory_fd)
 
 
-def _write_receipt(path: Path, snapshot: OutboxSnapshot, status_code: int) -> Path:
+def _write_receipt_progress(path: Path, progress: ReceiptProgress, status_code: int) -> Path:
     receipt = receipt_path(path)
     receipt.parent.mkdir(parents=True, exist_ok=True)
     payload = (
@@ -262,9 +263,9 @@ def _write_receipt(path: Path, snapshot: OutboxSnapshot, status_code: int) -> Pa
                 "receipt_version": RECEIPT_VERSION,
                 "domain": DOMAIN,
                 "source_path": canonical_source_path(path),
-                "source_bytes": len(snapshot.raw),
-                "source_sha256": snapshot.sha256,
-                "event_count": len(snapshot.events),
+                "source_bytes": progress.source_bytes,
+                "source_sha256": progress.source_sha256,
+                "event_count": progress.event_count,
                 "flushed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "status_code": status_code,
             },
@@ -345,10 +346,49 @@ def token_from_env() -> str:
     return tokens[0]
 
 
+def _resolve_max_body_bytes(value: int | None) -> int:
+    if value is None:
+        raw_value = os.environ.get("CHRONIK_MAX_BODY")
+        if raw_value in {None, ""}:
+            value = DEFAULT_MAX_BODY_BYTES
+        else:
+            try:
+                value = int(raw_value)
+            except ValueError as exc:
+                raise OutboxError("CHRONIK_MAX_BODY must be an integer") from exc
+    if not isinstance(value, int) or isinstance(value, bool) or value < 2:
+        raise OutboxError("max_body_bytes must be an integer of at least 2 bytes")
+    return value
+
+
+def _encode_json_value(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _encode_ingest_body(payload: list[dict[str, Any]]) -> bytes:
+    return b"[" + b",".join(_encode_json_value(event) for event in payload) + b"]"
+
+
+def _pending_event_end_offsets(path: Path, raw: bytes, source_bytes: int) -> Iterator[int]:
+    cursor = source_bytes
+    for raw_line in raw[source_bytes:].splitlines(keepends=True):
+        cursor += len(raw_line)
+        if not raw_line.strip():
+            continue
+        if not raw_line.endswith(b"\n"):
+            raise OutboxError(f"{path}: pending JSONL record is not newline-terminated")
+        yield cursor
+
+
 def post_json(url: str, payload: list[dict[str, Any]], token: str, timeout: float) -> tuple[int, str]:
     headers = {"Content-Type": "application/json", "X-Auth": token}
+    body = _encode_ingest_body(payload)
     with httpx.Client(timeout=timeout) as client:
-        response = client.post(url, json=payload, headers=headers)
+        response = client.post(url, content=body, headers=headers)
     return response.status_code, response.text
 
 
@@ -358,37 +398,103 @@ def flush_file(
     base_url: str,
     token: str | None = None,
     timeout: float = 5.0,
+    max_body_bytes: int | None = None,
     sender: Callable[[str, list[dict[str, Any]], str, float], tuple[int, str]] | None = None,
 ) -> Path:
+    body_limit = _resolve_max_body_bytes(max_body_bytes)
     with outbox_lock(path):
         snapshot = _snapshot_unlocked(path)
         progress = _receipt_progress(path, snapshot)
         if _receipt_covers_snapshot(progress, snapshot):
             return receipt_path(path)
         source_bytes = progress.source_bytes if progress is not None else 0
-        pending_events = list(_parse_events(path, snapshot.raw[source_bytes:]))
-    if not pending_events:
-        raise OutboxError(f"{path} contains no pending events")
+        source_event_count = progress.event_count if progress is not None else 0
+
+    encoded_sizes: list[int] = []
+    for pending_index, event in enumerate(
+        snapshot.events[source_event_count:], start=source_event_count + 1
+    ):
+        encoded_size = len(_encode_json_value(event))
+        single_size = encoded_size + 2
+        if single_size > body_limit:
+            raise OutboxError(
+                f"{path}: event {pending_index} requires {single_size} request bytes, "
+                f"exceeding max_body_bytes={body_limit}"
+            )
+        encoded_sizes.append(encoded_size)
 
     resolved_token = token or token_from_env()
     url = f"{base_url.rstrip('/')}/v1/ingest?{urlencode({'domain': DOMAIN})}"
-    status_code, text = (sender or post_json)(url, pending_events, resolved_token, timeout)
-    if not 200 <= status_code < 300:
-        detail = _bounded_http_error_detail(text)
-        raise OutboxError(f"flush failed for {path}: HTTP {status_code}: {detail}")
+    send = sender or post_json
+    event_index = source_event_count
+    chunk: list[dict[str, Any]] = []
+    chunk_size = 2
+    chunk_end_bytes = source_bytes
+    chunk_end_event_count = source_event_count
+    sent_any = False
 
-    with outbox_lock(path):
-        try:
-            current_raw = path.read_bytes()
-        except OSError as exc:
-            raise OutboxError(
-                f"flush succeeded for {path}, but the source cannot be verified; no receipt written"
-            ) from exc
-        if not current_raw.startswith(snapshot.raw):
-            raise OutboxError(
-                f"flush succeeded for {path}, but the source changed non-append-only; no receipt written"
-            )
-        return _write_receipt(path, snapshot, status_code)
+    def send_chunk() -> None:
+        nonlocal sent_any
+        if not chunk:
+            return
+        with outbox_lock(path):
+            try:
+                current_raw = path.read_bytes()
+            except OSError as exc:
+                raise OutboxError(f"{path}: source cannot be verified before flush") from exc
+            if not current_raw.startswith(snapshot.raw):
+                raise OutboxError(f"{path}: source changed non-append-only before flush")
+
+        status_code, response_text = send(url, list(chunk), resolved_token, timeout)
+        if not 200 <= status_code < 300:
+            detail = _bounded_http_error_detail(response_text)
+            raise OutboxError(f"flush failed for {path}: HTTP {status_code}: {detail}")
+
+        prefix = snapshot.raw[:chunk_end_bytes]
+        chunk_progress = ReceiptProgress(
+            source_bytes=chunk_end_bytes,
+            event_count=chunk_end_event_count,
+            source_sha256=hashlib.sha256(prefix).hexdigest(),
+        )
+        with outbox_lock(path):
+            try:
+                current_raw = path.read_bytes()
+            except OSError as exc:
+                raise OutboxError(
+                    f"flush succeeded for {path}, but the source cannot be verified; no receipt written"
+                ) from exc
+            if not current_raw.startswith(snapshot.raw):
+                raise OutboxError(
+                    f"flush succeeded for {path}, but the source changed non-append-only; no receipt written"
+                )
+            _write_receipt_progress(path, chunk_progress, status_code)
+        sent_any = True
+
+    end_offsets = _pending_event_end_offsets(path, snapshot.raw, source_bytes)
+    for end_offset in end_offsets:
+        if event_index >= len(snapshot.events):
+            raise OutboxError(f"{path}: pending JSONL records do not match the snapshot")
+        event = snapshot.events[event_index]
+        encoded_size = encoded_sizes[event_index - source_event_count]
+        event_index += 1
+
+        candidate_size = chunk_size + encoded_size + (1 if chunk else 0)
+        if chunk and candidate_size > body_limit:
+            send_chunk()
+            chunk.clear()
+            chunk_size = 2
+
+        chunk.append(event)
+        chunk_size += encoded_size + (1 if len(chunk) > 1 else 0)
+        chunk_end_event_count = event_index
+        chunk_end_bytes = len(snapshot.raw) if event_index == len(snapshot.events) else end_offset
+
+    if event_index != len(snapshot.events):
+        raise OutboxError(f"{path}: snapshot events do not match pending JSONL records")
+    if not chunk and not sent_any:
+        raise OutboxError(f"{path} contains no pending events")
+    send_chunk()
+    return receipt_path(path)
 
 
 def flush_all(
@@ -397,6 +503,7 @@ def flush_all(
     base_url: str,
     token: str | None = None,
     timeout: float = 5.0,
+    max_body_bytes: int | None = None,
     sender: Callable[[str, list[dict[str, Any]], str, float], tuple[int, str]] | None = None,
 ) -> list[Path]:
     receipts: list[Path] = []
@@ -409,7 +516,16 @@ def flush_all(
                     continue
         except FileNotFoundError:
             continue
-        receipts.append(flush_file(path, base_url=base_url, token=token, timeout=timeout, sender=sender))
+        receipts.append(
+            flush_file(
+                path,
+                base_url=base_url,
+                token=token,
+                timeout=timeout,
+                max_body_bytes=max_body_bytes,
+                sender=sender,
+            )
+        )
     return receipts
 
 
@@ -483,6 +599,7 @@ def main(argv: list[str] | None = None) -> int:
     flush_parser = subparsers.add_parser("flush")
     flush_parser.add_argument("--base-url", default=os.environ.get("CHRONIK_URL", "http://localhost:8788"))
     flush_parser.add_argument("--timeout", type=float, default=5.0)
+    flush_parser.add_argument("--max-body-bytes", type=int, default=None)
 
     subparsers.add_parser("compact")
 
@@ -498,7 +615,12 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "preview":
             print_json(preview(state_root))
         elif args.command == "flush":
-            receipts = flush_all(state_root=state_root, base_url=args.base_url, timeout=args.timeout)
+            receipts = flush_all(
+                state_root=state_root,
+                base_url=args.base_url,
+                timeout=args.timeout,
+                max_body_bytes=args.max_body_bytes,
+            )
             print_json({"receipts": [str(receipt) for receipt in receipts]})
         elif args.command == "compact":
             removed = compact(state_root)

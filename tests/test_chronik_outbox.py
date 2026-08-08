@@ -24,6 +24,13 @@ def blocked_event():
     return event
 
 
+def third_event():
+    event = blocked_event()
+    event["event_id"] = "sha256:" + "c" * 64
+    event["ts"] = "2026-07-02T12:20:00Z"
+    return event
+
+
 def encoded_event(event):
     return (
         json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -91,6 +98,159 @@ def test_flush_file_posts_agent_ledger_domain_and_writes_bound_receipt(tmp_path)
     assert receipt_body["event_count"] == 1
     assert receipt_body["source_bytes"] == path.stat().st_size
     assert receipt_body["source_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_post_json_sends_exact_body_used_for_size_accounting(monkeypatch):
+    payload = [load_event(), blocked_event()]
+    captured = {}
+
+    class Response:
+        status_code = 202
+        text = "ok"
+
+    class Client:
+        def __init__(self, *, timeout):
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def post(self, url, *, content, headers):
+            captured["url"] = url
+            captured["content"] = content
+            captured["headers"] = headers
+            return Response()
+
+    monkeypatch.setattr(chronik_outbox.httpx, "Client", Client)
+
+    status_code, text = chronik_outbox.post_json(
+        "http://chronik.test/v1/ingest?domain=agent.ledger",
+        payload,
+        "secret",
+        1.25,
+    )
+
+    assert status_code == 202
+    assert text == "ok"
+    assert captured["content"] == chronik_outbox._encode_ingest_body(payload)
+    assert captured["timeout"] == 1.25
+    assert captured["headers"]["Content-Type"] == "application/json"
+
+
+def test_flush_file_chunks_requests_under_body_limit(tmp_path):
+    events = [load_event(), blocked_event(), third_event()]
+    path = chronik_outbox.append_event(events[0], tmp_path)
+    for event in events[1:]:
+        assert chronik_outbox.append_event(event, tmp_path) == path
+    body_limit = max(len(chronik_outbox._encode_ingest_body([event])) for event in events)
+    calls = []
+
+    receipt = chronik_outbox.flush_file(
+        path,
+        base_url="http://chronik.test",
+        token="secret",
+        max_body_bytes=body_limit,
+        sender=lambda url, payload, token, timeout: (calls.append(payload) or (202, "ok")),
+    )
+
+    assert [[event["event_id"] for event in payload] for payload in calls] == [
+        [events[0]["event_id"]],
+        [events[1]["event_id"]],
+        [events[2]["event_id"]],
+    ]
+    assert all(len(chronik_outbox._encode_ingest_body(payload)) <= body_limit for payload in calls)
+    receipt_body = json.loads(receipt.read_text(encoding="utf-8"))
+    assert receipt_body["event_count"] == 3
+    assert receipt_body["source_bytes"] == path.stat().st_size
+    assert chronik_outbox.status(tmp_path)[0].flushed is True
+
+
+def test_flush_file_preserves_progress_when_later_chunk_fails(tmp_path):
+    events = [load_event(), blocked_event(), third_event()]
+    path = chronik_outbox.append_event(events[0], tmp_path)
+    for event in events[1:]:
+        chronik_outbox.append_event(event, tmp_path)
+    body_limit = max(len(chronik_outbox._encode_ingest_body([event])) for event in events)
+    calls = []
+
+    def failing_second_sender(url, payload, token, timeout):
+        calls.append(payload)
+        return (202, "ok") if len(calls) == 1 else (503, "down")
+
+    with pytest.raises(chronik_outbox.OutboxError, match="HTTP 503: down"):
+        chronik_outbox.flush_file(
+            path,
+            base_url="http://chronik.test",
+            token="secret",
+            max_body_bytes=body_limit,
+            sender=failing_second_sender,
+        )
+
+    receipt_path = chronik_outbox.receipt_path(path)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["event_count"] == 1
+    assert receipt["source_bytes"] == len(encoded_event(events[0]))
+    assert receipt["source_sha256"] == hashlib.sha256(encoded_event(events[0])).hexdigest()
+    assert chronik_outbox.status(tmp_path)[0].flushed is False
+
+    retry_calls = []
+    chronik_outbox.flush_file(
+        path,
+        base_url="http://chronik.test",
+        token="secret",
+        max_body_bytes=body_limit,
+        sender=lambda url, payload, token, timeout: (retry_calls.append(payload) or (202, "ok")),
+    )
+    assert [[event["event_id"] for event in payload] for payload in retry_calls] == [
+        [events[1]["event_id"]],
+        [events[2]["event_id"]],
+    ]
+    assert chronik_outbox.status(tmp_path)[0].flushed is True
+
+
+def test_flush_file_rejects_oversized_single_event_before_sender(tmp_path):
+    event = load_event()
+    path = chronik_outbox.append_event(event, tmp_path)
+    exact_size = len(chronik_outbox._encode_ingest_body([event]))
+    calls = []
+
+    with pytest.raises(chronik_outbox.OutboxError, match="exceeding max_body_bytes"):
+        chronik_outbox.flush_file(
+            path,
+            base_url="http://chronik.test",
+            token="secret",
+            max_body_bytes=exact_size - 1,
+            sender=lambda url, payload, token, timeout: (calls.append(payload) or (202, "ok")),
+        )
+
+    assert calls == []
+    assert not chronik_outbox.receipt_path(path).exists()
+
+
+def test_flush_file_preflights_later_oversized_event_before_any_sender(tmp_path):
+    first = load_event()
+    oversized = third_event()
+    oversized["data"]["summary"] = "X" * 500
+    path = chronik_outbox.append_event(first, tmp_path)
+    chronik_outbox.append_event(oversized, tmp_path)
+    body_limit = len(chronik_outbox._encode_ingest_body([first]))
+    assert len(chronik_outbox._encode_ingest_body([oversized])) > body_limit
+    calls = []
+
+    with pytest.raises(chronik_outbox.OutboxError, match="event 2 .*exceeding max_body_bytes"):
+        chronik_outbox.flush_file(
+            path,
+            base_url="http://chronik.test",
+            token="secret",
+            max_body_bytes=body_limit,
+            sender=lambda url, payload, token, timeout: (calls.append(payload) or (202, "ok")),
+        )
+
+    assert calls == []
+    assert not chronik_outbox.receipt_path(path).exists()
 
 
 def test_compact_removes_flushed_files_only(tmp_path):
