@@ -12,7 +12,7 @@ concurrency:
 jobs:
   fixtures:
     name: fixtures (aussen JSONL)
-    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@fe6950616b2d06343e284a56a8944e0a36f1f972
+    uses: heimgewebe/metarepo/.github/workflows/reusable-validate-jsonl.yml@5afd566efb27fb6594ff32daa4d3b86c5184ba30
     with:
       jsonl_path: tests/fixtures/aussen/sample-ok.jsonl
       schema_url: https://raw.githubusercontent.com/heimgewebe/contracts-mirror/contracts-v1/json/aussen.event.schema.json
