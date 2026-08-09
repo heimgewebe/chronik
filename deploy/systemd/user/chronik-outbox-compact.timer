@@ -1,0 +1,13 @@
+[Unit]
+Description=Regularly compact terminal Grabowski Chronik outbox sources
+
+[Timer]
+OnBootSec=15min
+OnUnitActiveSec=15min
+AccuracySec=2min
+RandomizedDelaySec=2min
+Persistent=true
+Unit=chronik-outbox-compact.service
+
+[Install]
+WantedBy=timers.target

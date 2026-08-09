@@ -26,16 +26,22 @@ DEFAULT_TIERS = (
         "source_files": 200,
         "preexisting_events": 500,
         "max_seconds": 5.0,
+        "no_change_max_seconds": 1.0,
+        "small_delta_max_seconds": 2.0,
     },
     {
         "name": "projected",
         "source_files": 1000,
         "preexisting_events": 5000,
         "max_seconds": 30.0,
+        "no_change_max_seconds": 2.0,
+        "small_delta_max_seconds": 2.0,
     },
 )
 TIMER_BUDGET_SECONDS = 60.0
 MAX_TARGET_SCANS = 1
+NO_CHANGE_MAX_SECONDS = 1.0
+SMALL_DELTA_MAX_SECONDS = 2.0
 
 
 def synthetic_event(label: str, kind: str = "agent.run.completed") -> dict:
@@ -84,16 +90,30 @@ def _measure(outbox_root: Path, receipt_dir: Path) -> dict:
         "target_records_scanned": result["target_records_scanned"],
         "events_imported": result["events_imported"],
         "events_skipped_existing": result["events_skipped_existing"],
+        "source_index_mode": result["source_index_mode"],
+        "sources_reused": result["sources_reused"],
+        "sources_revalidated": result["sources_revalidated"],
+        "sources_changed": result["sources_changed"],
+        "source_bytes_read": result["source_bytes_read"],
+        "source_bytes_hashed": result["source_bytes_hashed"],
+        "source_events_validated": result["source_events_validated"],
+        "phases_seconds": result["import_telemetry"]["phases_seconds"],
         "errors": result["errors"],
     }
 
 
-def _measure_compaction(outbox_root: Path, receipt_dir: Path) -> dict:
+def _measure_compaction(
+    outbox_root: Path,
+    receipt_dir: Path,
+    *,
+    max_sources: int,
+) -> dict:
     started = time.perf_counter()
     result = coding_memory.compact_grabowski_outbox(
         outbox_root=outbox_root,
         receipt_dir=receipt_dir,
         grace_seconds=0,
+        max_sources=max_sources,
         apply=True,
     )
     elapsed = time.perf_counter() - started
@@ -124,6 +144,8 @@ def benchmark_tier(
     source_files: int,
     preexisting_events: int,
     max_seconds: float,
+    no_change_max_seconds: float = NO_CHANGE_MAX_SECONDS,
+    small_delta_max_seconds: float = SMALL_DELTA_MAX_SECONDS,
 ) -> dict:
     with tempfile.TemporaryDirectory(prefix="chronik-outbox-benchmark-") as temp:
         temp_root = Path(temp)
@@ -150,13 +172,30 @@ def benchmark_tier(
         receipt_dir = temp_root / "receipts"
         first = _measure(outbox_root, receipt_dir)
         repeat = _measure(outbox_root, receipt_dir)
+        delta_index = source_files
+        delta_values = (
+            synthetic_event(f"{name}-{delta_index}-started", "agent.run.started"),
+            synthetic_event(f"{name}-{delta_index}-completed"),
+        )
+        (source_dir / f"grabowski_task-{delta_index:06d}-a1.jsonl").write_text(
+            "".join(json.dumps(value, sort_keys=True) + "\n" for value in delta_values),
+            encoding="utf-8",
+        )
+        small_delta = _measure(outbox_root, receipt_dir)
         loose_files_before = len(list(source_dir.glob("*.jsonl")))
-        compaction = _measure_compaction(outbox_root, receipt_dir)
+        total_source_files = source_files + 1
+        compaction = _measure_compaction(
+            outbox_root,
+            receipt_dir,
+            max_sources=total_source_files,
+        )
         loose_files_after = len(list(source_dir.glob("*.jsonl")))
+        bundled_rebuild = _measure(outbox_root, receipt_dir)
         bundled_repeat = _measure(outbox_root, receipt_dir)
         worst_seconds = max(
             first["elapsed_seconds"],
-            repeat["elapsed_seconds"],
+            small_delta["elapsed_seconds"],
+            bundled_rebuild["elapsed_seconds"],
             bundled_repeat["elapsed_seconds"],
         )
         loose_seconds = repeat["elapsed_seconds"]
@@ -169,16 +208,34 @@ def benchmark_tier(
         passed = (
             not first["errors"]
             and not repeat["errors"]
+            and not small_delta["errors"]
             and not compaction["errors"]
+            and not bundled_rebuild["errors"]
             and not bundled_repeat["errors"]
             and first["target_scans"] <= MAX_TARGET_SCANS
             and repeat["target_scans"] <= MAX_TARGET_SCANS
+            and small_delta["target_scans"] <= MAX_TARGET_SCANS
+            and bundled_rebuild["target_scans"] <= MAX_TARGET_SCANS
             and bundled_repeat["target_scans"] <= MAX_TARGET_SCANS
-            and compaction["sources_removed"] == source_files
+            and repeat["elapsed_seconds"] <= no_change_max_seconds
+            and small_delta["elapsed_seconds"] <= small_delta_max_seconds
+            and bundled_repeat["elapsed_seconds"] <= no_change_max_seconds
+            and repeat["source_bytes_read"] == 0
+            and repeat["source_bytes_hashed"] == 0
+            and repeat["sources_revalidated"] == 0
+            and repeat["sources_reused"] == source_files
+            and small_delta["sources_revalidated"] == 1
+            and small_delta["sources_reused"] == source_files
+            and small_delta["source_bytes_read"] > 0
+            and bundled_repeat["source_bytes_read"] == 0
+            and bundled_repeat["source_bytes_hashed"] == 0
+            and bundled_repeat["sources_revalidated"] == 0
+            and bundled_repeat["sources_reused"] == total_source_files
+            and compaction["sources_removed"] == total_source_files
             and compaction["archive_index_sha256"] is not None
             and compaction["archive_manifests_indexed"] == 1
-            and compaction["archived_sources_indexed"] == source_files
-            and loose_files_before == source_files
+            and compaction["archived_sources_indexed"] == total_source_files
+            and loose_files_before == total_source_files
             and loose_files_after == 0
             and worst_seconds <= max_seconds
             and worst_seconds <= TIMER_BUDGET_SECONDS
@@ -186,14 +243,18 @@ def benchmark_tier(
         return {
             "name": name,
             "source_files": source_files,
-            "source_events": source_files * 2,
+            "source_events": total_source_files * 2,
             "preexisting_events": preexisting_events,
             "max_seconds": max_seconds,
             "timer_budget_seconds": TIMER_BUDGET_SECONDS,
             "max_target_scans": MAX_TARGET_SCANS,
+            "no_change_max_seconds": no_change_max_seconds,
+            "small_delta_max_seconds": small_delta_max_seconds,
             "first": first,
             "repeat": repeat,
+            "small_delta": small_delta,
             "compaction": compaction,
+            "bundled_rebuild": bundled_rebuild,
             "bundled_repeat": bundled_repeat,
             "loose_files_before": loose_files_before,
             "loose_files_after": loose_files_after,
@@ -208,7 +269,7 @@ def benchmark_tier(
 def run_benchmark(tiers: tuple[dict, ...] = DEFAULT_TIERS) -> dict:
     results = [benchmark_tier(**tier) for tier in tiers]
     return {
-        "schema_version": "chronik-outbox-import-benchmark.v2",
+        "schema_version": "chronik-outbox-import-benchmark.v3",
         "machine": {
             "platform": platform.platform(),
             "python": platform.python_version(),
@@ -217,6 +278,9 @@ def run_benchmark(tiers: tuple[dict, ...] = DEFAULT_TIERS) -> dict:
         "thresholds": {
             "max_target_scans": MAX_TARGET_SCANS,
             "timer_budget_seconds": TIMER_BUDGET_SECONDS,
+            "representative_no_change_max_seconds": NO_CHANGE_MAX_SECONDS,
+            "projected_no_change_max_seconds": 2.0,
+            "small_delta_max_seconds": SMALL_DELTA_MAX_SECONDS,
         },
         "tiers": results,
         "passed": all(result["passed"] for result in results),

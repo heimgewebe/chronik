@@ -139,6 +139,108 @@ def test_apply_bundles_sources_and_replays_after_ledger_and_receipt_loss(
     assert len(list(receipts.glob("*.receipt.json"))) == 2
 
 
+def test_unchanged_bundle_reuses_source_index_without_bundle_read(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    write_source(
+        source_dir,
+        "grabowski_task-cached-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    import_first(outbox, receipts)
+    applied = compact(outbox, receipts, apply=True)
+    assert applied["errors"] == []
+    rebuilt = import_first(outbox, receipts)
+    assert rebuilt["sources_revalidated"] == 1
+
+    def unexpected_bundle_read(*args, **kwargs):
+        raise AssertionError("unchanged bundle was read")
+
+    monkeypatch.setattr(
+        coding_memory, "_load_grabowski_bundle", unexpected_bundle_read
+    )
+    repeated = import_first(outbox, receipts)
+
+    assert repeated["errors"] == []
+    assert repeated["sources_reused"] == 1
+    assert repeated["sources_revalidated"] == 0
+    assert repeated["source_bytes_read"] == 0
+    assert repeated["source_bytes_hashed"] == 0
+    assert repeated["bundled_sources_imported_or_confirmed"] == 1
+
+
+def test_compaction_work_can_be_bounded_by_source_count(tmp_path, monkeypatch):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    for index, suffix in enumerate(("a", "b", "c")):
+        write_source(
+            source_dir,
+            f"grabowski_task-{index}-a1.jsonl",
+            [event("agent.run.completed", suffix)],
+        )
+    import_first(outbox, receipts)
+
+    first = coding_memory.compact_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        grace_seconds=0,
+        max_sources=2,
+        apply=True,
+    )
+    second = coding_memory.compact_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        grace_seconds=0,
+        max_sources=2,
+        apply=True,
+    )
+
+    assert first["errors"] == []
+    assert first["loose_sources_seen"] == 3
+    assert first["loose_sources_considered"] == 2
+    assert first["loose_sources_deferred"] == 1
+    assert first["skipped_by_reason"]["compaction_source_bound"] == 1
+    assert first["sources_removed"] == 2
+    assert second["errors"] == []
+    assert second["loose_sources_seen"] == 1
+    assert second["sources_removed"] == 1
+    assert second["loose_sources_remaining"] == 0
+
+
+def test_compaction_bundle_bytes_never_exceed_explicit_bound(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
+    first_source = write_source(
+        source_dir,
+        "grabowski_task-a-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    write_source(
+        source_dir,
+        "grabowski_task-b-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    import_first(outbox, receipts)
+    byte_bound = first_source.stat().st_size
+
+    result = coding_memory.compact_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        grace_seconds=0,
+        max_sources=10,
+        max_bytes=byte_bound,
+        apply=True,
+    )
+
+    assert result["errors"] == []
+    assert result["bundle_bytes"] <= byte_bound
+    assert result["eligible_source_bytes"] <= byte_bound
+    assert result["skipped_by_reason"]["compaction_byte_bound"] == 1
+    assert result["sources_removed"] == 1
+    assert result["loose_sources_remaining"] == 1
+
+
 def test_repeat_apply_is_noop(tmp_path, monkeypatch):
     _, receipts, outbox, source_dir = configure(tmp_path, monkeypatch)
     write_source(
