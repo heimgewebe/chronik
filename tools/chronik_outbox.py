@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, BinaryIO, Callable, Iterable, Iterator
 from urllib.parse import urlencode
 
 import httpx
@@ -34,6 +34,7 @@ OUTBOX_LOCK_TIMEOUT = 10.0
 RECEIPT_VERSION = 1
 HTTP_ERROR_DETAIL_MAX_BYTES = 1024
 DEFAULT_MAX_BODY_BYTES = 1024 * 1024
+HASH_READ_BYTES = 64 * 1024
 
 
 class OutboxError(RuntimeError):
@@ -60,6 +61,26 @@ class ReceiptProgress:
     source_bytes: int
     event_count: int
     source_sha256: str
+
+
+@dataclass(frozen=True)
+class _FileState:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+@dataclass(frozen=True)
+class _FlushSnapshot:
+    source_bytes: int
+    event_count: int
+    sha256: str
+    progress: ReceiptProgress | None
+    progress_hasher: Any
+    progress_line_count: int
+    file_state: _FileState
 
 
 def load_json(path: Path) -> Any:
@@ -194,7 +215,7 @@ def _load_receipt(path: Path) -> tuple[bool, dict[str, Any] | None]:
     return True, value if isinstance(value, dict) else None
 
 
-def _receipt_progress(path: Path, snapshot: OutboxSnapshot) -> ReceiptProgress | None:
+def _receipt_header(path: Path, source_size: int) -> ReceiptProgress | None:
     exists, receipt = _load_receipt(path)
     if not exists:
         return None
@@ -218,23 +239,31 @@ def _receipt_progress(path: Path, snapshot: OutboxSnapshot) -> ReceiptProgress |
         receipt.get("domain") != DOMAIN
         or receipt.get("source_path") != canonical_source_path(path)
         or source_bytes < 0
-        or source_bytes > len(snapshot.raw)
+        or source_bytes > source_size
         or event_count < 0
     ):
         raise OutboxError(f"{path}: existing receipt does not match the outbox identity")
 
-    prefix = snapshot.raw[:source_bytes]
-    if source_bytes > 0 and not prefix.endswith(b"\n"):
-        raise OutboxError(f"{path}: receipt ends inside a JSONL record")
-    if hashlib.sha256(prefix).hexdigest() != source_sha256:
-        raise OutboxError(f"{path}: receipt prefix hash does not match the outbox")
-    if len(_parse_events(path, prefix)) != event_count:
-        raise OutboxError(f"{path}: receipt event count does not match its prefix")
     return ReceiptProgress(
         source_bytes=source_bytes,
         event_count=event_count,
         source_sha256=source_sha256,
     )
+
+
+def _receipt_progress(path: Path, snapshot: OutboxSnapshot) -> ReceiptProgress | None:
+    progress = _receipt_header(path, len(snapshot.raw))
+    if progress is None:
+        return None
+
+    prefix = snapshot.raw[: progress.source_bytes]
+    if progress.source_bytes > 0 and not prefix.endswith(b"\n"):
+        raise OutboxError(f"{path}: receipt ends inside a JSONL record")
+    if hashlib.sha256(prefix).hexdigest() != progress.source_sha256:
+        raise OutboxError(f"{path}: receipt prefix hash does not match the outbox")
+    if len(_parse_events(path, prefix)) != progress.event_count:
+        raise OutboxError(f"{path}: receipt event count does not match its prefix")
+    return progress
 
 
 def _receipt_covers_snapshot(progress: ReceiptProgress | None, snapshot: OutboxSnapshot) -> bool:
@@ -373,15 +402,167 @@ def _encode_ingest_body(payload: list[dict[str, Any]]) -> bytes:
     return b"[" + b",".join(_encode_json_value(event) for event in payload) + b"]"
 
 
-def _pending_event_end_offsets(path: Path, raw: bytes, source_bytes: int) -> Iterator[int]:
-    cursor = source_bytes
-    for raw_line in raw[source_bytes:].splitlines(keepends=True):
-        cursor += len(raw_line)
-        if not raw_line.strip():
-            continue
-        if not raw_line.endswith(b"\n"):
-            raise OutboxError(f"{path}: pending JSONL record is not newline-terminated")
-        yield cursor
+def _file_state(value: os.stat_result) -> _FileState:
+    return _FileState(
+        device=value.st_dev,
+        inode=value.st_ino,
+        size=value.st_size,
+        mtime_ns=value.st_mtime_ns,
+        ctime_ns=value.st_ctime_ns,
+    )
+
+
+def _bounded_lines(path: Path, handle: BinaryIO, byte_count: int) -> Iterator[bytes]:
+    remaining = byte_count
+    while remaining:
+        raw_line = handle.readline(remaining)
+        if not raw_line:
+            raise OutboxError(f"{path}: source became shorter while it was being read")
+        remaining -= len(raw_line)
+        yield raw_line
+
+
+def _parse_jsonl_line(path: Path, line_number: int, raw_line: bytes) -> Any | None:
+    try:
+        line = raw_line.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OutboxError(f"{path}: invalid utf-8") from exc
+    if not line.strip():
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise OutboxError(f"{path}:{line_number}: invalid jsonl") from exc
+
+
+def _preflight_flush_unlocked(path: Path, body_limit: int) -> _FlushSnapshot:
+    """Validate one fixed file extent without retaining its events or bytes."""
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise OutboxError(f"{path}: source cannot be read for flush") from exc
+
+    with handle:
+        initial_state = _file_state(os.fstat(handle.fileno()))
+        progress = _receipt_header(path, initial_state.size)
+        progress_bytes = progress.source_bytes if progress is not None else 0
+        progress_events = progress.event_count if progress is not None else 0
+        validator = Draft7Validator(load_schema())
+        source_hasher = hashlib.sha256()
+        progress_hasher = source_hasher.copy() if progress_bytes == 0 else None
+        progress_line_count = 0
+        cursor = 0
+        event_count = 0
+        pending_event_count = 0
+        line_number = 0
+
+        if progress is not None and progress_bytes == 0:
+            if source_hasher.hexdigest() != progress.source_sha256:
+                raise OutboxError(f"{path}: receipt prefix hash does not match the outbox")
+            if progress_events != 0:
+                raise OutboxError(f"{path}: receipt event count does not match its prefix")
+
+        for raw_line in _bounded_lines(path, handle, initial_state.size):
+            line_start = cursor
+            cursor += len(raw_line)
+            line_number += 1
+            source_hasher.update(raw_line)
+
+            if line_start < progress_bytes < cursor:
+                raise OutboxError(f"{path}: receipt ends inside a JSONL record")
+
+            event = _parse_jsonl_line(path, line_number, raw_line)
+            if event is not None:
+                is_pending = line_start >= progress_bytes
+                if is_pending and not raw_line.endswith(b"\n"):
+                    raise OutboxError(f"{path}: pending JSONL record is not newline-terminated")
+                validator.validate(event)
+                event_count += 1
+                if is_pending:
+                    pending_event_count += 1
+                    encoded_size = len(_encode_json_value(event))
+                    single_size = encoded_size + 2
+                    if single_size > body_limit:
+                        raise OutboxError(
+                            f"{path}: event {event_count} requires {single_size} request bytes, "
+                            f"exceeding max_body_bytes={body_limit}"
+                        )
+
+            if progress is not None and cursor == progress_bytes:
+                if progress_bytes > 0 and not raw_line.endswith(b"\n"):
+                    raise OutboxError(f"{path}: receipt ends inside a JSONL record")
+                if source_hasher.hexdigest() != progress.source_sha256:
+                    raise OutboxError(f"{path}: receipt prefix hash does not match the outbox")
+                if event_count != progress_events:
+                    raise OutboxError(f"{path}: receipt event count does not match its prefix")
+                progress_hasher = source_hasher.copy()
+                progress_line_count = line_number
+
+        final_state = _file_state(os.fstat(handle.fileno()))
+        try:
+            path_state = _file_state(path.stat())
+        except OSError as exc:
+            raise OutboxError(f"{path}: source cannot be verified after preflight") from exc
+        if final_state != initial_state or path_state != initial_state:
+            raise OutboxError(f"{path}: source changed while it was being preflighted")
+
+    if progress_hasher is None:
+        raise OutboxError(f"{path}: receipt ends inside a JSONL record")
+
+    source_sha256 = source_hasher.hexdigest()
+    covered = (
+        progress is not None
+        and progress.source_bytes == initial_state.size
+        and progress.event_count == event_count
+        and progress.source_sha256 == source_sha256
+    )
+    if not covered and pending_event_count == 0:
+        raise OutboxError(f"{path} contains no pending events")
+
+    return _FlushSnapshot(
+        source_bytes=initial_state.size,
+        event_count=event_count,
+        sha256=source_sha256,
+        progress=progress,
+        progress_hasher=progress_hasher,
+        progress_line_count=progress_line_count,
+        file_state=initial_state,
+    )
+
+
+def _verify_flush_snapshot_unlocked(
+    path: Path,
+    snapshot: _FlushSnapshot,
+    known_state: _FileState,
+) -> _FileState | None:
+    """Return a stable state iff the fixed snapshot remains a file prefix."""
+    current_state = _file_state(path.stat())
+    if current_state == known_state:
+        return current_state
+    if current_state.size < snapshot.source_bytes:
+        return None
+
+    with path.open("rb") as handle:
+        opened_state = _file_state(os.fstat(handle.fileno()))
+        if opened_state != current_state:
+            return None
+        source_hasher = hashlib.sha256()
+        remaining = snapshot.source_bytes
+        while remaining:
+            block = handle.read(min(remaining, HASH_READ_BYTES))
+            if not block:
+                return None
+            source_hasher.update(block)
+            remaining -= len(block)
+        final_state = _file_state(os.fstat(handle.fileno()))
+
+    if final_state != opened_state or _file_state(path.stat()) != final_state:
+        return None
+    if source_hasher.hexdigest() != snapshot.sha256:
+        return None
+    return final_state
 
 
 def post_json(url: str, payload: list[dict[str, Any]], token: str, timeout: float) -> tuple[int, str]:
@@ -390,6 +571,143 @@ def post_json(url: str, payload: list[dict[str, Any]], token: str, timeout: floa
     with httpx.Client(timeout=timeout) as client:
         response = client.post(url, content=body, headers=headers)
     return response.status_code, response.text
+
+
+def _flush_file(
+    path: Path,
+    *,
+    base_url: str,
+    token: str | None = None,
+    timeout: float = 5.0,
+    max_body_bytes: int | None = None,
+    sender: Callable[[str, list[dict[str, Any]], str, float], tuple[int, str]] | None = None,
+) -> tuple[Path, bool]:
+    body_limit = _resolve_max_body_bytes(max_body_bytes)
+    with outbox_lock(path):
+        snapshot = _preflight_flush_unlocked(path, body_limit)
+        progress = snapshot.progress
+        if (
+            progress is not None
+            and progress.source_bytes == snapshot.source_bytes
+            and progress.event_count == snapshot.event_count
+            and progress.source_sha256 == snapshot.sha256
+        ):
+            return receipt_path(path), False
+
+    resolved_token = token or token_from_env()
+    url = f"{base_url.rstrip('/')}/v1/ingest?{urlencode({'domain': DOMAIN})}"
+    send = sender or post_json
+    source_bytes = progress.source_bytes if progress is not None else 0
+    source_event_count = progress.event_count if progress is not None else 0
+    source_line_count = snapshot.progress_line_count
+    source_hasher = snapshot.progress_hasher.copy()
+    event_index = source_event_count
+    chunk: list[dict[str, Any]] = []
+    chunk_size = 2
+    chunk_end_bytes = source_bytes
+    chunk_end_event_count = source_event_count
+    chunk_end_sha256 = source_hasher.hexdigest()
+    sent_any = False
+    known_state = snapshot.file_state
+
+    def send_chunk() -> None:
+        nonlocal known_state, sent_any
+        if not chunk:
+            return
+        with outbox_lock(path):
+            try:
+                verified_state = _verify_flush_snapshot_unlocked(path, snapshot, known_state)
+            except OSError as exc:
+                raise OutboxError(f"{path}: source cannot be verified before flush") from exc
+            if verified_state is None:
+                raise OutboxError(f"{path}: source changed non-append-only before flush")
+            known_state = verified_state
+
+        status_code, response_text = send(url, list(chunk), resolved_token, timeout)
+        if not 200 <= status_code < 300:
+            detail = _bounded_http_error_detail(response_text)
+            raise OutboxError(f"flush failed for {path}: HTTP {status_code}: {detail}")
+
+        chunk_progress = ReceiptProgress(
+            source_bytes=chunk_end_bytes,
+            event_count=chunk_end_event_count,
+            source_sha256=chunk_end_sha256,
+        )
+        with outbox_lock(path):
+            try:
+                verified_state = _verify_flush_snapshot_unlocked(path, snapshot, known_state)
+            except OSError as exc:
+                raise OutboxError(
+                    f"flush succeeded for {path}, but the source cannot be verified; no receipt written"
+                ) from exc
+            if verified_state is None:
+                raise OutboxError(
+                    f"flush succeeded for {path}, but the source changed non-append-only; no receipt written"
+                )
+            known_state = verified_state
+            _write_receipt_progress(path, chunk_progress, status_code)
+        sent_any = True
+
+    with outbox_lock(path):
+        try:
+            verified_state = _verify_flush_snapshot_unlocked(path, snapshot, known_state)
+        except OSError as exc:
+            raise OutboxError(f"{path}: source cannot be verified before flush") from exc
+        if verified_state is None:
+            raise OutboxError(f"{path}: source changed non-append-only before flush")
+        known_state = verified_state
+        try:
+            source_handle = path.open("rb")
+        except OSError as exc:
+            raise OutboxError(f"{path}: source cannot be read for flush") from exc
+        if _file_state(os.fstat(source_handle.fileno())) != known_state:
+            source_handle.close()
+            raise OutboxError(f"{path}: source changed non-append-only before flush")
+        source_handle.seek(source_bytes)
+
+    cursor = source_bytes
+    line_number = source_line_count
+    with source_handle:
+        for raw_line in _bounded_lines(path, source_handle, snapshot.source_bytes - source_bytes):
+            cursor += len(raw_line)
+            line_number += 1
+            source_hasher.update(raw_line)
+            event = _parse_jsonl_line(path, line_number, raw_line)
+            if event is None:
+                continue
+            if not raw_line.endswith(b"\n"):
+                raise OutboxError(f"{path}: pending JSONL record is not newline-terminated")
+
+            encoded_size = len(_encode_json_value(event))
+            single_size = encoded_size + 2
+            if single_size > body_limit:
+                raise OutboxError(
+                    f"{path}: event {event_index + 1} requires {single_size} request bytes, "
+                    f"exceeding max_body_bytes={body_limit}"
+                )
+            candidate_size = chunk_size + encoded_size + (1 if chunk else 0)
+            if chunk and candidate_size > body_limit:
+                send_chunk()
+                chunk = []
+                chunk_size = 2
+
+            chunk.append(event)
+            chunk_size += encoded_size + (1 if len(chunk) > 1 else 0)
+            event_index += 1
+            chunk_end_event_count = event_index
+            if event_index == snapshot.event_count:
+                chunk_end_bytes = snapshot.source_bytes
+                chunk_end_sha256 = snapshot.sha256
+            else:
+                chunk_end_bytes = cursor
+                chunk_end_sha256 = source_hasher.hexdigest()
+
+    if event_index != snapshot.event_count or source_hasher.hexdigest() != snapshot.sha256:
+        raise OutboxError(f"{path}: snapshot events do not match pending JSONL records")
+    if not chunk and not sent_any:
+        raise OutboxError(f"{path} contains no pending events")
+    send_chunk()
+    return receipt_path(path), True
 
 
 def flush_file(
@@ -401,100 +719,15 @@ def flush_file(
     max_body_bytes: int | None = None,
     sender: Callable[[str, list[dict[str, Any]], str, float], tuple[int, str]] | None = None,
 ) -> Path:
-    body_limit = _resolve_max_body_bytes(max_body_bytes)
-    with outbox_lock(path):
-        snapshot = _snapshot_unlocked(path)
-        progress = _receipt_progress(path, snapshot)
-        if _receipt_covers_snapshot(progress, snapshot):
-            return receipt_path(path)
-        source_bytes = progress.source_bytes if progress is not None else 0
-        source_event_count = progress.event_count if progress is not None else 0
-
-    encoded_sizes: list[int] = []
-    for pending_index, event in enumerate(
-        snapshot.events[source_event_count:], start=source_event_count + 1
-    ):
-        encoded_size = len(_encode_json_value(event))
-        single_size = encoded_size + 2
-        if single_size > body_limit:
-            raise OutboxError(
-                f"{path}: event {pending_index} requires {single_size} request bytes, "
-                f"exceeding max_body_bytes={body_limit}"
-            )
-        encoded_sizes.append(encoded_size)
-
-    resolved_token = token or token_from_env()
-    url = f"{base_url.rstrip('/')}/v1/ingest?{urlencode({'domain': DOMAIN})}"
-    send = sender or post_json
-    event_index = source_event_count
-    chunk: list[dict[str, Any]] = []
-    chunk_size = 2
-    chunk_end_bytes = source_bytes
-    chunk_end_event_count = source_event_count
-    sent_any = False
-
-    def send_chunk() -> None:
-        nonlocal sent_any
-        if not chunk:
-            return
-        with outbox_lock(path):
-            try:
-                current_raw = path.read_bytes()
-            except OSError as exc:
-                raise OutboxError(f"{path}: source cannot be verified before flush") from exc
-            if not current_raw.startswith(snapshot.raw):
-                raise OutboxError(f"{path}: source changed non-append-only before flush")
-
-        status_code, response_text = send(url, list(chunk), resolved_token, timeout)
-        if not 200 <= status_code < 300:
-            detail = _bounded_http_error_detail(response_text)
-            raise OutboxError(f"flush failed for {path}: HTTP {status_code}: {detail}")
-
-        prefix = snapshot.raw[:chunk_end_bytes]
-        chunk_progress = ReceiptProgress(
-            source_bytes=chunk_end_bytes,
-            event_count=chunk_end_event_count,
-            source_sha256=hashlib.sha256(prefix).hexdigest(),
-        )
-        with outbox_lock(path):
-            try:
-                current_raw = path.read_bytes()
-            except OSError as exc:
-                raise OutboxError(
-                    f"flush succeeded for {path}, but the source cannot be verified; no receipt written"
-                ) from exc
-            if not current_raw.startswith(snapshot.raw):
-                raise OutboxError(
-                    f"flush succeeded for {path}, but the source changed non-append-only; no receipt written"
-                )
-            _write_receipt_progress(path, chunk_progress, status_code)
-        sent_any = True
-
-    end_offsets = _pending_event_end_offsets(path, snapshot.raw, source_bytes)
-    for end_offset in end_offsets:
-        if event_index >= len(snapshot.events):
-            raise OutboxError(f"{path}: pending JSONL records do not match the snapshot")
-        event = snapshot.events[event_index]
-        encoded_size = encoded_sizes[event_index - source_event_count]
-        event_index += 1
-
-        candidate_size = chunk_size + encoded_size + (1 if chunk else 0)
-        if chunk and candidate_size > body_limit:
-            send_chunk()
-            chunk.clear()
-            chunk_size = 2
-
-        chunk.append(event)
-        chunk_size += encoded_size + (1 if len(chunk) > 1 else 0)
-        chunk_end_event_count = event_index
-        chunk_end_bytes = len(snapshot.raw) if event_index == len(snapshot.events) else end_offset
-
-    if event_index != len(snapshot.events):
-        raise OutboxError(f"{path}: snapshot events do not match pending JSONL records")
-    if not chunk and not sent_any:
-        raise OutboxError(f"{path} contains no pending events")
-    send_chunk()
-    return receipt_path(path)
+    receipt, _ = _flush_file(
+        path,
+        base_url=base_url,
+        token=token,
+        timeout=timeout,
+        max_body_bytes=max_body_bytes,
+        sender=sender,
+    )
+    return receipt
 
 
 def flush_all(
@@ -509,15 +742,7 @@ def flush_all(
     receipts: list[Path] = []
     for path in iter_outbox_files(state_root):
         try:
-            with outbox_lock(path):
-                snapshot = _snapshot_unlocked(path)
-                progress = _receipt_progress(path, snapshot)
-                if _receipt_covers_snapshot(progress, snapshot):
-                    continue
-        except FileNotFoundError:
-            continue
-        receipts.append(
-            flush_file(
+            receipt, flushed = _flush_file(
                 path,
                 base_url=base_url,
                 token=token,
@@ -525,7 +750,10 @@ def flush_all(
                 max_body_bytes=max_body_bytes,
                 sender=sender,
             )
-        )
+        except FileNotFoundError:
+            continue
+        if flushed:
+            receipts.append(receipt)
     return receipts
 
 

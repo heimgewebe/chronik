@@ -100,6 +100,70 @@ def test_flush_file_posts_agent_ledger_domain_and_writes_bound_receipt(tmp_path)
     assert receipt_body["source_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def test_flush_file_never_uses_path_read_bytes(monkeypatch, tmp_path):
+    path = chronik_outbox.append_event(load_event(), tmp_path)
+    calls = []
+
+    def reject_read_bytes(self):
+        raise AssertionError(f"flush_file called Path.read_bytes for {self}")
+
+    monkeypatch.setattr(Path, "read_bytes", reject_read_bytes)
+
+    receipt = chronik_outbox.flush_file(
+        path,
+        base_url="http://chronik.test",
+        token="secret",
+        sender=lambda url, payload, token, timeout: (calls.append(payload) or (202, "ok")),
+    )
+
+    assert receipt.exists()
+    assert len(calls) == 1
+    assert calls[0][0]["event_id"] == load_event()["event_id"]
+
+
+def test_flush_file_streams_many_events_with_bounded_chunk_state(monkeypatch, tmp_path):
+    event = load_event()
+    event_count = 2048
+    events_per_chunk = 8
+    raw_line = encoded_event(event)
+    path = chronik_outbox.outbox_path(event, tmp_path)
+    path.parent.mkdir(parents=True)
+    with path.open("wb") as handle:
+        for _ in range(event_count):
+            handle.write(raw_line)
+
+    def reject_materialized_snapshot(*args, **kwargs):
+        raise AssertionError("flush_file used the materializing snapshot path")
+
+    monkeypatch.setattr(chronik_outbox, "_snapshot_unlocked", reject_materialized_snapshot)
+    monkeypatch.setattr(chronik_outbox, "_parse_events", reject_materialized_snapshot)
+    body_limit = len(chronik_outbox._encode_ingest_body([event] * events_per_chunk))
+    sent_events = 0
+    sender_calls = 0
+    largest_payload = 0
+
+    def bounded_sender(url, payload, token, timeout):
+        nonlocal largest_payload, sender_calls, sent_events
+        assert len(chronik_outbox._encode_ingest_body(payload)) <= body_limit
+        largest_payload = max(largest_payload, len(payload))
+        sender_calls += 1
+        sent_events += len(payload)
+        return 202, "ok"
+
+    receipt = chronik_outbox.flush_file(
+        path,
+        base_url="http://chronik.test",
+        token="secret",
+        max_body_bytes=body_limit,
+        sender=bounded_sender,
+    )
+
+    assert sent_events == event_count
+    assert sender_calls == event_count // events_per_chunk
+    assert largest_payload == events_per_chunk
+    assert json.loads(receipt.read_text(encoding="utf-8"))["event_count"] == event_count
+
+
 def test_post_json_sends_exact_body_used_for_size_accounting(monkeypatch):
     payload = [load_event(), blocked_event()]
     captured = {}
@@ -377,6 +441,71 @@ def test_non_append_change_after_send_writes_no_receipt(tmp_path):
     entry = chronik_outbox.status(tmp_path)[0]
     assert entry.events == 1
     assert entry.flushed is False
+
+
+def test_non_append_change_after_progress_does_not_advance_receipt(tmp_path):
+    events = [load_event(), blocked_event()]
+    path = chronik_outbox.append_event(events[0], tmp_path)
+    chronik_outbox.append_event(events[1], tmp_path)
+    body_limit = max(len(chronik_outbox._encode_ingest_body([event])) for event in events)
+    calls = 0
+
+    def replacing_second_sender(url, payload, token, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            path.write_bytes(encoded_event(third_event()))
+        return 202, "ok"
+
+    with pytest.raises(chronik_outbox.OutboxError, match="non-append-only"):
+        chronik_outbox.flush_file(
+            path,
+            base_url="http://chronik.test",
+            token="secret",
+            max_body_bytes=body_limit,
+            sender=replacing_second_sender,
+        )
+
+    receipt = json.loads(chronik_outbox.receipt_path(path).read_text(encoding="utf-8"))
+    assert calls == 2
+    assert receipt["event_count"] == 1
+    assert receipt["source_bytes"] == len(encoded_event(events[0]))
+    assert receipt["source_sha256"] == hashlib.sha256(encoded_event(events[0])).hexdigest()
+    assert chronik_outbox.status(tmp_path)[0].flushed is False
+
+
+def test_same_size_non_append_change_after_progress_does_not_advance_receipt(tmp_path):
+    events = [load_event(), blocked_event()]
+    replacement = third_event()
+    assert len(encoded_event(events[1])) == len(encoded_event(replacement))
+    path = chronik_outbox.append_event(events[0], tmp_path)
+    chronik_outbox.append_event(events[1], tmp_path)
+    body_limit = max(len(chronik_outbox._encode_ingest_body([event])) for event in events)
+    calls = 0
+
+    def replacing_second_sender(url, payload, token, timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            before_size = path.stat().st_size
+            path.write_bytes(encoded_event(events[0]) + encoded_event(replacement))
+            assert path.stat().st_size == before_size
+        return 202, "ok"
+
+    with pytest.raises(chronik_outbox.OutboxError, match="non-append-only"):
+        chronik_outbox.flush_file(
+            path,
+            base_url="http://chronik.test",
+            token="secret",
+            max_body_bytes=body_limit,
+            sender=replacing_second_sender,
+        )
+
+    receipt = json.loads(chronik_outbox.receipt_path(path).read_text(encoding="utf-8"))
+    assert calls == 2
+    assert receipt["event_count"] == 1
+    assert receipt["source_bytes"] == len(encoded_event(events[0]))
+    assert receipt["source_sha256"] == hashlib.sha256(encoded_event(events[0])).hexdigest()
 
 
 def test_malformed_receipt_never_authorizes_flush_or_compaction(tmp_path):
