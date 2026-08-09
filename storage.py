@@ -31,6 +31,7 @@ __all__ = [
     "StorageFullError",
     "StorageBusyError",
     "StorageRecoveryError",
+    "StorageMissingIdentityError",
     "sanitize_domain",
     "secure_filename",
     "target_filename",
@@ -72,6 +73,22 @@ class StorageBusyError(StorageError):
 
 class StorageRecoveryError(StorageError):
     """Raised when append rollback or durability cannot be established."""
+
+
+class StorageMissingIdentityError(StorageError):
+    """Raised when a verification-only identity is absent from the ledger.
+
+    Callers may use derived indexes to avoid rematerializing unchanged source
+    payloads, but those indexes must never become append authority.  This error
+    tells such callers to fail closed or revalidate the authoritative source.
+    """
+
+    def __init__(self, group_ids: Iterable[str]) -> None:
+        self.group_ids = tuple(sorted(set(group_ids)))
+        super().__init__(
+            "verification-only identities are missing from the ledger: "
+            + ", ".join(self.group_ids)
+        )
 
 
 DATA_DIR: Final[Path] = Path(
@@ -724,6 +741,9 @@ def write_payload_unique_groups(
     *,
     identity_key: str = "event_id",
     authoritative_replay: bool = False,
+    verified_existing_groups: Iterable[
+        tuple[str, Iterable[tuple[str, bytes]]]
+    ] = (),
 ) -> dict[str, object]:
     """Append grouped JSON lines through a ledger-authoritative persistent index.
 
@@ -732,6 +752,7 @@ def write_payload_unique_groups(
     the derived index and only while the newly opened ledger is empty.
     """
     materialized = []
+    materialized_verified = []
     seen_group_ids = set()
     for group_id, lines in groups:
         if not isinstance(group_id, str) or not group_id:
@@ -740,9 +761,23 @@ def write_payload_unique_groups(
             raise StorageError(f"duplicate group_id: {group_id}")
         seen_group_ids.add(group_id)
         materialized.append((group_id, list(lines)))
+    for group_id, identities in verified_existing_groups:
+        if not isinstance(group_id, str) or not group_id:
+            raise StorageError("group_id must be a non-empty string")
+        if group_id in seen_group_ids:
+            raise StorageError(f"duplicate group_id: {group_id}")
+        seen_group_ids.add(group_id)
+        verified = []
+        for identity, fingerprint in identities:
+            if not isinstance(identity, str) or not identity:
+                raise StorageError(f"missing {identity_key}")
+            if not isinstance(fingerprint, bytes) or len(fingerprint) != 40:
+                raise StorageError("invalid verification-only payload fingerprint")
+            verified.append((identity, fingerprint))
+        materialized_verified.append((group_id, verified))
 
     parsed_groups = []
-    candidate_payloads: dict[str, bytes] = {}
+    candidate_fingerprints: dict[str, bytes] = {}
     candidate_count = 0
     for group_id, lines in materialized:
         parsed = []
@@ -753,14 +788,26 @@ def write_payload_unique_groups(
                 raise StorageError("invalid JSON line") from exc
             if not identity:
                 raise StorageError(f"missing {identity_key}")
-            previous = candidate_payloads.get(identity)
+            fingerprint = _payload_fingerprint(canonical_payload)
+            previous = candidate_fingerprints.get(identity)
             if previous is None:
-                candidate_payloads[identity] = canonical_payload
-            elif previous != canonical_payload:
+                candidate_fingerprints[identity] = fingerprint
+            elif previous != fingerprint:
                 raise StorageError(f"conflicting {identity_key}: {identity}")
-            parsed.append((identity, line, _payload_fingerprint(canonical_payload)))
+            parsed.append((identity, line, fingerprint))
             candidate_count += 1
-        parsed_groups.append((group_id, parsed))
+        parsed_groups.append((group_id, parsed, False))
+    for group_id, identities in materialized_verified:
+        parsed = []
+        for identity, fingerprint in identities:
+            previous = candidate_fingerprints.get(identity)
+            if previous is None:
+                candidate_fingerprints[identity] = fingerprint
+            elif previous != fingerprint:
+                raise StorageError(f"conflicting {identity_key}: {identity}")
+            parsed.append((identity, None, fingerprint))
+            candidate_count += 1
+        parsed_groups.append((group_id, parsed, True))
 
     if candidate_count == 0:
         return {
@@ -774,11 +821,11 @@ def write_payload_unique_groups(
             "identity_index_entries_after": 0,
             "groups": [
                 {"group_id": gid, "requested": len(lines), "written": 0, "skipped": 0}
-                for gid, lines in materialized
+                for gid, lines in (*materialized, *materialized_verified)
             ],
         }
 
-    del candidate_payloads
+    del candidate_fingerprints
     try:
         target_path = safe_target_path(domain)
     except DomainError as exc:
@@ -802,7 +849,7 @@ def write_payload_unique_groups(
                 )
                 candidate_ids = [
                     identity
-                    for _, parsed in parsed_groups
+                    for _, parsed, _ in parsed_groups
                     for identity, _, _ in parsed
                 ]
                 existing = index.lookup(
@@ -813,11 +860,20 @@ def write_payload_unique_groups(
                     parse_payload=_parse_unique_payload,
                     fingerprint_payload=_payload_fingerprint,
                 )
-                for _, parsed in parsed_groups:
+                for _, parsed, _ in parsed_groups:
                     for identity, _, fingerprint in parsed:
                         previous = existing.get(identity)
                         if previous is not None and previous != fingerprint:
                             raise StorageError(f"conflicting {identity_key}: {identity}")
+
+                missing_verified_groups = [
+                    group_id
+                    for group_id, parsed, verification_only in parsed_groups
+                    if verification_only
+                    and any(identity not in existing for identity, _, _ in parsed)
+                ]
+                if missing_verified_groups:
+                    raise StorageMissingIdentityError(missing_verified_groups)
 
                 total_written = 0
                 total_skipped = 0
@@ -825,14 +881,20 @@ def write_payload_unique_groups(
                 append_lines: list[str] = []
                 append_rows: list[tuple[str, bytes]] = []
                 planned = set(existing)
-                for group_id, parsed in parsed_groups:
+                for group_id, parsed, verification_only in parsed_groups:
                     group_written = 0
                     group_skipped = 0
                     for identity, line, fingerprint in parsed:
+                        if verification_only:
+                            group_skipped += 1
+                            total_skipped += 1
+                            continue
                         if identity in planned:
                             group_skipped += 1
                             total_skipped += 1
                             continue
+                        if line is None:
+                            raise StorageError("verification-only payload cannot be appended")
                         append_lines.append(line)
                         append_rows.append((identity, fingerprint))
                         planned.add(identity)

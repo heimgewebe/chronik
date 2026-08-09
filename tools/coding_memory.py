@@ -39,6 +39,16 @@ OUTBOX_SUMMARY_KEYS = (
     "identity_index_mode",
     "identity_index_full_rebuild",
     "identity_index_entries_after",
+    "source_index_mode",
+    "sources_reused",
+    "sources_revalidated",
+    "sources_changed",
+    "sources_added",
+    "sources_removed",
+    "source_bytes_read",
+    "source_bytes_hashed",
+    "source_events_validated",
+    "elapsed_seconds",
 )
 OUTBOX_SUMMARY_ERROR_LIMIT = 3
 OUTBOX_SUMMARY_SOURCE_LIMIT = 160
@@ -233,6 +243,16 @@ def main(argv=None):
     compact.add_argument("--outbox-root", type=Path, default=Path.home() / ".local/state")
     compact.add_argument("--receipt-dir", type=Path)
     compact.add_argument("--grace-seconds", type=int, default=86400)
+    compact.add_argument(
+        "--max-sources",
+        type=int,
+        default=coding_memory.DEFAULT_COMPACTION_MAX_SOURCES,
+    )
+    compact.add_argument(
+        "--max-bytes",
+        type=int,
+        default=coding_memory.DEFAULT_COMPACTION_MAX_BYTES,
+    )
     compact.add_argument("--apply", action="store_true")
 
     summary = sub.add_parser("summary")
@@ -286,6 +306,8 @@ def main(argv=None):
                     outbox_root=args.outbox_root,
                     receipt_dir=receipt_dir.expanduser(),
                     grace_seconds=args.grace_seconds,
+                    max_sources=args.max_sources,
+                    max_bytes=args.max_bytes,
                     apply=args.apply,
                 )
             elif args.command == "query":

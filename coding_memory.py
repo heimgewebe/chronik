@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import tempfile
+import time
 from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -37,6 +38,10 @@ GRABOWSKI_BUNDLE_MANIFEST_SCHEMA = "chronik-grabowski-outbox-bundle-manifest.v1"
 GRABOWSKI_ARCHIVE_INDEX_FILENAME = "archive-index.v1.json"
 GRABOWSKI_ARCHIVE_INDEX_SCHEMA = "chronik-grabowski-outbox-archive-index.v1"
 GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME = ".writer-compaction.lock"
+GRABOWSKI_SOURCE_INDEX_FILENAME = "source-index.v1.json"
+GRABOWSKI_SOURCE_INDEX_SCHEMA = "chronik-grabowski-source-index.v1"
+DEFAULT_COMPACTION_MAX_SOURCES = 256
+DEFAULT_COMPACTION_MAX_BYTES = 64 * 1024 * 1024
 
 
 def canonical_bytes(value: Any) -> bytes:
@@ -45,6 +50,13 @@ def canonical_bytes(value: Any) -> bytes:
 
 def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _payload_fingerprint(value: dict[str, Any]) -> bytes:
+    canonical = canonical_bytes(value)
+    return len(canonical).to_bytes(8, "big", signed=False) + hashlib.sha256(
+        canonical
+    ).digest()
 
 
 def utc_now() -> str:
@@ -143,8 +155,40 @@ def _read_jsonl_snapshot(path: Path) -> tuple[bytes, list[dict[str, Any]]]:
     return raw, _parse_jsonl_snapshot(path, raw)
 
 
-def _file_identity(value: os.stat_result) -> tuple[int, int, int, int]:
-    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+def _file_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+_FILE_IDENTITY_FIELDS = (
+    "device",
+    "inode",
+    "mode",
+    "links",
+    "uid",
+    "size",
+    "mtime_ns",
+    "ctime_ns",
+)
+
+
+def _file_identity_from_document(value: object) -> tuple[int, ...]:
+    if not isinstance(value, dict) or set(value) != set(_FILE_IDENTITY_FIELDS):
+        raise ValueError("invalid source-index file identity")
+    identity = tuple(value[field] for field in _FILE_IDENTITY_FIELDS)
+    if any(type(item) is not int or item < 0 for item in identity):
+        raise ValueError("invalid source-index file identity values")
+    if not stat.S_ISREG(identity[2]):
+        raise ValueError("source-index identity is not a regular file")
+    return identity
 
 
 def _legacy_receipt_path(source: Path, receipt_dir: Path) -> Path:
@@ -186,6 +230,31 @@ def _load_receipt(path: Path) -> dict[str, Any] | None:
     return value
 
 
+def _load_previous_receipt(
+    source: Path,
+    *,
+    receipt_dir: Path,
+    source_sha256: str,
+) -> tuple[Path, Path, dict[str, Any] | None]:
+    receipt_path = _receipt_path(source, receipt_dir, source_sha256)
+    previous_receipt_path = receipt_path
+    try:
+        previous = _load_receipt(receipt_path)
+    except ValueError:
+        previous = None
+    if previous is None and not receipt_path.exists():
+        legacy_path = _legacy_receipt_path(source, receipt_dir)
+        try:
+            legacy = _load_receipt(legacy_path)
+        except ValueError:
+            legacy = None
+        if legacy is not None:
+            previous = legacy
+            previous_receipt_path = legacy_path
+            receipt_path = legacy_path
+    return receipt_path, previous_receipt_path, previous
+
+
 def _validate_grabowski_source(event: dict[str, Any]) -> None:
     validate_event(event)
     source = event.get("source")
@@ -203,7 +272,7 @@ def _prepare_grabowski_source_bytes(
     *,
     receipt_dir: Path,
     source_origin: str,
-    source_identity: tuple[int, int, int, int] | None = None,
+    source_identity: tuple[int, ...] | None = None,
     source_mtime_ns: int | None = None,
     bundle_manifest_path: Path | None = None,
 ) -> dict[str, Any]:
@@ -213,27 +282,21 @@ def _prepare_grabowski_source_bytes(
     for event in events:
         _validate_grabowski_source(event)
     source_sha256 = sha256_bytes(raw)
-    receipt_path = _receipt_path(source, receipt_dir, source_sha256)
-    previous_receipt_path = receipt_path
-    try:
-        previous = _load_receipt(receipt_path)
-    except ValueError:
-        previous = None
-    if previous is None and not receipt_path.exists():
-        legacy_path = _legacy_receipt_path(source, receipt_dir)
-        try:
-            legacy = _load_receipt(legacy_path)
-        except ValueError:
-            legacy = None
-        if legacy is not None:
-            previous = legacy
-            previous_receipt_path = legacy_path
-            receipt_path = legacy_path
+    receipt_path, previous_receipt_path, previous = _load_previous_receipt(
+        source,
+        receipt_dir=receipt_dir,
+        source_sha256=source_sha256,
+    )
     return {
         "source": source,
         "raw": raw,
         "events": events,
         "source_sha256": source_sha256,
+        "source_bytes": len(raw),
+        "event_ids": [event["event_id"] for event in events],
+        "event_fingerprints": [
+            (event["event_id"], _payload_fingerprint(event)) for event in events
+        ],
         "receipt_path": receipt_path,
         "previous_receipt_path": previous_receipt_path,
         "previous_receipt": previous,
@@ -246,9 +309,11 @@ def _prepare_grabowski_source_bytes(
 
 
 def _prepare_grabowski_outbox_source(source: Path, *, receipt_dir: Path) -> dict[str, Any]:
-    before = source.stat()
+    before = source.lstat()
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"outbox source must be a regular file: {source}")
     raw = source.read_bytes()
-    after = source.stat()
+    after = source.lstat()
     if _file_identity(before) != _file_identity(after):
         raise ValueError(f"outbox source changed while reading: {source}")
     return _prepare_grabowski_source_bytes(
@@ -261,6 +326,26 @@ def _prepare_grabowski_outbox_source(source: Path, *, receipt_dir: Path) -> dict
     )
 
 
+def _prepared_event_ids(prepared: dict[str, Any]) -> list[str]:
+    event_ids = prepared.get("event_ids")
+    if not isinstance(event_ids, list) or not all(
+        isinstance(event_id, str) and event_id for event_id in event_ids
+    ):
+        raise ValueError("prepared source has invalid event IDs")
+    return event_ids
+
+
+def _prepared_event_count(prepared: dict[str, Any]) -> int:
+    return len(_prepared_event_ids(prepared))
+
+
+def _prepared_source_bytes(prepared: dict[str, Any]) -> int:
+    source_bytes = prepared.get("source_bytes")
+    if type(source_bytes) is not int or source_bytes < 1:
+        raise ValueError("prepared source has invalid byte count")
+    return source_bytes
+
+
 def _receipt_matches_prepared_source(
     prepared: dict[str, Any], receipt: dict[str, Any] | None
 ) -> bool:
@@ -268,17 +353,17 @@ def _receipt_matches_prepared_source(
     if not isinstance(receipt, dict):
         return False
     source = prepared["source"]
-    raw = prepared["raw"]
-    events = prepared["events"]
+    event_ids = _prepared_event_ids(prepared)
+    source_bytes = _prepared_source_bytes(prepared)
     expected = {
         "schema_version": "chronik-grabowski-outbox-import.v1",
         "domain": DOMAIN,
         "source_path": str(source.resolve()),
         "source_sha256": prepared["source_sha256"],
-        "source_bytes": len(raw),
+        "source_bytes": source_bytes,
         "selection_contract": sorted(HIGH_VALUE_KINDS),
-        "event_ids": sorted(event["event_id"] for event in events),
-        "requested": len(events),
+        "event_ids": sorted(event_ids),
+        "requested": len(event_ids),
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
@@ -293,7 +378,7 @@ def _receipt_matches_prepared_source(
         value = receipt.get(key)
         if type(value) is not int or value < 0:
             return False
-    if receipt["imported"] + receipt["skipped_existing"] != len(events):
+    if receipt["imported"] + receipt["skipped_existing"] != len(event_ids):
         return False
     recorded_at = receipt.get("recorded_at")
     if not isinstance(recorded_at, str):
@@ -308,6 +393,376 @@ def _receipt_matches_prepared_source(
     unsigned = dict(receipt)
     unsigned.pop("receipt_sha256", None)
     return claimed_digest == sha256_bytes(canonical_bytes(unsigned))
+
+
+def _source_index_path(receipt_dir: Path) -> Path:
+    return receipt_dir / GRABOWSKI_SOURCE_INDEX_FILENAME
+
+
+def _validate_source_index_event_fingerprints(value: object) -> list[tuple[str, bytes]]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("source-index event fingerprints must be a non-empty list")
+    result: list[tuple[str, bytes]] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, dict) or set(item) != {"event_id", "fingerprint"}:
+            raise ValueError("invalid source-index event fingerprint")
+        event_id = item.get("event_id")
+        fingerprint_hex = item.get("fingerprint")
+        if (
+            not isinstance(event_id, str)
+            or not event_id
+            or event_id in seen
+            or not isinstance(fingerprint_hex, str)
+            or len(fingerprint_hex) != 80
+        ):
+            raise ValueError("invalid source-index event fingerprint values")
+        try:
+            fingerprint = bytes.fromhex(fingerprint_hex)
+        except ValueError as exc:
+            raise ValueError("invalid source-index payload fingerprint") from exc
+        if len(fingerprint) != 40:
+            raise ValueError("invalid source-index payload fingerprint length")
+        seen.add(event_id)
+        result.append((event_id, fingerprint))
+    return result
+
+
+def _validate_source_index_source_record(
+    value: object,
+    *,
+    source_dir: Path,
+    loose: bool,
+) -> dict[str, Any]:
+    expected = {
+        "source_path",
+        "source_sha256",
+        "source_bytes",
+        "event_fingerprints",
+    }
+    if loose:
+        expected.add("source_identity")
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("invalid source-index source fields")
+    source_path = value.get("source_path")
+    if not isinstance(source_path, str):
+        raise ValueError("invalid source-index source path")
+    source = Path(source_path)
+    resolved_dir = source_dir.resolve()
+    if (
+        not source.is_absolute()
+        or source.parent != resolved_dir
+        or source.name in {"", ".", ".."}
+        or not source.name.endswith(".jsonl")
+    ):
+        raise ValueError("source-index source escapes the outbox directory")
+    source_sha256 = value.get("source_sha256")
+    if (
+        not isinstance(source_sha256, str)
+        or len(source_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in source_sha256)
+    ):
+        raise ValueError("invalid source-index source digest")
+    source_bytes = value.get("source_bytes")
+    if type(source_bytes) is not int or source_bytes < 1:
+        raise ValueError("invalid source-index source byte count")
+    fingerprints = _validate_source_index_event_fingerprints(
+        value.get("event_fingerprints")
+    )
+    validated = dict(value)
+    validated["_fingerprints"] = fingerprints
+    if loose:
+        validated["_identity"] = _file_identity_from_document(
+            value.get("source_identity")
+        )
+    return validated
+
+
+def _validate_source_index_bundle_record(
+    value: object,
+    *,
+    source_dir: Path,
+    bundle_dir: Path,
+) -> dict[str, Any]:
+    expected = {
+        "manifest_path",
+        "manifest_identity",
+        "bundle_path",
+        "bundle_identity",
+        "metadata",
+        "sources",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("invalid source-index bundle fields")
+    manifest_path = value.get("manifest_path")
+    bundle_path = value.get("bundle_path")
+    resolved_bundle_dir = bundle_dir.resolve()
+    if not isinstance(manifest_path, str) or not isinstance(bundle_path, str):
+        raise ValueError("invalid source-index bundle paths")
+    manifest = Path(manifest_path)
+    bundle = Path(bundle_path)
+    if (
+        not manifest.is_absolute()
+        or manifest.parent != resolved_bundle_dir
+        or not manifest.name.endswith(".manifest.json")
+        or not bundle.is_absolute()
+        or bundle.parent != resolved_bundle_dir
+        or not bundle.name.endswith(".bundle.jsonl")
+    ):
+        raise ValueError("source-index bundle escapes the bundle directory")
+    manifest_identity = _file_identity_from_document(value.get("manifest_identity"))
+    bundle_identity = _file_identity_from_document(value.get("bundle_identity"))
+    raw_sources = value.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        raise ValueError("source-index bundle has no sources")
+    sources = [
+        _validate_source_index_source_record(
+            item,
+            source_dir=source_dir,
+            loose=False,
+        )
+        for item in raw_sources
+    ]
+    metadata = value.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("invalid source-index bundle metadata")
+    if (
+        metadata.get("manifest_path") != manifest_path
+        or metadata.get("bundle_path") != bundle_path
+        or metadata.get("source_count") != len(sources)
+        or metadata.get("event_count")
+        != sum(len(item["_fingerprints"]) for item in sources)
+    ):
+        raise ValueError("source-index bundle inventory mismatch")
+    validated = dict(value)
+    validated["_manifest_identity"] = manifest_identity
+    validated["_bundle_identity"] = bundle_identity
+    validated["_sources"] = sources
+    return validated
+
+
+def _load_grabowski_source_index(
+    path: Path,
+    *,
+    source_dir: Path,
+    bundle_dir: Path,
+) -> tuple[dict[str, Any] | None, int, str]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, 0, "rebuild_missing"
+    except OSError:
+        return None, 0, "rebuild_invalid"
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+    ):
+        return None, 0, "rebuild_invalid"
+    try:
+        raw, _ = _read_immutable_artifact_snapshot(path, label="source index")
+        if not raw.endswith(b"\n"):
+            raise ValueError("incomplete source index")
+        document = json.loads(raw)
+        expected = {
+            "schema_version",
+            "source_dir",
+            "selection_contract",
+            "loose_sources",
+            "bundles",
+            "recorded_at",
+            "historical_only",
+            "does_not_establish",
+            "index_sha256",
+        }
+        if not isinstance(document, dict) or set(document) != expected:
+            raise ValueError("invalid source-index fields")
+        claimed = document.get("index_sha256")
+        unsigned = dict(document)
+        unsigned.pop("index_sha256")
+        if (
+            document.get("schema_version") != GRABOWSKI_SOURCE_INDEX_SCHEMA
+            or document.get("source_dir") != str(source_dir.resolve())
+            or document.get("selection_contract") != sorted(HIGH_VALUE_KINDS)
+            or document.get("historical_only") is not True
+            or document.get("does_not_establish") != DOES_NOT_ESTABLISH
+            or not isinstance(claimed, str)
+            or claimed != sha256_bytes(canonical_bytes(unsigned))
+        ):
+            raise ValueError("source-index contract or digest mismatch")
+        recorded_at = document.get("recorded_at")
+        if not isinstance(recorded_at, str):
+            raise ValueError("invalid source-index timestamp")
+        _parse_timestamp(recorded_at, field="source_index.recorded_at")
+        raw_loose = document.get("loose_sources")
+        raw_bundles = document.get("bundles")
+        if not isinstance(raw_loose, list) or not isinstance(raw_bundles, list):
+            raise ValueError("invalid source-index inventories")
+        loose = [
+            _validate_source_index_source_record(
+                item,
+                source_dir=source_dir,
+                loose=True,
+            )
+            for item in raw_loose
+        ]
+        bundles = [
+            _validate_source_index_bundle_record(
+                item,
+                source_dir=source_dir,
+                bundle_dir=bundle_dir,
+            )
+            for item in raw_bundles
+        ]
+        loose_paths = [item["source_path"] for item in loose]
+        manifest_paths = [item["manifest_path"] for item in bundles]
+        if loose_paths != sorted(set(loose_paths)) or manifest_paths != sorted(
+            set(manifest_paths)
+        ):
+            raise ValueError("source-index inventories are not unique and sorted")
+        document["_loose_sources"] = loose
+        document["_bundles"] = bundles
+        return document, len(raw), "steady"
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None, int(info.st_size), "rebuild_invalid"
+
+
+def _source_index_source_record(prepared: dict[str, Any], *, loose: bool) -> dict[str, Any]:
+    record = {
+        "source_path": str(prepared["source"].resolve()),
+        "source_sha256": prepared["source_sha256"],
+        "source_bytes": _prepared_source_bytes(prepared),
+        "event_fingerprints": [
+            {"event_id": event_id, "fingerprint": fingerprint.hex()}
+            for event_id, fingerprint in prepared["event_fingerprints"]
+        ],
+    }
+    if loose:
+        identity = prepared.get("source_identity")
+        if not isinstance(identity, tuple) or len(identity) != len(_FILE_IDENTITY_FIELDS):
+            raise ValueError("loose source lacks a stable file identity")
+        record["source_identity"] = dict(zip(_FILE_IDENTITY_FIELDS, identity))
+    return record
+
+
+def _source_index_bundle_record(
+    prepared_sources: list[dict[str, Any]], metadata: dict[str, Any]
+) -> dict[str, Any]:
+    public_metadata = {
+        key: metadata[key]
+        for key in (
+            "manifest_path",
+            "manifest_sha256",
+            "bundle_path",
+            "bundle_sha256",
+            "bundle_bytes",
+            "source_count",
+            "event_count",
+            "sources",
+        )
+    }
+    return {
+        "manifest_path": metadata["manifest_path"],
+        "manifest_identity": metadata["manifest_identity"],
+        "bundle_path": metadata["bundle_path"],
+        "bundle_identity": metadata["bundle_identity"],
+        "metadata": public_metadata,
+        "sources": [
+            _source_index_source_record(prepared, loose=False)
+            for prepared in prepared_sources
+        ],
+    }
+
+
+def _cached_prepared_source(
+    record: dict[str, Any],
+    *,
+    receipt_dir: Path,
+    source_origin: str,
+    bundle_manifest_path: Path | None = None,
+) -> dict[str, Any]:
+    source = Path(record["source_path"])
+    source_sha256 = record["source_sha256"]
+    receipt_path, previous_receipt_path, previous = _load_previous_receipt(
+        source,
+        receipt_dir=receipt_dir,
+        source_sha256=source_sha256,
+    )
+    fingerprints = list(record["_fingerprints"])
+    return {
+        "source": source,
+        "raw": None,
+        "events": None,
+        "source_sha256": source_sha256,
+        "source_bytes": record["source_bytes"],
+        "event_ids": [event_id for event_id, _ in fingerprints],
+        "event_fingerprints": fingerprints,
+        "receipt_path": receipt_path,
+        "previous_receipt_path": previous_receipt_path,
+        "previous_receipt": previous,
+        "source_unchanged": previous is not None
+        and previous.get("source_sha256") == source_sha256,
+        "source_origin": source_origin,
+        "source_identity": record.get("_identity"),
+        "source_mtime_ns": (
+            record["_identity"][-2] if source_origin == "loose" else None
+        ),
+        "bundle_manifest_path": bundle_manifest_path,
+        "source_index_cached": True,
+    }
+
+
+def _file_matches_source_index(path: Path, expected: tuple[int, ...]) -> bool:
+    try:
+        current = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(current.st_mode) and _file_identity(current) == expected
+
+
+def _source_index_semantic(document: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: document[key]
+        for key in (
+            "schema_version",
+            "source_dir",
+            "selection_contract",
+            "loose_sources",
+            "bundles",
+            "historical_only",
+            "does_not_establish",
+        )
+    }
+
+
+def _publish_grabowski_source_index(
+    path: Path,
+    *,
+    source_dir: Path,
+    loose_sources: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
+    previous: dict[str, Any] | None,
+) -> tuple[bool, int]:
+    semantic = {
+        "schema_version": GRABOWSKI_SOURCE_INDEX_SCHEMA,
+        "source_dir": str(source_dir.resolve()),
+        "selection_contract": sorted(HIGH_VALUE_KINDS),
+        "loose_sources": sorted(loose_sources, key=lambda item: item["source_path"]),
+        "bundles": sorted(bundles, key=lambda item: item["manifest_path"]),
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+    if previous is not None and _source_index_semantic(previous) == semantic:
+        return False, int(path.stat().st_size)
+    document = {
+        **semantic,
+        "recorded_at": utc_now(),
+    }
+    document["index_sha256"] = sha256_bytes(canonical_bytes(document))
+    raw = json.dumps(document, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    _atomic_write(path, raw)
+    _fsync_directory(path.parent)
+    return True, len(raw)
 
 
 
@@ -446,7 +901,7 @@ def _load_grabowski_bundle(
     source_dir: Path,
     receipt_dir: Path,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    manifest_raw = _read_immutable_artifact(
+    manifest_raw, manifest_identity = _read_immutable_artifact_snapshot(
         manifest_path, label="bundle manifest"
     )
     if not manifest_raw.endswith(b"\n"):
@@ -504,7 +959,9 @@ def _load_grabowski_bundle(
     bundle_path = manifest_path.parent / bundle_file
     if bundle_path.parent.resolve() != manifest_path.parent.resolve():
         raise ValueError(f"bundle path escapes bundle directory: {manifest_path}")
-    bundle_raw = _read_immutable_artifact(bundle_path, label="bundle file")
+    bundle_raw, bundle_identity = _read_immutable_artifact_snapshot(
+        bundle_path, label="bundle file"
+    )
     bundle_bytes = manifest.get("bundle_bytes")
     if type(bundle_bytes) is not int or bundle_bytes < 1 or bundle_bytes != len(bundle_raw):
         raise ValueError(f"bundle byte count mismatch: {bundle_path}")
@@ -560,6 +1017,9 @@ def _load_grabowski_bundle(
         "source_count": source_count,
         "event_count": event_count,
         "sources": validated_records,
+        "manifest_bytes": len(manifest_raw),
+        "manifest_identity": dict(zip(_FILE_IDENTITY_FIELDS, manifest_identity)),
+        "bundle_identity": dict(zip(_FILE_IDENTITY_FIELDS, bundle_identity)),
     }
 
 
@@ -805,8 +1265,11 @@ def _merge_prepared_grabowski_sources(
         if previous is None:
             merged[key] = prepared
             continue
-        if previous["raw"] != prepared["raw"]:
-            raise ValueError(f"source SHA-256 collision: {source_path}")
+        if (
+            _prepared_source_bytes(previous) != _prepared_source_bytes(prepared)
+            or previous["event_fingerprints"] != prepared["event_fingerprints"]
+        ):
+            raise ValueError(f"source SHA-256 collision or cache drift: {source_path}")
         if (
             previous.get("source_origin") == "bundle"
             and prepared.get("source_origin") == "loose"
@@ -850,7 +1313,9 @@ def _ensure_bundle_directory(source_dir: Path, bundle_dir: Path) -> None:
     _fsync_directory(source_dir)
 
 
-def _read_immutable_artifact(path: Path, *, label: str) -> bytes:
+def _read_immutable_artifact_snapshot(
+    path: Path, *, label: str
+) -> tuple[bytes, tuple[int, ...]]:
     try:
         before = path.lstat()
     except OSError as exc:
@@ -864,6 +1329,11 @@ def _read_immutable_artifact(path: Path, *, label: str) -> bytes:
         raise ValueError(f"cannot read {label}: {path}") from exc
     if _file_identity(before) != _file_identity(after):
         raise ValueError(f"{label} changed while reading: {path}")
+    return raw, _file_identity(after)
+
+
+def _read_immutable_artifact(path: Path, *, label: str) -> bytes:
+    raw, _ = _read_immutable_artifact_snapshot(path, label=label)
     return raw
 
 
@@ -915,9 +1385,11 @@ def _source_still_matches(prepared: dict[str, Any]) -> bool:
     if expected_identity is None:
         return False
     try:
-        before = source.stat()
+        before = source.lstat()
+        if not stat.S_ISREG(before.st_mode):
+            return False
         raw = source.read_bytes()
-        after = source.stat()
+        after = source.lstat()
     except OSError:
         return False
     return (
@@ -940,14 +1412,14 @@ def _write_grabowski_outbox_receipt(
     target_records_scanned: int,
 ) -> dict[str, Any]:
     source = prepared["source"]
-    raw = prepared["raw"]
-    events = prepared["events"]
+    event_ids = _prepared_event_ids(prepared)
+    source_bytes = _prepared_source_bytes(prepared)
     receipt_path = prepared["receipt_path"]
     previous_receipt = prepared.get("previous_receipt")
     if (
         prepared["source_unchanged"]
         and written == 0
-        and skipped == len(events)
+        and skipped == len(event_ids)
         and prepared.get("previous_receipt_path") == receipt_path
         and _receipt_matches_prepared_source(prepared, previous_receipt)
     ):
@@ -987,10 +1459,10 @@ def _write_grabowski_outbox_receipt(
         "domain": DOMAIN,
         "source_path": str(source.resolve()),
         "source_sha256": prepared["source_sha256"],
-        "source_bytes": len(raw),
+        "source_bytes": source_bytes,
         "selection_contract": sorted(HIGH_VALUE_KINDS),
-        "event_ids": sorted(event["event_id"] for event in events),
-        "requested": len(events),
+        "event_ids": sorted(event_ids),
+        "requested": len(event_ids),
         "imported": written,
         "skipped_existing": skipped,
         "batch_target_scans": target_scans,
@@ -1025,13 +1497,24 @@ def _import_prepared_grabowski_sources(
     *,
     authoritative_replay: bool = False,
 ) -> tuple[list[dict[str, Any]], dict[str, object], list[tuple[str, Exception]]]:
+    materialized_groups: list[tuple[str, list[str]]] = []
+    verified_existing_groups: list[tuple[str, list[tuple[str, bytes]]]] = []
+    for index, prepared in enumerate(prepared_sources):
+        group_id = str(index)
+        if prepared.get("source_index_cached") is True:
+            verified_existing_groups.append(
+                (group_id, list(prepared["event_fingerprints"]))
+            )
+            continue
+        events = prepared.get("events")
+        if not isinstance(events, list):
+            raise storage.StorageError("validated source events are unavailable")
+        materialized_groups.append((group_id, _envelope_lines(events)))
     grouped = storage.write_payload_unique_groups(
         DOMAIN,
-        [
-            (str(index), _envelope_lines(prepared["events"]))
-            for index, prepared in enumerate(prepared_sources)
-        ],
+        materialized_groups,
         authoritative_replay=authoritative_replay,
+        verified_existing_groups=verified_existing_groups,
     )
     raw_group_results = grouped.get("groups")
     if not isinstance(raw_group_results, list):
@@ -1088,35 +1571,192 @@ def import_grabowski_outbox_file(source: Path, *, receipt_dir: Path) -> dict[str
 
 
 def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str, Any]:
+    import_started_ns = time.perf_counter_ns()
+    phase_ns: Counter[str] = Counter()
+    counters: Counter[str] = Counter()
+
+    @contextmanager
+    def measured_phase(name: str):
+        started_ns = time.perf_counter_ns()
+        try:
+            yield
+        finally:
+            phase_ns[name] += time.perf_counter_ns() - started_ns
+
     source_dir = outbox_root.expanduser() / "grabowski" / "chronik-outbox"
     bundle_dir = source_dir / GRABOWSKI_BUNDLE_DIRNAME
-    sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
-    manifests = sorted(bundle_dir.glob("*.manifest.json")) if bundle_dir.is_dir() else []
-    bundle_files = sorted(bundle_dir.glob("*.bundle.jsonl")) if bundle_dir.is_dir() else []
+    source_index_path = _source_index_path(receipt_dir)
+    with measured_phase("inventory"):
+        sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
+        manifests = (
+            sorted(bundle_dir.glob("*.manifest.json"))
+            if bundle_dir.is_dir()
+            else []
+        )
+        bundle_files = (
+            sorted(bundle_dir.glob("*.bundle.jsonl"))
+            if bundle_dir.is_dir()
+            else []
+        )
+    counters["loose_sources_discovered"] = len(sources)
+    counters["bundle_manifests_discovered"] = len(manifests)
+    counters["bundle_files_discovered"] = len(bundle_files)
+
+    target_path = storage.safe_target_path(DOMAIN)
+    target_missing_or_empty = not target_path.exists() or target_path.stat().st_size == 0
+    with measured_phase("source_index_load"):
+        source_index, source_index_bytes, source_index_mode = (
+            _load_grabowski_source_index(
+                source_index_path,
+                source_dir=source_dir,
+                bundle_dir=bundle_dir,
+            )
+        )
+    counters["source_index_bytes_read"] = source_index_bytes
+    if source_index_mode == "rebuild_invalid":
+        counters["source_index_invalid"] = 1
+    cache_allowed = source_index is not None and not target_missing_or_empty
+    if source_index is not None and target_missing_or_empty:
+        source_index_mode = "authoritative_rebuild"
+
+    cached_loose = {
+        item["source_path"]: item
+        for item in (source_index or {}).get("_loose_sources", [])
+    }
+    cached_bundles = {
+        item["manifest_path"]: item
+        for item in (source_index or {}).get("_bundles", [])
+    }
     all_prepared: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
     bundle_metadata: list[dict[str, Any]] = []
+    loose_index_records: list[dict[str, Any]] = []
+    bundle_index_records: list[dict[str, Any]] = []
     referenced_bundle_paths: set[str] = set()
-    for source in sources:
-        try:
-            all_prepared.append(
-                _prepare_grabowski_outbox_source(source, receipt_dir=receipt_dir)
-            )
-        except (OSError, ValueError, storage.StorageError) as exc:
-            errors.append({"source_path": str(source), "error": str(exc)})
-    for manifest_path in manifests:
-        try:
-            bundled, metadata = _load_grabowski_bundle(
-                manifest_path,
-                source_dir=source_dir,
-                receipt_dir=receipt_dir,
-            )
-            all_prepared.extend(bundled)
-            bundle_metadata.append(metadata)
-            referenced_bundle_paths.add(str(Path(metadata["bundle_path"]).resolve()))
-        except (OSError, ValueError, storage.StorageError) as exc:
-            errors.append({"source_path": str(manifest_path), "error": str(exc)})
+    with measured_phase("source_discovery"):
+        for source in sources:
+            resolved_source = str(source.resolve())
+            cached = cached_loose.get(resolved_source)
+            counters["source_artifacts_metadata_checked"] += 1
+            try:
+                if (
+                    cache_allowed
+                    and cached is not None
+                    and _file_matches_source_index(source, cached["_identity"])
+                ):
+                    prepared = _cached_prepared_source(
+                        cached,
+                        receipt_dir=receipt_dir,
+                        source_origin="loose",
+                    )
+                    counters["sources_reused"] += 1
+                else:
+                    if cached is None:
+                        counters["sources_added"] += 1
+                    else:
+                        counters["sources_changed"] += 1
+                    prepared = _prepare_grabowski_outbox_source(
+                        source, receipt_dir=receipt_dir
+                    )
+                    counters["sources_revalidated"] += 1
+                    counters["source_bytes_read"] += _prepared_source_bytes(prepared)
+                    counters["source_bytes_hashed"] += _prepared_source_bytes(prepared)
+                    counters["source_events_validated"] += _prepared_event_count(prepared)
+                all_prepared.append(prepared)
+                loose_index_records.append(
+                    _source_index_source_record(prepared, loose=True)
+                )
+            except (OSError, ValueError, storage.StorageError) as exc:
+                errors.append({"source_path": str(source), "error": str(exc)})
+        for manifest_path in manifests:
+            resolved_manifest = str(manifest_path.resolve())
+            cached = cached_bundles.get(resolved_manifest)
+            counters["source_artifacts_metadata_checked"] += 1
+            try:
+                cached_bundle_path = (
+                    Path(cached["bundle_path"]) if cached is not None else None
+                )
+                bundle_cache_hit = (
+                    cache_allowed
+                    and cached is not None
+                    and _file_matches_source_index(
+                        manifest_path, cached["_manifest_identity"]
+                    )
+                    and cached_bundle_path is not None
+                    and _file_matches_source_index(
+                        cached_bundle_path, cached["_bundle_identity"]
+                    )
+                )
+                counters["source_artifacts_metadata_checked"] += 1
+                if bundle_cache_hit:
+                    bundled = [
+                        _cached_prepared_source(
+                            item,
+                            receipt_dir=receipt_dir,
+                            source_origin="bundle",
+                            bundle_manifest_path=manifest_path,
+                        )
+                        for item in cached["_sources"]
+                    ]
+                    metadata = dict(cached["metadata"])
+                    bundle_index_record = {
+                        key: cached[key]
+                        for key in (
+                            "manifest_path",
+                            "manifest_identity",
+                            "bundle_path",
+                            "bundle_identity",
+                            "metadata",
+                            "sources",
+                        )
+                    }
+                    counters["sources_reused"] += len(bundled)
+                else:
+                    bundled, loaded_metadata = _load_grabowski_bundle(
+                        manifest_path,
+                        source_dir=source_dir,
+                        receipt_dir=receipt_dir,
+                    )
+                    metadata = {
+                        key: loaded_metadata[key]
+                        for key in (
+                            "manifest_path",
+                            "manifest_sha256",
+                            "bundle_path",
+                            "bundle_sha256",
+                            "bundle_bytes",
+                            "source_count",
+                            "event_count",
+                            "sources",
+                        )
+                    }
+                    bundle_index_record = _source_index_bundle_record(
+                        bundled, loaded_metadata
+                    )
+                    if cached is None:
+                        counters["sources_added"] += len(bundled)
+                    else:
+                        counters["sources_changed"] += len(bundled)
+                    counters["sources_revalidated"] += len(bundled)
+                    counters["source_bytes_read"] += int(
+                        loaded_metadata["bundle_bytes"]
+                    )
+                    counters["source_bytes_hashed"] += 2 * int(
+                        loaded_metadata["bundle_bytes"]
+                    )
+                    counters["source_events_validated"] += int(
+                        loaded_metadata["event_count"]
+                    )
+                    counters["manifest_bytes_read"] += int(
+                        loaded_metadata["manifest_bytes"]
+                    )
+                all_prepared.extend(bundled)
+                bundle_metadata.append(metadata)
+                bundle_index_records.append(bundle_index_record)
+                referenced_bundle_paths.add(str(Path(metadata["bundle_path"]).resolve()))
+            except (OSError, ValueError, storage.StorageError) as exc:
+                errors.append({"source_path": str(manifest_path), "error": str(exc)})
     orphan_bundles = [
         path
         for path in bundle_files
@@ -1135,50 +1775,109 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
     identity_index_full_rebuild: bool | None = False
     identity_index_entries_after: int | None = 0
     prepared_sources: list[dict[str, Any]] = []
-    try:
-        prepared_sources = _merge_prepared_grabowski_sources(all_prepared)
-    except ValueError as exc:
-        target_scans = None
-        target_records_scanned = None
-        identity_index_mode = None
-        identity_index_full_rebuild = None
-        identity_index_entries_after = None
-        errors.append({"source_path": "<batch>", "error": str(exc)})
-    if prepared_sources and target_scans is not None:
+    receipt_writes_succeeded = True
+    merge_succeeded = False
+    with measured_phase("source_merge"):
         try:
-            target_path = storage.safe_target_path(DOMAIN)
-            target_missing_or_empty = (
-                not target_path.exists() or target_path.stat().st_size == 0
-            )
-            authoritative_replay = target_missing_or_empty and not errors
-            results, grouped, receipt_errors = _import_prepared_grabowski_sources(
-                prepared_sources,
-                authoritative_replay=authoritative_replay,
-            )
-            target_scans = int(grouped.get("target_scans", 0))
-            target_records_scanned = int(grouped.get("target_records_scanned", 0))
-            identity_index_mode = str(grouped.get("identity_index_mode", "unknown"))
-            identity_index_full_rebuild = bool(
-                grouped.get("identity_index_full_rebuild", False)
-            )
-            identity_index_entries_after = int(
-                grouped.get("identity_index_entries_after", 0)
-            )
-            errors.extend(
-                {
-                    "source_path": source_path,
-                    "error": f"receipt write failed after ledger update: {exc}",
-                }
-                for source_path, exc in receipt_errors
-            )
-        except (OSError, ValueError, storage.StorageError) as exc:
+            prepared_sources = _merge_prepared_grabowski_sources(all_prepared)
+            merge_succeeded = True
+        except ValueError as exc:
             target_scans = None
             target_records_scanned = None
             identity_index_mode = None
             identity_index_full_rebuild = None
             identity_index_entries_after = None
             errors.append({"source_path": "<batch>", "error": str(exc)})
+    ledger_reconciled = not prepared_sources and merge_succeeded
+    if prepared_sources and target_scans is not None:
+        with measured_phase("ledger_reconcile"):
+            try:
+                authoritative_replay = target_missing_or_empty and not errors
+                results, grouped, receipt_errors = _import_prepared_grabowski_sources(
+                    prepared_sources,
+                    authoritative_replay=authoritative_replay,
+                )
+                ledger_reconciled = True
+                receipt_writes_succeeded = not receipt_errors
+                target_scans = int(grouped.get("target_scans", 0))
+                target_records_scanned = int(
+                    grouped.get("target_records_scanned", 0)
+                )
+                identity_index_mode = str(
+                    grouped.get("identity_index_mode", "unknown")
+                )
+                identity_index_full_rebuild = bool(
+                    grouped.get("identity_index_full_rebuild", False)
+                )
+                identity_index_entries_after = int(
+                    grouped.get("identity_index_entries_after", 0)
+                )
+                errors.extend(
+                    {
+                        "source_path": source_path,
+                        "error": f"receipt write failed after ledger update: {exc}",
+                    }
+                    for source_path, exc in receipt_errors
+                )
+            except (OSError, ValueError, storage.StorageError) as exc:
+                target_scans = None
+                target_records_scanned = None
+                identity_index_mode = None
+                identity_index_full_rebuild = None
+                identity_index_entries_after = None
+                errors.append({"source_path": "<batch>", "error": str(exc)})
+
+    source_index_written = False
+    source_index_file_bytes = source_index_bytes
+    if (
+        ledger_reconciled
+        and receipt_writes_succeeded
+        and (loose_index_records or bundle_index_records or source_index is not None)
+    ):
+        with measured_phase("source_index_publish"):
+            try:
+                source_index_written, source_index_file_bytes = (
+                    _publish_grabowski_source_index(
+                        source_index_path,
+                        source_dir=source_dir,
+                        loose_sources=loose_index_records,
+                        bundles=bundle_index_records,
+                        previous=source_index,
+                    )
+                )
+            except (OSError, ValueError) as exc:
+                errors.append(
+                    {
+                        "source_path": str(source_index_path),
+                        "error": f"source index update failed after ledger reconciliation: {exc}",
+                    }
+                )
+    if source_index is not None:
+        previous_source_count = len(source_index.get("_loose_sources", [])) + sum(
+            len(item["_sources"]) for item in source_index.get("_bundles", [])
+        )
+        current_source_count = len(loose_index_records) + sum(
+            len(item["sources"]) for item in bundle_index_records
+        )
+        counters["sources_removed"] = max(0, previous_source_count - current_source_count)
+    if source_index_written:
+        counters["source_index_writes"] = 1
+        if source_index_mode == "steady":
+            source_index_mode = "updated"
+    elif source_index is not None and source_index_mode == "steady":
+        counters["source_index_reuses"] = 1
+
     bundled_sources_seen = sum(int(item["source_count"]) for item in bundle_metadata)
+    elapsed_ns = time.perf_counter_ns() - import_started_ns
+    telemetry = {
+        "schema_version": "chronik-grabowski-import-telemetry.v1",
+        "elapsed_seconds": round(elapsed_ns / 1_000_000_000, 6),
+        "phases_seconds": {
+            name: round(value / 1_000_000_000, 6)
+            for name, value in sorted(phase_ns.items())
+        },
+        "counters": dict(sorted(counters.items())),
+    }
     return {
         "schema_version": "chronik-grabowski-outbox-batch.v2",
         "source_dir": str(source_dir),
@@ -1208,6 +1907,20 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
         "identity_index_mode": identity_index_mode,
         "identity_index_full_rebuild": identity_index_full_rebuild,
         "identity_index_entries_after": identity_index_entries_after,
+        "source_index_path": str(source_index_path),
+        "source_index_mode": source_index_mode,
+        "source_index_written": source_index_written,
+        "source_index_file_bytes": source_index_file_bytes,
+        "sources_reused": counters["sources_reused"],
+        "sources_revalidated": counters["sources_revalidated"],
+        "sources_changed": counters["sources_changed"],
+        "sources_added": counters["sources_added"],
+        "sources_removed": counters["sources_removed"],
+        "source_bytes_read": counters["source_bytes_read"],
+        "source_bytes_hashed": counters["source_bytes_hashed"],
+        "source_events_validated": counters["source_events_validated"],
+        "elapsed_seconds": telemetry["elapsed_seconds"],
+        "import_telemetry": telemetry,
         "bundle_inventory": bundle_metadata,
         "errors": errors,
         "historical_only": True,
@@ -1261,6 +1974,8 @@ def compact_grabowski_outbox(
     outbox_root: Path,
     receipt_dir: Path,
     grace_seconds: int = 86400,
+    max_sources: int = DEFAULT_COMPACTION_MAX_SOURCES,
+    max_bytes: int = DEFAULT_COMPACTION_MAX_BYTES,
     apply: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
@@ -1273,6 +1988,8 @@ def compact_grabowski_outbox(
                 outbox_root=outbox_root,
                 receipt_dir=receipt_dir,
                 grace_seconds=grace_seconds,
+                max_sources=max_sources,
+                max_bytes=max_bytes,
                 apply=apply,
                 now=now,
             )
@@ -1280,6 +1997,8 @@ def compact_grabowski_outbox(
         outbox_root=outbox_root,
         receipt_dir=receipt_dir,
         grace_seconds=grace_seconds,
+        max_sources=max_sources,
+        max_bytes=max_bytes,
         apply=apply,
         now=now,
     )
@@ -1290,11 +2009,17 @@ def _compact_grabowski_outbox_unlocked(
     outbox_root: Path,
     receipt_dir: Path,
     grace_seconds: int = 86400,
+    max_sources: int = DEFAULT_COMPACTION_MAX_SOURCES,
+    max_bytes: int = DEFAULT_COMPACTION_MAX_BYTES,
     apply: bool = False,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     if type(grace_seconds) is not int or grace_seconds < 0:
         raise ValueError("grace_seconds must be a non-negative integer")
+    if type(max_sources) is not int or max_sources < 1:
+        raise ValueError("max_sources must be a positive integer")
+    if type(max_bytes) is not int or max_bytes < 1:
+        raise ValueError("max_bytes must be a positive integer")
     if not isinstance(apply, bool):
         raise ValueError("apply must be a boolean")
     observed_at = now or datetime.now(timezone.utc)
@@ -1303,10 +2028,13 @@ def _compact_grabowski_outbox_unlocked(
     observed_at = observed_at.astimezone(timezone.utc)
     source_dir = outbox_root.expanduser() / "grabowski" / "chronik-outbox"
     bundle_dir = source_dir / GRABOWSKI_BUNDLE_DIRNAME
-    sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
+    all_sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
+    sources = all_sources[:max_sources]
+    deferred_sources = len(all_sources) - len(sources)
     skipped: Counter[str] = Counter()
     errors: list[dict[str, str]] = []
     eligible: list[dict[str, Any]] = []
+    eligible_bytes = 0
     ledger_payloads, ledger_records_scanned = _ledger_payloads_by_event_id()
     observed_ns = int(observed_at.timestamp() * 1_000_000_000)
     grace_ns = grace_seconds * 1_000_000_000
@@ -1340,7 +2068,14 @@ def _compact_grabowski_outbox_unlocked(
         ):
             skipped["ledger_unconfirmed"] += 1
             continue
+        prepared_bytes = _prepared_source_bytes(prepared)
+        if eligible_bytes + prepared_bytes > max_bytes:
+            skipped["compaction_byte_bound"] += 1
+            continue
         eligible.append(prepared)
+        eligible_bytes += prepared_bytes
+    if deferred_sources:
+        skipped["compaction_source_bound"] += deferred_sources
     result: dict[str, Any] = {
         "schema_version": "chronik-grabowski-outbox-compaction.v1",
         "mode": "apply" if apply else "dry-run",
@@ -1348,8 +2083,12 @@ def _compact_grabowski_outbox_unlocked(
         "receipt_dir": str(receipt_dir),
         "bundle_dir": str(bundle_dir),
         "grace_seconds": grace_seconds,
+        "max_sources": max_sources,
+        "max_bytes": max_bytes,
         "observed_at": observed_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-        "loose_sources_seen": len(sources),
+        "loose_sources_seen": len(all_sources),
+        "loose_sources_considered": len(sources),
+        "loose_sources_deferred": deferred_sources,
         "eligible_sources": len(eligible),
         "eligible_events": sum(len(item["events"]) for item in eligible),
         "eligible_source_bytes": sum(len(item["raw"]) for item in eligible),
@@ -1370,7 +2109,7 @@ def _compact_grabowski_outbox_unlocked(
         "manifest_published": False,
         "bundle_reused": False,
         "sources_removed": 0,
-        "loose_sources_remaining": len(sources),
+        "loose_sources_remaining": len(all_sources),
         "errors": errors,
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,

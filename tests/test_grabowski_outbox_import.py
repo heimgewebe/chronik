@@ -1,9 +1,11 @@
 import json
+import os
 from pathlib import Path
 
 import pytest
 
 import coding_memory
+import identity_index
 import storage
 
 
@@ -81,6 +83,150 @@ def test_batch_import_is_idempotent_and_receipt_bound(tmp_path, monkeypatch):
     assert receipt["receipt_sha256"]
 
 
+def test_no_change_import_reuses_source_index_without_source_reads(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    first = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+    index_path = receipts / coding_memory.GRABOWSKI_SOURCE_INDEX_FILENAME
+    original_index = index_path.read_bytes()
+    original_stat = index_path.stat()
+
+    def unexpected_read(*args, **kwargs):
+        raise AssertionError("unchanged loose source was read")
+
+    monkeypatch.setattr(
+        coding_memory, "_prepare_grabowski_outbox_source", unexpected_read
+    )
+    second = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert first["sources_revalidated"] == 2
+    assert first["source_bytes_read"] > 0
+    assert second["source_index_mode"] == "steady"
+    assert second["sources_reused"] == 2
+    assert second["sources_revalidated"] == 0
+    assert second["source_bytes_read"] == 0
+    assert second["source_bytes_hashed"] == 0
+    assert second["source_events_validated"] == 0
+    assert second["target_scans"] == 0
+    assert second["target_records_scanned"] == 0
+    assert second["import_telemetry"]["phases_seconds"]["source_discovery"] >= 0
+    assert index_path.read_bytes() == original_index
+    assert index_path.stat().st_ino == original_stat.st_ino
+    assert index_path.stat().st_mtime_ns == original_stat.st_mtime_ns
+
+
+def test_metadata_drift_revalidates_source_even_when_size_and_mtime_match(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    source = write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    before = source.stat()
+    replacement = json.dumps(event("agent.run.completed", "b"), sort_keys=True) + "\n"
+    assert len(replacement.encode("utf-8")) == before.st_size
+    source.write_text(replacement, encoding="utf-8")
+    os.utime(source, ns=(before.st_atime_ns, before.st_mtime_ns))
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert result["errors"] == []
+    assert result["sources_changed"] == 1
+    assert result["sources_revalidated"] == 1
+    assert result["sources_reused"] == 0
+    assert result["source_bytes_read"] == before.st_size
+    assert result["events_imported"] == 1
+
+
+def test_corrupt_source_index_is_reconstructed_from_authoritative_source(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    index_path = receipts / coding_memory.GRABOWSKI_SOURCE_INDEX_FILENAME
+    index_path.write_text("{}\n", encoding="utf-8")
+    index_path.chmod(0o600)
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert result["errors"] == []
+    assert result["source_index_mode"] == "rebuild_invalid"
+    assert result["source_index_written"] is True
+    assert result["sources_revalidated"] == 1
+    assert result["sources_reused"] == 0
+    assert result["source_bytes_read"] > 0
+    rebuilt = json.loads(index_path.read_text())
+    claimed = rebuilt.pop("index_sha256")
+    assert claimed == coding_memory.sha256_bytes(coding_memory.canonical_bytes(rebuilt))
+
+
+def test_source_index_never_appends_when_cached_identity_is_missing(
+    tmp_path, monkeypatch
+):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(outbox_root=outbox, receipt_dir=receipts)
+    target = data / "agent.ledger.jsonl"
+    target.unlink()
+    identity_index.reset_identity_index_for_authoritative_replay(target)
+    replacement = event("agent.run.completed", "b")
+    coding_memory.import_events([replacement])
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert result["events_imported"] == 0
+    assert result["files_imported_or_confirmed"] == 0
+    assert result["target_scans"] is None
+    assert result["errors"][0]["source_path"] == "<batch>"
+    assert "verification-only identities are missing" in result["errors"][0]["error"]
+    rows = target.read_text(encoding="utf-8").splitlines()
+    assert len(rows) == 1
+    assert json.loads(rows[0])["payload"]["event_id"] == replacement["event_id"]
+
+
+def test_import_rejects_symlinked_loose_source(tmp_path, monkeypatch):
+    data, receipts, outbox = configure(tmp_path, monkeypatch)
+    external = tmp_path / "external.jsonl"
+    external.write_text(
+        json.dumps(event("agent.run.completed", "a"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    source_dir = outbox / "grabowski" / "chronik-outbox"
+    source_dir.mkdir(parents=True)
+    linked = source_dir / "grabowski_task-linked-a1.jsonl"
+    linked.symlink_to(external)
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox, receipt_dir=receipts
+    )
+
+    assert result["events_imported"] == 0
+    assert "must be a regular file" in result["errors"][0]["error"]
+    assert not (data / "agent.ledger.jsonl").exists()
+    assert not receipts.exists()
+
+
 def test_reused_single_file_result_keeps_persisted_digest_separate_from_run_stats(
     tmp_path, monkeypatch
 ):
@@ -124,6 +270,10 @@ def test_receipt_never_replaces_target_store_verification(tmp_path, monkeypatch)
 
     assert recovered["files_unchanged"] == 1
     assert recovered["events_imported"] == 2
+    assert recovered["source_index_mode"] == "authoritative_rebuild"
+    assert recovered["sources_revalidated"] == 1
+    assert recovered["sources_reused"] == 0
+    assert recovered["source_bytes_read"] > 0
     assert recovered["receipts_written"] == 1
     assert recovered["receipts_reused"] == 0
     assert (

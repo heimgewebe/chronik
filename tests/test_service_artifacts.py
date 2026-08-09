@@ -80,6 +80,26 @@ def test_outbox_import_units_are_direct_bounded_and_hardened():
     assert "WantedBy=timers.target" in timer
 
 
+
+def test_outbox_compaction_units_are_bounded_and_hardened():
+    service = (ROOT / "deploy" / "systemd" / "user" / "chronik-outbox-compact.service").read_text(encoding="utf-8")
+    timer = (ROOT / "deploy" / "systemd" / "user" / "chronik-outbox-compact.timer").read_text(encoding="utf-8")
+
+    assert "compact-outbox" in service
+    assert "--grace-seconds 86400" in service
+    assert "--max-sources 256" in service
+    assert "--max-bytes 67108864" in service
+    assert "--apply" in service
+    assert "ReadWritePaths=%h/.local/state/chronik %h/.local/state/grabowski/chronik-outbox" in service
+    assert "ProtectSystem=strict" in service
+    assert "ProtectHome=read-only" in service
+    assert "NoNewPrivileges=true" in service
+    assert "Nice=10" in service
+    assert "IOSchedulingClass=idle" in service
+    assert "OnUnitActiveSec=15min" in timer
+    assert "Persistent=true" in timer
+    assert "WantedBy=timers.target" in timer
+
 def test_operator_docs_close_ai_context_loop(runbook_content: str):
     agents = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     ai_context = (ROOT / ".ai-context.yml").read_text(encoding="utf-8")

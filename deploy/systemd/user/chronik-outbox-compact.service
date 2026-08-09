@@ -1,0 +1,24 @@
+[Unit]
+Description=Compact terminal Grabowski Chronik outbox sources
+Documentation=https://github.com/heimgewebe/chronik
+ConditionPathIsDirectory=%h/.local/state/grabowski/chronik-outbox
+
+[Service]
+Type=oneshot
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=100
+WorkingDirectory=%h/.local/lib/chronik/current
+ExecStart=%h/repos/chronik/.venv/bin/python %h/.local/lib/chronik/current/tools/coding_memory.py --data-dir %h/.local/state/chronik/data compact-outbox --outbox-root %h/.local/state --receipt-dir %h/.local/state/chronik/import-receipts --grace-seconds 86400 --max-sources 256 --max-bytes 67108864 --apply
+UMask=0077
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/chronik %h/.local/state/grabowski/chronik-outbox
+ProtectControlGroups=true
+ProtectKernelTunables=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true

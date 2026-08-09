@@ -114,11 +114,31 @@ vollständig gelesenen Ledger-Snapshots.
 
 ## Skalierungsvertrag
 
-Der Import liest und validiert weiterhin jede vollständige Quelldatei. Alle
-gültigen Ereignisse werden danach in **einer** gruppierten Storage-Operation
-abgeglichen. Unter einem einzigen Lock wird der Ziel-Ledger höchstens einmal
-vollständig gescannt. Pro Quelldatei bleiben getrennte, an Pfad, SHA-256 und
-Größe gebundene Receipts erhalten.
+Beim ersten Import oder nach rekonstruierbarem Indexverlust liest, hasht und
+validiert Chronik weiterhin jede vollständige Quelldatei. Danach hält
+`import-receipts/source-index.v1.json` eine private, atomar ersetzte
+Discovery-Projektion. Sie bindet lose Quellen sowie Bundle und Manifest an
+Gerät, Inode, Modus, Linkzahl, Eigentümer, Größe, mtime und ctime. Zu jeder
+logischen Quelle enthält sie nur Pfad, Quell-SHA-256, Bytezahl, Event-IDs und
+kanonische Payload-Fingerprints, niemals die Replay-Bytes.
+
+Bei exakt unveränderten Metadaten müssen Quell- und Bundle-Bytes deshalb nicht
+erneut gelesen, gehasht oder schema-validiert werden. Die gespeicherten
+Fingerprints dürfen ausschließlich gegen den ledgergebundenen Identity-Index
+verifiziert werden. Fehlt dort ein Cache-Ereignis, stoppt der Lauf vor einem
+Append geschlossen. Ein fehlender oder leerer Ledger umgeht den Source-Index
+vollständig und wird nur aus erneut gelesenen, vollständig validierten
+Outbox-/Bundle-Bytes rekonstruiert. Ein fehlender, syntaktisch beschädigter,
+unprivater oder digest-widersprüchlicher Source-Index wird ebenso sicher aus den
+autoritativen Quellen aufgebaut. Jede Metadatenänderung revalidiert nur das
+betroffene Artefakt. Ledger, Bundle und lose Quelle bleiben maßgeblich; der
+Source-Index ist keine Receipt-, Historien- oder Taskautorität.
+
+Alle gültigen Ereignisse werden in **einer** gruppierten Storage-Operation
+abgeglichen. Der persistente Ledger-Identity-Index verifiziert dabei nur die
+angeforderten Event-IDs an ihren ledgergebundenen Offsets. Der steady state
+scannt keine vollständige Ledger-Historie. Pro Quelldatei bleiben getrennte, an
+Pfad, SHA-256 und Größe gebundene Receipts erhalten.
 
 Vor der Optimierung wurden folgende Grenzen festgelegt:
 
@@ -137,11 +157,23 @@ python tools/benchmark_outbox_import.py \
   --output /tmp/chronik-outbox-benchmark.json
 ```
 
-Der Bericht enthält Maschinenkontext, Laufzeit und Peak-Speicher für Erst- und
-Wiederholungsimport, Ziel-Ledger-Scans, gescannte Zieldatensätze sowie
-geschriebene und übersprungene Ereignisse. Ein Importbeleg bleibt dabei reine
-Evidenz: Auch der Wiederholungsimport gleicht jedes Ereignis gegen den
-tatsächlichen Ledger ab und vertraut niemals nur dem Receipt.
+Der Bericht enthält Maschinenkontext, Laufzeit und Peak-Speicher für Erstimport,
+No-change, ein kleines Zwei-Ereignis-Delta, Bundle-Revalidierung und
+anschließendes Bundle-No-change. Zusätzlich weist er interne Phasen,
+Source-Index-Modus, wiederverwendete/revalidierte/geänderte Quellen, gelesene
+und gehashte Quellbytes, validierte Ereignisse, Ziel-Ledger-Scans sowie
+geschriebene und übersprungene Ereignisse aus. Reproduzierbare Zielgrenzen sind:
+
+- No-change unter einer Sekunde im repräsentativen Fixture;
+- No-change unter zwei Sekunden im projizierten 1000-Dateien-Tier;
+- kleines Delta unter zwei Sekunden;
+- null gelesene/gehashte Quellbytes im unveränderten Loose- und Bundle-Pfad;
+- null vollständige Ledger-Datensätze im steady state und weiterhin höchstens
+  ein Scan in Rebuild-/Catch-up-Sonderpfaden.
+
+Ein Importbeleg bleibt dabei reine Evidenz: Auch der Wiederholungsimport gleicht
+jeden Payload-Fingerprint gegen den tatsächlichen Ledger ab und vertraut weder
+nur dem Receipt noch nur dem Source-Index.
 
 Ein Receipt wird erst nach dem erfolgreichen Ledger-Abgleich geschrieben. Falls
 dieser Evidenzschritt scheitert, bleiben die bereits bestätigten Ledger-Zahlen
@@ -209,6 +241,14 @@ python tools/coding_memory.py \
   --grace-seconds 86400
 ```
 
+Jeder Aufruf betrachtet standardmäßig höchstens 256 lose Quellen und erzeugt
+höchstens 64 MiB Bundle-Bytes. Die Grenzen sind mit `--max-sources` und
+`--max-bytes` explizit enger oder weiter setzbar. Nicht betrachtete oder wegen
+der Bytegrenze zurückgestellte Quellen bleiben unverändert liegen und werden
+unter `loose_sources_deferred` beziehungsweise `skipped_by_reason` gezählt.
+Damit sind CPU-/Validierungsarbeit und das neu veröffentlichte Bundle pro Lauf
+begrenzt; wiederholte Apply-Läufe arbeiten deterministisch weiter.
+
 Erst `--apply` erlaubt die Veröffentlichung eines Bundles und das anschließende
 Entfernen geeigneter loser Quellen. Der Import-Timer führt diese Kompaktierung
 nicht implizit aus.
@@ -272,6 +312,8 @@ Fehlt nur eine Bedingung, bleibt die Quelle liegen. Die Ausgabe zählt die Grün
 unter `skipped_by_reason` und meldet Fehler mit dem betroffenen Pfad.
 
 ### Publish-, Crash- und Race-Vertrag
+
+Der Import-Timer führt die Compaction nicht im Zwei-Minuten-Importpfad aus. Eine getrennte `chronik-outbox-compact.timer`-Unit plant sie alle 15 Minuten mit niedriger CPU-/I/O-Priorität. Pro Lauf gelten dieselben harten Standardgrenzen von 256 Quellen und 64 MiB; der Produzent und der Compactor teilen den bestehenden `.writer-compaction.lock`, sodass eine laufende Compaction keinen konkurrierenden Grabowski-Writer überschreibt. Die Unit ist nur ein deploybares Artefakt: Installation, Enable/Start und jede Änderung des Live-Runtimes bleiben an den separaten Runtime-Aktivierungsvertrag gebunden.
 
 Der Apply-Pfad legt zuerst ein echtes, nicht verlinktes Bundleverzeichnis an
 und synchronisiert dessen Eintrag im Outbox-Verzeichnis. Danach veröffentlicht
