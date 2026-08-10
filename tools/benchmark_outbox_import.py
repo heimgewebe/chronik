@@ -73,12 +73,18 @@ def synthetic_event(label: str, kind: str = "agent.run.completed") -> dict:
     }
 
 
-def _measure(outbox_root: Path, receipt_dir: Path) -> dict:
+def _measure(
+    outbox_root: Path,
+    receipt_dir: Path,
+    *,
+    allow_steady_fast_path: bool = False,
+) -> dict:
     tracemalloc.start()
     started = time.perf_counter()
     result = coding_memory.import_grabowski_outbox(
         outbox_root=outbox_root,
         receipt_dir=receipt_dir,
+        allow_steady_fast_path=allow_steady_fast_path,
     )
     elapsed = time.perf_counter() - started
     _, peak = tracemalloc.get_traced_memory()
@@ -91,6 +97,7 @@ def _measure(outbox_root: Path, receipt_dir: Path) -> dict:
         "events_imported": result["events_imported"],
         "events_skipped_existing": result["events_skipped_existing"],
         "source_index_mode": result["source_index_mode"],
+        "steady_fast_path": result.get("steady_fast_path") is True,
         "sources_reused": result["sources_reused"],
         "sources_revalidated": result["sources_revalidated"],
         "sources_changed": result["sources_changed"],
@@ -171,7 +178,9 @@ def benchmark_tier(
             )
         receipt_dir = temp_root / "receipts"
         first = _measure(outbox_root, receipt_dir)
-        repeat = _measure(outbox_root, receipt_dir)
+        repeat = _measure(
+            outbox_root, receipt_dir, allow_steady_fast_path=True
+        )
         delta_index = source_files
         delta_values = (
             synthetic_event(f"{name}-{delta_index}-started", "agent.run.started"),
@@ -181,7 +190,9 @@ def benchmark_tier(
             "".join(json.dumps(value, sort_keys=True) + "\n" for value in delta_values),
             encoding="utf-8",
         )
-        small_delta = _measure(outbox_root, receipt_dir)
+        small_delta = _measure(
+            outbox_root, receipt_dir, allow_steady_fast_path=True
+        )
         loose_files_before = len(list(source_dir.glob("*.jsonl")))
         total_source_files = source_files + 1
         compaction = _measure_compaction(
@@ -190,8 +201,12 @@ def benchmark_tier(
             max_sources=total_source_files,
         )
         loose_files_after = len(list(source_dir.glob("*.jsonl")))
-        bundled_rebuild = _measure(outbox_root, receipt_dir)
-        bundled_repeat = _measure(outbox_root, receipt_dir)
+        bundled_rebuild = _measure(
+            outbox_root, receipt_dir, allow_steady_fast_path=True
+        )
+        bundled_repeat = _measure(
+            outbox_root, receipt_dir, allow_steady_fast_path=True
+        )
         worst_seconds = max(
             first["elapsed_seconds"],
             small_delta["elapsed_seconds"],
@@ -212,6 +227,11 @@ def benchmark_tier(
             and not compaction["errors"]
             and not bundled_rebuild["errors"]
             and not bundled_repeat["errors"]
+            and first["steady_fast_path"] is False
+            and repeat["steady_fast_path"] is True
+            and small_delta["steady_fast_path"] is False
+            and bundled_rebuild["steady_fast_path"] is False
+            and bundled_repeat["steady_fast_path"] is True
             and first["target_scans"] <= MAX_TARGET_SCANS
             and repeat["target_scans"] <= MAX_TARGET_SCANS
             and small_delta["target_scans"] <= MAX_TARGET_SCANS

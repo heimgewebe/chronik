@@ -171,9 +171,28 @@ geschriebene und übersprungene Ereignisse aus. Reproduzierbare Zielgrenzen sind
 - null vollständige Ledger-Datensätze im steady state und weiterhin höchstens
   ein Scan in Rebuild-/Catch-up-Sonderpfaden.
 
-Ein Importbeleg bleibt dabei reine Evidenz: Auch der Wiederholungsimport gleicht
-jeden Payload-Fingerprint gegen den tatsächlichen Ledger ab und vertraut weder
-nur dem Receipt noch nur dem Source-Index.
+Ein Importbeleg bleibt dabei reine Evidenz. Im normalen Vollpfad gleicht auch
+der Wiederholungsimport jeden Payload-Fingerprint gegen den tatsächlichen Ledger
+ab und vertraut weder nur dem Receipt noch nur dem Source-Index.
+
+Für den vom Timer verwendeten `summary`-Pfad darf ein exakt unveränderter Lauf
+diesen Vollabgleich überspringen, aber nur auf Basis eines kleinen privaten
+`steady-import-checkpoint.v1.json`, der **nach** einem erfolgreichen Vollabgleich
+geschrieben wurde. Der Checkpoint bindet die Metadatenidentität aller losen
+Quellen, Bundle-Manifeste und Bundle-Dateien, aller Import-Receipts, des
+Source-Index sowie des Ledger- und Identity-Index-Paares. Vor einem Fast-Return
+werden Source- und Receipt-Inventar nach dem Ledger-/Index-Read ein zweites Mal
+abgeglichen, um Änderungen im Prüfzeitfenster zu erkennen. Nur wenn sämtliche
+Identitäten exakt dem vorherigen Vollabgleich entsprechen, werden Source-Index-
+Laden, logische Quellmaterialisierung, Merge und erneuter Ledger-Abgleich
+ausgelassen. Jede Abweichung, fehlende Datei, unsichere Dateiform, beschädigte
+Checkpoint-Struktur oder Digest-Abweichung fällt deterministisch auf den
+bestehenden Vollpfad zurück. `--output-mode full` verwendet diesen Fast-Path
+nicht.
+
+Der Checkpoint ist eine rekonstruierbare Beschleunigungsprojektion. Er ist weder
+Replay- noch Historienautorität und begründet insbesondere keine aktuelle Git-,
+CI-, Runtime-, Task- oder Retry-Wahrheit.
 
 Ein Receipt wird erst nach dem erfolgreichen Ledger-Abgleich geschrieben. Falls
 dieser Evidenzschritt scheitert, bleiben die bereits bestätigten Ledger-Zahlen
@@ -193,9 +212,11 @@ nicht parallel ein zweites Mal gestartet; ein noch aktiver Lauf verhindert damit
 überlappende Importer. Die Unit darf die Grabowski-Outbox nur lesen und
 ausschließlich unter `~/.local/state/chronik` schreiben. Für systemd nutzt die
 Unit `import-outbox --output-mode summary`: Pro Lauf entsteht genau ein kompakter
-JSON-Einzeiler mit Zählern. Dateiinventare werden nicht ausgegeben; höchstens drei
-gekürzte Fehlerstichproben bleiben sichtbar. Die Zeile bleibt garantiert unter
-4096 Bytes: Gekürzt wird nach der JSON-kodierten Bytelänge, nicht nach
+JSON-Einzeiler mit Zählern. Nur dieser Summary-Pfad aktiviert den oben
+beschriebenen no-change Fast-Path; jeder Drift führt im selben Lauf zurück in den
+normalen vollständigen Abgleich. Dateiinventare werden nicht ausgegeben; höchstens
+drei gekürzte Fehlerstichproben bleiben sichtbar. Die Zeile bleibt garantiert
+unter 4096 Bytes: Gekürzt wird nach der JSON-kodierten Bytelänge, nicht nach
 Zeichenzahl, weil Escaping ein Zeichen auf bis zu zwölf Bytes ausdehnen kann.
 Reicht das nicht, entfallen zusätzlich Fehlerstichproben; `errors_truncated`
 bleibt dann `true`. Die aggregierte `error_count` und der Exitcode `2` bei
@@ -217,7 +238,7 @@ Git-, CI-, Runtime- oder Recovery-Prüfungen.
 
 ## Receipt-Wiederverwendung und Replay-Autorität
 
-Jeder Outbox-Import gleicht die Event-IDs weiterhin mit dem maßgeblichen Chronik-Ledger ab. Sind die Quellbytes unverändert, alle angeforderten Events im Ledger vorhanden und der vorhandene quellgebundene Receipt durch seinen SHA-256-Digest intakt, wird die Receipt-Datei nicht ersetzt. Die Batch-Telemetrie trennt `receipts_written` und `receipts_reused`.
+Im normalen Vollpfad gleicht jeder Outbox-Import die Event-IDs mit dem maßgeblichen Chronik-Ledger ab. Der exakt-unveränderte `summary`-Fast-Path darf diesen erneuten Einzelabgleich nur überspringen, solange sein nach einem erfolgreichen Vollabgleich geschriebener Checkpoint unveränderte Source-, Receipt-, Source-Index-, Ledger- und Identity-Index-Identitäten belegt; jede Drift fällt auf den Vollpfad zurück. Sind dort die Quellbytes unverändert, alle angeforderten Events im Ledger vorhanden und der vorhandene quellgebundene Receipt durch seinen SHA-256-Digest intakt, wird die Receipt-Datei nicht ersetzt. Die Batch-Telemetrie trennt `receipts_written` und `receipts_reused`.
 
 `receipt_sha256` im Laufergebnis bindet ausdrücklich die unveränderte Receipt-Datei (`receipt_digest_scope=persisted_receipt`), nicht die aktuellen Laufzähler. `imported`, `skipped_existing` und die Scan-Zähler beschreiben den aktuellen Lauf.
 
