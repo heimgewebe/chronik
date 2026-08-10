@@ -48,6 +48,7 @@ OUTBOX_SUMMARY_KEYS = (
     "source_bytes_read",
     "source_bytes_hashed",
     "source_events_validated",
+    "steady_fast_path",
     "elapsed_seconds",
 )
 OUTBOX_SUMMARY_ERROR_LIMIT = 3
@@ -299,6 +300,7 @@ def main(argv=None):
                 result = coding_memory.import_grabowski_outbox(
                     outbox_root=args.outbox_root,
                     receipt_dir=receipt_dir.expanduser(),
+                    allow_steady_fast_path=args.output_mode == "summary",
                 )
             elif args.command == "compact-outbox":
                 receipt_dir = args.receipt_dir or data_path / "import-receipts"

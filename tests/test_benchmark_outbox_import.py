@@ -32,6 +32,11 @@ def test_benchmark_reports_persistent_index_reuse(tmp_path):
     assert report["schema_version"] == "chronik-outbox-import-benchmark.v3"
     assert report["thresholds"]["representative_no_change_max_seconds"] == 1.0
     assert report["thresholds"]["small_delta_max_seconds"] == 2.0
+    assert tier["first"]["steady_fast_path"] is False
+    assert tier["repeat"]["steady_fast_path"] is True
+    assert tier["small_delta"]["steady_fast_path"] is False
+    assert tier["bundled_rebuild"]["steady_fast_path"] is False
+    assert tier["bundled_repeat"]["steady_fast_path"] is True
     assert tier["first"]["target_scans"] == 0
     assert tier["first"]["target_records_scanned"] == 0
     assert tier["repeat"]["target_scans"] == 0

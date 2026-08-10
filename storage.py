@@ -19,6 +19,7 @@ from identity_index import (
     IdentityIndexCommitUncertain,
     IdentityIndexDriftError,
     IdentityIndexError,
+    index_path_for_target,
     open_identity_index,
     reset_identity_index_for_authoritative_replay,
 )
@@ -42,6 +43,7 @@ __all__ = [
     "read_tail",
     "read_last_line",
     "read_domain_snapshot",
+    "read_unique_storage_checkpoint_identity",
     "scan_domain",
     "list_domains",
     "get_lock_path",
@@ -374,6 +376,73 @@ def _raise_append_error(exc: BaseException, target_path: Path) -> None:
             raise StorageFullError("insufficient storage") from exc
         raise StorageError("append failed") from exc
     raise exc
+
+
+def _checkpoint_file_identity(info: os.stat_result) -> dict[str, int]:
+    return {
+        "device": int(info.st_dev),
+        "inode": int(info.st_ino),
+        "mode": int(info.st_mode),
+        "links": int(info.st_nlink),
+        "uid": int(info.st_uid),
+        "size": int(info.st_size),
+        "mtime_ns": int(info.st_mtime_ns),
+        "ctime_ns": int(info.st_ctime_ns),
+    }
+
+
+def read_unique_storage_checkpoint_identity(
+    domain: str, *, identity_key: str = "event_id"
+) -> dict[str, object] | None:
+    """Return a cheap identity for a previously reconciled unique ledger/index pair.
+
+    This deliberately does not synchronize, rebuild, create, or query identity rows.
+    It is useful only as a compare-against-prior-success accelerator: callers must
+    already possess a checkpoint written after the normal full reconciliation.
+    Any metadata drift forces the caller back through that full path.
+    """
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+    try:
+        target_info = target_path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise StorageRecoveryError("target identity unavailable") from exc
+    if not stat.S_ISREG(target_info.st_mode):
+        raise StorageRecoveryError("target is not a regular file")
+
+    index_path = index_path_for_target(target_path)
+    try:
+        index_info = index_path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise StorageRecoveryError("identity index identity unavailable") from exc
+    if (
+        not stat.S_ISREG(index_info.st_mode)
+        or index_info.st_uid != os.geteuid()
+        or index_info.st_mode & 0o077
+        or index_info.st_nlink != 1
+    ):
+        raise StorageRecoveryError("identity index identity is not private and regular")
+
+    with _locked_open(target_path, "rb") as fh:
+        opened = _target_stat_for_fd(target_path, fh.fileno())
+        try:
+            current_index = index_path.lstat()
+        except OSError as exc:
+            raise StorageRecoveryError("identity index changed during checkpoint read") from exc
+        if _checkpoint_file_identity(current_index) != _checkpoint_file_identity(index_info):
+            raise StorageRecoveryError("identity index changed during checkpoint read")
+        return {
+            "schema_version": 1,
+            "identity_key": identity_key,
+            "ledger": _checkpoint_file_identity(opened),
+            "identity_index": _checkpoint_file_identity(current_index),
+        }
 
 
 def _append_jsonl_transaction(fh, target_path: Path, lines: Iterable[str]) -> None:
@@ -968,7 +1037,6 @@ def write_payload_unique_groups(
             raise
         except IdentityIndexError as exc:
             _raise_identity_index_error(exc)
-
 
 
 def write_payload_unique(

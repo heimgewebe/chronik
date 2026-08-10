@@ -40,6 +40,8 @@ GRABOWSKI_ARCHIVE_INDEX_SCHEMA = "chronik-grabowski-outbox-archive-index.v1"
 GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME = ".writer-compaction.lock"
 GRABOWSKI_SOURCE_INDEX_FILENAME = "source-index.v1.json"
 GRABOWSKI_SOURCE_INDEX_SCHEMA = "chronik-grabowski-source-index.v1"
+GRABOWSKI_STEADY_CHECKPOINT_FILENAME = "steady-import-checkpoint.v1.json"
+GRABOWSKI_STEADY_CHECKPOINT_SCHEMA = "chronik-grabowski-steady-import-checkpoint.v1"
 DEFAULT_COMPACTION_MAX_SOURCES = 256
 DEFAULT_COMPACTION_MAX_BYTES = 64 * 1024 * 1024
 
@@ -393,6 +395,358 @@ def _receipt_matches_prepared_source(
     unsigned = dict(receipt)
     unsigned.pop("receipt_sha256", None)
     return claimed_digest == sha256_bytes(canonical_bytes(unsigned))
+
+
+def _steady_checkpoint_path(receipt_dir: Path) -> Path:
+    return receipt_dir / GRABOWSKI_STEADY_CHECKPOINT_FILENAME
+
+
+def _inventory_fingerprint(
+    paths: Iterable[Path], *, private: bool
+) -> dict[str, Any] | None:
+    digest = hashlib.sha256()
+    count = 0
+    for path in sorted(paths, key=lambda item: str(item)):
+        try:
+            info = path.lstat()
+        except OSError:
+            return None
+        if not stat.S_ISREG(info.st_mode):
+            return None
+        if private and (
+            info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_nlink != 1
+        ):
+            return None
+        material = canonical_bytes(
+            {
+                "path": str(path.absolute()),
+                "identity": list(_file_identity(info)),
+            }
+        )
+        digest.update(len(material).to_bytes(8, "big", signed=False))
+        digest.update(material)
+        count += 1
+    return {"count": count, "sha256": digest.hexdigest()}
+
+
+def _directory_identity(path: Path) -> dict[str, int] | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {
+            "device": -1,
+            "inode": -1,
+            "mode": 0,
+            "links": 0,
+            "uid": os.geteuid(),
+            "size": 0,
+            "mtime_ns": 0,
+            "ctime_ns": 0,
+        }
+    except OSError:
+        return None
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or info.st_mode & 0o022:
+        return None
+    return {
+        "device": int(info.st_dev),
+        "inode": int(info.st_ino),
+        "mode": int(info.st_mode),
+        "links": int(info.st_nlink),
+        "uid": int(info.st_uid),
+        "size": int(info.st_size),
+        "mtime_ns": int(info.st_mtime_ns),
+        "ctime_ns": int(info.st_ctime_ns),
+    }
+
+
+def _stable_source_inventory_identity(
+    *,
+    source_dir: Path,
+    bundle_dir: Path,
+    sources: list[Path],
+    manifests: list[Path],
+    bundle_files: list[Path],
+) -> dict[str, Any] | None:
+    source_dir_before = _directory_identity(source_dir)
+    bundle_dir_before = _directory_identity(bundle_dir)
+    if source_dir_before is None or bundle_dir_before is None:
+        return None
+    fingerprint = _inventory_fingerprint(
+        [*sources, *manifests, *bundle_files], private=False
+    )
+    source_dir_after = _directory_identity(source_dir)
+    bundle_dir_after = _directory_identity(bundle_dir)
+    if (
+        fingerprint is None
+        or source_dir_after is None
+        or bundle_dir_after is None
+        or source_dir_before != source_dir_after
+        or bundle_dir_before != bundle_dir_after
+    ):
+        return None
+    return {
+        "artifacts": fingerprint,
+        "source_dir": source_dir_after,
+        "bundle_dir": bundle_dir_after,
+    }
+
+
+def _private_file_identity(path: Path) -> dict[str, Any] | None:
+    try:
+        info = path.lstat()
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+        or info.st_nlink != 1
+    ):
+        return None
+    return dict(zip(_FILE_IDENTITY_FIELDS, _file_identity(info)))
+
+
+def _steady_fast_identity(
+    *,
+    source_dir: Path,
+    bundle_dir: Path,
+    sources: list[Path],
+    manifests: list[Path],
+    bundle_files: list[Path],
+    receipt_dir: Path,
+    source_index_path: Path,
+) -> dict[str, Any] | None:
+    source_inventory = _stable_source_inventory_identity(
+        source_dir=source_dir,
+        bundle_dir=bundle_dir,
+        sources=sources,
+        manifests=manifests,
+        bundle_files=bundle_files,
+    )
+    if source_inventory is None:
+        return None
+    receipt_paths = (
+        list(receipt_dir.glob("*.receipt.json")) if receipt_dir.is_dir() else []
+    )
+    receipt_inventory = _inventory_fingerprint(receipt_paths, private=True)
+    source_index_identity = _private_file_identity(source_index_path)
+    try:
+        target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
+    except storage.StorageError:
+        return None
+    if (
+        receipt_inventory is None
+        or source_index_identity is None
+        or target_identity is None
+    ):
+        return None
+
+    # Close the metadata race window opened while receipts and target state were
+    # observed. Any source or receipt drift since the first fingerprint must
+    # enter the existing full reconciliation path.
+    final_source_inventory = _stable_source_inventory_identity(
+        source_dir=source_dir,
+        bundle_dir=bundle_dir,
+        sources=sources,
+        manifests=manifests,
+        bundle_files=bundle_files,
+    )
+    final_receipt_paths = (
+        list(receipt_dir.glob("*.receipt.json")) if receipt_dir.is_dir() else []
+    )
+    final_receipt_inventory = _inventory_fingerprint(
+        final_receipt_paths, private=True
+    )
+    if (
+        final_source_inventory != source_inventory
+        or final_receipt_inventory != receipt_inventory
+    ):
+        return None
+    final_source_index_identity = _private_file_identity(source_index_path)
+    try:
+        final_target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
+    except storage.StorageError:
+        return None
+    if (
+        final_source_index_identity != source_index_identity
+        or final_target_identity != target_identity
+    ):
+        return None
+    return {
+        "source_inventory": final_source_inventory,
+        "receipt_inventory": final_receipt_inventory,
+        "source_index_identity": final_source_index_identity,
+        "target_identity": final_target_identity,
+    }
+
+
+def _load_steady_checkpoint(
+    path: Path, *, source_dir: Path
+) -> dict[str, Any] | None:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+        or info.st_nlink != 1
+    ):
+        return None
+    try:
+        raw, _ = _read_immutable_artifact_snapshot(path, label="steady import checkpoint")
+        if not raw.endswith(b"\n"):
+            return None
+        document = json.loads(raw)
+        if not isinstance(document, dict):
+            return None
+        expected = {
+            "schema_version",
+            "source_dir",
+            "selection_contract",
+            "identity",
+            "summary",
+            "recorded_at",
+            "historical_only",
+            "does_not_establish",
+            "checkpoint_sha256",
+        }
+        if set(document) != expected:
+            return None
+        claimed = document.get("checkpoint_sha256")
+        unsigned = dict(document)
+        unsigned.pop("checkpoint_sha256")
+        if (
+            document.get("schema_version") != GRABOWSKI_STEADY_CHECKPOINT_SCHEMA
+            or document.get("source_dir") != str(source_dir.resolve())
+            or document.get("selection_contract") != sorted(HIGH_VALUE_KINDS)
+            or document.get("historical_only") is not True
+            or document.get("does_not_establish") != DOES_NOT_ESTABLISH
+            or not isinstance(claimed, str)
+            or claimed != sha256_bytes(canonical_bytes(unsigned))
+            or not isinstance(document.get("identity"), dict)
+            or not isinstance(document.get("summary"), dict)
+        ):
+            return None
+        recorded_at = document.get("recorded_at")
+        if not isinstance(recorded_at, str):
+            return None
+        _parse_timestamp(recorded_at, field="steady_checkpoint.recorded_at")
+        return document
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def _steady_summary_from_result(result: dict[str, Any]) -> dict[str, Any]:
+    source_count = int(result["sources_after_deduplication"])
+    event_count = int(result["events_imported"]) + int(result["events_skipped_existing"])
+    return {
+        "files_seen": int(result["files_seen"]),
+        "loose_files_seen": int(result["loose_files_seen"]),
+        "bundle_manifests_seen": int(result["bundle_manifests_seen"]),
+        "bundles_valid": int(result["bundles_valid"]),
+        "bundled_sources_seen": int(result["bundled_sources_seen"]),
+        "sources_seen_total": int(result["sources_seen_total"]),
+        "sources_after_deduplication": source_count,
+        "orphan_bundles": int(result["orphan_bundles"]),
+        "files_imported_or_confirmed": source_count,
+        "files_unchanged": source_count,
+        "receipts_written": 0,
+        "receipts_reused": source_count,
+        "loose_sources_imported_or_confirmed": int(result["loose_files_seen"]),
+        "bundled_sources_imported_or_confirmed": int(result["bundled_sources_seen"]),
+        "events_imported": 0,
+        "events_skipped_existing": event_count,
+        "target_scans": 0,
+        "target_records_scanned": 0,
+        "identity_index_mode": "steady",
+        "identity_index_full_rebuild": False,
+        "identity_index_entries_after": int(result["identity_index_entries_after"]),
+        "source_index_mode": "steady",
+        "source_index_file_bytes": int(result["source_index_file_bytes"]),
+        "sources_reused": source_count,
+        "sources_revalidated": 0,
+        "sources_changed": 0,
+        "sources_added": 0,
+        "sources_removed": 0,
+        "source_bytes_read": 0,
+        "source_bytes_hashed": 0,
+        "source_events_validated": 0,
+    }
+
+
+def _publish_steady_checkpoint(
+    path: Path,
+    *,
+    source_dir: Path,
+    identity: dict[str, Any],
+    summary: dict[str, Any],
+    previous: dict[str, Any] | None,
+) -> bool:
+    semantic = {
+        "schema_version": GRABOWSKI_STEADY_CHECKPOINT_SCHEMA,
+        "source_dir": str(source_dir.resolve()),
+        "selection_contract": sorted(HIGH_VALUE_KINDS),
+        "identity": identity,
+        "summary": summary,
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+    if previous is not None and all(
+        previous.get(key) == value for key, value in semantic.items()
+    ):
+        return False
+    document = {**semantic, "recorded_at": utc_now()}
+    document["checkpoint_sha256"] = sha256_bytes(canonical_bytes(document))
+    raw = json.dumps(document, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+    _atomic_write(path, raw)
+    _fsync_directory(path.parent)
+    return True
+
+
+def _steady_fast_result(
+    checkpoint: dict[str, Any],
+    *,
+    source_dir: Path,
+    receipt_dir: Path,
+    source_index_path: Path,
+    import_started_ns: int,
+    phase_ns: Counter[str],
+    counters: Counter[str],
+) -> dict[str, Any]:
+    summary = dict(checkpoint["summary"])
+    counters["steady_fast_path_hits"] += 1
+    counters["sources_reused"] = int(summary["sources_reused"])
+    elapsed_ns = time.perf_counter_ns() - import_started_ns
+    telemetry = {
+        "schema_version": "chronik-grabowski-import-telemetry.v1",
+        "elapsed_seconds": round(elapsed_ns / 1_000_000_000, 6),
+        "phases_seconds": {
+            name: round(value / 1_000_000_000, 6)
+            for name, value in sorted(phase_ns.items())
+        },
+        "counters": dict(sorted(counters.items())),
+    }
+    return {
+        "schema_version": "chronik-grabowski-outbox-batch.v2",
+        "source_dir": str(source_dir),
+        "receipt_dir": str(receipt_dir),
+        **summary,
+        "source_index_path": str(source_index_path),
+        "source_index_written": False,
+        "elapsed_seconds": telemetry["elapsed_seconds"],
+        "import_telemetry": telemetry,
+        "bundle_inventory": [],
+        "bundle_inventory_omitted": True,
+        "steady_fast_path": True,
+        "steady_checkpoint_sha256": checkpoint["checkpoint_sha256"],
+        "errors": [],
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
 
 
 def _source_index_path(receipt_dir: Path) -> Path:
@@ -763,7 +1117,6 @@ def _publish_grabowski_source_index(
     _atomic_write(path, raw)
     _fsync_directory(path.parent)
     return True, len(raw)
-
 
 
 def _ledger_payloads_by_event_id() -> tuple[dict[str, bytes], int]:
@@ -1570,7 +1923,12 @@ def import_grabowski_outbox_file(source: Path, *, receipt_dir: Path) -> dict[str
     return results[0]
 
 
-def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str, Any]:
+def import_grabowski_outbox(
+    *,
+    outbox_root: Path,
+    receipt_dir: Path,
+    allow_steady_fast_path: bool = False,
+) -> dict[str, Any]:
     import_started_ns = time.perf_counter_ns()
     phase_ns: Counter[str] = Counter()
     counters: Counter[str] = Counter()
@@ -1601,6 +1959,36 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
     counters["loose_sources_discovered"] = len(sources)
     counters["bundle_manifests_discovered"] = len(manifests)
     counters["bundle_files_discovered"] = len(bundle_files)
+
+    steady_checkpoint_path = _steady_checkpoint_path(receipt_dir)
+    prior_steady_checkpoint = _load_steady_checkpoint(
+        steady_checkpoint_path, source_dir=source_dir
+    )
+    if allow_steady_fast_path and prior_steady_checkpoint is not None:
+        with measured_phase("steady_fast_path"):
+            current_fast_identity = _steady_fast_identity(
+                source_dir=source_dir,
+                bundle_dir=bundle_dir,
+                sources=sources,
+                manifests=manifests,
+                bundle_files=bundle_files,
+                receipt_dir=receipt_dir,
+                source_index_path=source_index_path,
+            )
+            if (
+                current_fast_identity is not None
+                and current_fast_identity == prior_steady_checkpoint.get("identity")
+            ):
+                return _steady_fast_result(
+                    prior_steady_checkpoint,
+                    source_dir=source_dir,
+                    receipt_dir=receipt_dir,
+                    source_index_path=source_index_path,
+                    import_started_ns=import_started_ns,
+                    phase_ns=phase_ns,
+                    counters=counters,
+                )
+            counters["steady_fast_path_fallbacks"] += 1
 
     target_path = storage.safe_target_path(DOMAIN)
     target_missing_or_empty = not target_path.exists() or target_path.stat().st_size == 0
@@ -1868,17 +2256,7 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
         counters["source_index_reuses"] = 1
 
     bundled_sources_seen = sum(int(item["source_count"]) for item in bundle_metadata)
-    elapsed_ns = time.perf_counter_ns() - import_started_ns
-    telemetry = {
-        "schema_version": "chronik-grabowski-import-telemetry.v1",
-        "elapsed_seconds": round(elapsed_ns / 1_000_000_000, 6),
-        "phases_seconds": {
-            name: round(value / 1_000_000_000, 6)
-            for name, value in sorted(phase_ns.items())
-        },
-        "counters": dict(sorted(counters.items())),
-    }
-    return {
+    base_result = {
         "schema_version": "chronik-grabowski-outbox-batch.v2",
         "source_dir": str(source_dir),
         "receipt_dir": str(receipt_dir),
@@ -1919,12 +2297,74 @@ def import_grabowski_outbox(*, outbox_root: Path, receipt_dir: Path) -> dict[str
         "source_bytes_read": counters["source_bytes_read"],
         "source_bytes_hashed": counters["source_bytes_hashed"],
         "source_events_validated": counters["source_events_validated"],
-        "elapsed_seconds": telemetry["elapsed_seconds"],
-        "import_telemetry": telemetry,
         "bundle_inventory": bundle_metadata,
         "errors": errors,
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+    if (
+        not errors
+        and ledger_reconciled
+        and receipt_writes_succeeded
+        and identity_index_entries_after is not None
+    ):
+        with measured_phase("steady_checkpoint_publish"):
+            source_inventory = _stable_source_inventory_identity(
+                source_dir=source_dir,
+                bundle_dir=bundle_dir,
+                sources=sources,
+                manifests=manifests,
+                bundle_files=bundle_files,
+            )
+            receipt_paths = (
+                list(receipt_dir.glob("*.receipt.json"))
+                if receipt_dir.is_dir()
+                else []
+            )
+            receipt_inventory = _inventory_fingerprint(receipt_paths, private=True)
+            source_index_identity = _private_file_identity(source_index_path)
+            try:
+                target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
+            except storage.StorageError:
+                target_identity = None
+            if (
+                source_inventory is not None
+                and receipt_inventory is not None
+                and source_index_identity is not None
+                and target_identity is not None
+            ):
+                checkpoint_identity = {
+                    "source_inventory": source_inventory,
+                    "receipt_inventory": receipt_inventory,
+                    "source_index_identity": source_index_identity,
+                    "target_identity": target_identity,
+                }
+                checkpoint_summary = _steady_summary_from_result(base_result)
+                if _publish_steady_checkpoint(
+                    steady_checkpoint_path,
+                    source_dir=source_dir,
+                    identity=checkpoint_identity,
+                    summary=checkpoint_summary,
+                    previous=prior_steady_checkpoint,
+                ):
+                    counters["steady_checkpoint_writes"] += 1
+                else:
+                    counters["steady_checkpoint_reuses"] += 1
+    elapsed_ns = time.perf_counter_ns() - import_started_ns
+    telemetry = {
+        "schema_version": "chronik-grabowski-import-telemetry.v1",
+        "elapsed_seconds": round(elapsed_ns / 1_000_000_000, 6),
+        "phases_seconds": {
+            name: round(value / 1_000_000_000, 6)
+            for name, value in sorted(phase_ns.items())
+        },
+        "counters": dict(sorted(counters.items())),
+    }
+    return {
+        **base_result,
+        "elapsed_seconds": telemetry["elapsed_seconds"],
+        "import_telemetry": telemetry,
+        "steady_fast_path": False,
     }
 
 

@@ -130,6 +130,287 @@ def test_no_change_import_reuses_source_index_without_source_reads(
     assert index_path.stat().st_mtime_ns == original_stat.st_mtime_ns
 
 
+def test_summary_steady_fast_path_skips_full_source_and_ledger_reconciliation(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    first = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    checkpoint = receipts / coding_memory.GRABOWSKI_STEADY_CHECKPOINT_FILENAME
+    assert first["steady_fast_path"] is False
+    assert checkpoint.is_file()
+
+    def unexpected_full_path(*args, **kwargs):
+        raise AssertionError("steady fast path entered full reconciliation")
+
+    monkeypatch.setattr(coding_memory, "_load_grabowski_source_index", unexpected_full_path)
+    monkeypatch.setattr(coding_memory, "_import_prepared_grabowski_sources", unexpected_full_path)
+    second = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert second["steady_fast_path"] is True
+    assert second["events_imported"] == 0
+    assert second["events_skipped_existing"] == 2
+    assert second["files_unchanged"] == 2
+    assert second["receipts_reused"] == 2
+    assert second["source_index_mode"] == "steady"
+    assert second["source_bytes_read"] == 0
+    assert second["source_bytes_hashed"] == 0
+    assert second["source_events_validated"] == 0
+    assert second["target_scans"] == 0
+    assert second["target_records_scanned"] == 0
+    assert second["bundle_inventory"] == []
+    assert second["bundle_inventory_omitted"] is True
+    assert second["import_telemetry"]["counters"]["steady_fast_path_hits"] == 1
+
+
+def test_summary_steady_fast_path_falls_back_when_source_directory_changes_mid_check(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    original = coding_memory._inventory_fingerprint
+    mutated = False
+
+    def mutate_after_snapshot(paths, *, private):
+        nonlocal mutated
+        result = original(paths, private=private)
+        if not private and not mutated:
+            mutated = True
+            write_named_outbox(
+                outbox,
+                "grabowski_task-raced-a1.jsonl",
+                [event("agent.run.completed", "b")],
+            )
+        return result
+
+    monkeypatch.setattr(coding_memory, "_inventory_fingerprint", mutate_after_snapshot)
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["import_telemetry"]["counters"]["steady_fast_path_fallbacks"] == 1
+    # The raced source was created after this run's initial glob; it is picked up on
+    # the next normal run rather than being incorrectly certified unchanged.
+    next_result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert next_result["events_imported"] == 1
+    assert next_result["steady_fast_path"] is False
+
+
+def test_summary_steady_fast_path_rechecks_source_after_target_identity(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    original = coding_memory.storage.read_unique_storage_checkpoint_identity
+    mutated = False
+
+    def mutate_before_return(*args, **kwargs):
+        nonlocal mutated
+        result = original(*args, **kwargs)
+        if not mutated:
+            mutated = True
+            write_named_outbox(
+                outbox,
+                "grabowski_task-late-race-a1.jsonl",
+                [event("agent.run.completed", "b")],
+            )
+        return result
+
+    monkeypatch.setattr(
+        coding_memory.storage,
+        "read_unique_storage_checkpoint_identity",
+        mutate_before_return,
+    )
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["import_telemetry"]["counters"]["steady_fast_path_fallbacks"] == 1
+    next_result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert next_result["events_imported"] == 1
+    assert next_result["steady_fast_path"] is False
+
+
+def test_summary_steady_fast_path_rechecks_receipts_after_target_identity(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    receipt = next(receipts.glob("*.receipt.json"))
+    original = coding_memory.storage.read_unique_storage_checkpoint_identity
+    mutated = False
+
+    def mutate_before_return(*args, **kwargs):
+        nonlocal mutated
+        result = original(*args, **kwargs)
+        if not mutated:
+            mutated = True
+            tampered = json.loads(receipt.read_text())
+            tampered["source_sha256"] = "0" * 64
+            receipt.write_text(json.dumps(tampered), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(
+        coding_memory.storage,
+        "read_unique_storage_checkpoint_identity",
+        mutate_before_return,
+    )
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["import_telemetry"]["counters"]["steady_fast_path_fallbacks"] == 1
+    assert recovered["receipts_written"] == 1
+
+
+def test_summary_steady_fast_path_falls_back_after_receipt_drift(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    receipt = next(receipts.glob("*.receipt.json"))
+    tampered = json.loads(receipt.read_text())
+    tampered["source_sha256"] = "0" * 64
+    receipt.write_text(json.dumps(tampered), encoding="utf-8")
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["import_telemetry"]["counters"]["steady_fast_path_fallbacks"] == 1
+    assert recovered["receipts_written"] == 1
+    repaired = json.loads(receipt.read_text())
+    assert repaired["receipt_sha256"]
+
+
+def test_summary_steady_fast_path_falls_back_after_source_index_drift(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    index_path = receipts / coding_memory.GRABOWSKI_SOURCE_INDEX_FILENAME
+    raw = index_path.read_bytes()
+    index_path.write_bytes(raw)
+    index_path.chmod(0o600)
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["import_telemetry"]["counters"]["steady_fast_path_fallbacks"] == 1
+    assert recovered["errors"] == []
+
+
+def test_summary_steady_fast_path_falls_back_after_ledger_drift(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    coding_memory.import_events([event("agent.run.completed", "b")])
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["import_telemetry"]["counters"]["steady_fast_path_fallbacks"] == 1
+    assert recovered["target_scans"] == 0
+    assert recovered["errors"] == []
+
+
+def test_corrupt_steady_checkpoint_falls_back_to_full_import(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    checkpoint = receipts / coding_memory.GRABOWSKI_STEADY_CHECKPOINT_FILENAME
+    checkpoint.write_text("{}\n", encoding="utf-8")
+    checkpoint.chmod(0o600)
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["errors"] == []
+    rebuilt = json.loads(checkpoint.read_text())
+    claimed = rebuilt.pop("checkpoint_sha256")
+    assert claimed == coding_memory.sha256_bytes(coding_memory.canonical_bytes(rebuilt))
+
+
 def test_metadata_drift_revalidates_source_even_when_size_and_mtime_match(
     tmp_path, monkeypatch
 ):
@@ -821,7 +1102,6 @@ def test_cross_file_divergent_event_id_fails_before_batch_append(tmp_path, monke
     target = data / "agent.ledger.jsonl"
     assert not target.exists() or target.read_text() == ""
     assert not receipts.exists()
-
 
 
 def test_single_file_receipt_failure_preserves_original_exception(
