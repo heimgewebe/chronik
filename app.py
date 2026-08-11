@@ -41,15 +41,18 @@ from storage import (
     write_payload,
     write_payload_unique,
 )
-from provenance import ProvenanceError, validate_provenance, has_provenance
+from provenance import ProvenanceError
 from validation import (
-    normalize_heimgeist_item,
     parse_iso_ts,
     prewarm_validators,
-    validate_insights_daily_payload,
 )
 from integrity import IntegrityManager
-from canonical_ingest import build_envelope
+from canonical_ingest import (
+    apply_retention_policy,
+    build_quality_envelope,
+    payload_event_type,
+)
+from ingest_validation import validate_and_normalize_item
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
@@ -411,71 +414,40 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
     # Pre-compute label to prevent label pollution/entropy
     domain_label = _sanitize_metric_label(dom)
 
-    # Normalisieren & validieren
     for entry in items:
-        if not isinstance(entry, dict):
-            raise HTTPException(status_code=400, detail="invalid payload")
+        try:
+            normalized = validate_and_normalize_item(
+                entry,
+                dom,
+                provenance_enforced=is_provenance_enforced,
+            )
+        except ProvenanceError as exc:
+            provenance_validation_failures.labels(domain=domain_label).inc()
+            events_rejected_total.labels(domain=domain_label, reason="provenance").inc()
+            logger.warning(
+                f"Provenance validation failed: {exc}", extra={"domain": dom}
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=f"provenance validation failed: {str(exc)}",
+            ) from exc
 
-        normalized = dict(entry)
-
-        # 1. Validation & Normalization logic per domain
-        if dom == "insights.daily":
-            validate_insights_daily_payload(normalized)
-        elif dom == "heimgeist":
-            normalized = normalize_heimgeist_item(normalized)
-        else:
-            # Generic domain checks
-            summary_val = normalized.get("summary")
-            if isinstance(summary_val, str) and len(summary_val) > 500:
-                raise HTTPException(status_code=422, detail="summary too long (max 500)")
-
-            if "domain" in normalized:
-                entry_domain = normalized["domain"]
-                if not isinstance(entry_domain, str):
-                    raise HTTPException(status_code=400, detail="invalid payload")
-
-                try:
-                    sanitized_entry_domain = sanitize_domain(entry_domain)
-                except DomainError as exc:
-                    raise HTTPException(status_code=400, detail="invalid payload") from exc
-                if sanitized_entry_domain != dom:
-                    raise HTTPException(status_code=400, detail="domain mismatch")
-        
-        # 1b. Provenance validation (if enabled)
-        if is_provenance_enforced:
-            try:
-                validate_provenance(normalized, strict=True)
-            except ProvenanceError as exc:
-                provenance_validation_failures.labels(domain=domain_label).inc()
-                events_rejected_total.labels(domain=domain_label, reason="provenance").inc()
-                logger.warning(
-                    f"Provenance validation failed: {exc}",
-                    extra={"domain": dom}
-                )
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"provenance validation failed: {str(exc)}"
-                ) from exc
-        else:
-            # Non-strict validation: just log warnings
-            validate_provenance(normalized, strict=False)
-        
-        # 1c. Identify the event type for bounded metrics. Canonical quality and
-        # retention metadata are computed once by the shared envelope constructor.
-        event_type = normalized.get("kind") or normalized.get("type") or normalized.get("event")
+        event_type = payload_event_type(normalized)
         metrics_event_type = event_type if event_type else f"domain.{dom}"
         event_type_for_metrics = _sanitize_metric_label(metrics_event_type)
         received_dt = datetime.now(timezone.utc)
 
-        # 2. Canonical Wrapping (All domains). API and local importers share
-        # this constructor so receipt hashes and retention metadata do not drift.
-        wrapper = build_envelope(
+        quality_envelope = build_quality_envelope(
             dom,
             normalized,
             received_at=received_dt,
             quality_enabled=is_quality_enabled,
         )
-        
+        wrapper = apply_retention_policy(
+            quality_envelope,
+            received_at=received_dt,
+        )
+
         if is_quality_enabled:
             events_signal_strength.labels(
                 domain=domain_label,
@@ -483,7 +455,7 @@ def _process_items(items: list[Any], dom: str) -> list[str]:
             ).inc()
         # Track metrics with sanitized labels (both domain and event_type)
         events_ingested_total.labels(domain=domain_label, event_type=event_type_for_metrics).inc()
-        
+
         lines.append(json.dumps(wrapper, ensure_ascii=False, separators=(",", ":")))
     return lines
 
