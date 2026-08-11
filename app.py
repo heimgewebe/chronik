@@ -53,6 +53,11 @@ from canonical_ingest import (
     payload_event_type,
 )
 from ingest_validation import validate_and_normalize_item
+from http_adapter import (
+    HttpPayloadShapeError,
+    adapt_ingest_http_items,
+    ingest_request_body_openapi,
+)
 
 # --- Runtime constants & logging ---
 MAX_PAYLOAD_SIZE: Final[int] = int(
@@ -398,6 +403,14 @@ async def _read_body_as_utf8(request: Request, limit: int) -> str:
     return data.decode("utf-8")
 
 
+def _adapt_http_items(value: Any) -> list[dict[str, Any]]:
+    """Apply only the permissive Pydantic HTTP-shape adapter."""
+    try:
+        return adapt_ingest_http_items(value)
+    except HttpPayloadShapeError as exc:
+        raise HTTPException(status_code=400, detail="invalid payload") from exc
+
+
 def _process_items(items: list[Any], dom: str) -> list[str]:
     lines: list[str] = []
     # Leeres Array: nichts zu tun
@@ -546,6 +559,7 @@ def _process_and_write_combined(dom: str, items: list[Any]) -> dict[str, Any] | 
     # Dependency order matters: auth FIRST, then size check.
     dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
     status_code=202,
+    openapi_extra=ingest_request_body_openapi(include_ndjson=True),
 )
 @limiter.limit(RATE_LIMIT)
 async def ingest_v1(
@@ -565,22 +579,23 @@ async def ingest_v1(
     except UnicodeError as exc:
         raise HTTPException(status_code=400, detail="invalid encoding") from exc
 
-    items = []
     if "application/json" in content_type:
         try:
             obj = json.loads(body)
-            items = obj if isinstance(obj, list) else [obj]
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="invalid json") from exc
+        items = _adapt_http_items(obj)
     elif "application/x-ndjson" in content_type:
+        decoded_items: list[Any] = []
         lines = body.strip().split("\n")
         for line in lines:
             if not line:
                 continue
             try:
-                items.append(json.loads(line))
+                decoded_items.append(json.loads(line))
             except json.JSONDecodeError as exc:
                 raise HTTPException(status_code=400, detail="invalid ndjson") from exc
+        items = _adapt_http_items(decoded_items)
     else:
         raise HTTPException(status_code=415, detail="unsupported content-type")
 
@@ -617,6 +632,7 @@ async def ingest_v1(
     # Dependency order matters: auth FIRST, then size check.
     dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
     deprecated=True,
+    openapi_extra=ingest_request_body_openapi(include_ndjson=False),
 )
 @limiter.limit(RATE_LIMIT)
 async def ingest(
@@ -636,8 +652,8 @@ async def ingest(
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid json") from exc
 
-    # Objekt oder Array → JSONL: eine kompakte Zeile pro Eintrag
-    items = obj if isinstance(obj, list) else [obj]
+    # Pydantic adapts only the HTTP object shape; canonical validation follows.
+    items = _adapt_http_items(obj)
     try:
         result = await run_in_threadpool(_process_and_write_combined, dom, items)
     except StorageError as exc:
