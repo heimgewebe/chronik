@@ -15,6 +15,8 @@ from typing import Final, Iterable, Iterator, NoReturn, Tuple
 
 from filelock import FileLock, Timeout
 
+from settings import Settings
+
 from identity_index import (
     IdentityIndexCommitUncertain,
     IdentityIndexDriftError,
@@ -93,9 +95,8 @@ class StorageMissingIdentityError(StorageError):
         )
 
 
-DATA_DIR: Final[Path] = Path(
-    os.environ.get("CHRONIK_DATA_DIR", "data")
-).resolve()
+_STORAGE_SETTINGS = Settings()
+DATA_DIR: Final[Path] = _STORAGE_SETTINGS.data_dir
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # RFC-like FQDN validation: labels 1..63, a-z0-9 and '-' (no '_'), total ≤ 253
@@ -115,7 +116,7 @@ FILENAME_RE: Final[re.Pattern[str]] = re.compile(
 # Additional characters we remove for security (besides / and \0)
 _UNSAFE_FILENAME_CHARS: Final[re.Pattern[str]] = re.compile(r"[][<>:\"|?*]")
 
-LOCK_TIMEOUT: Final[int] = int(os.getenv("CHRONIK_LOCK_TIMEOUT") or "30")
+LOCK_TIMEOUT: Final[int] = _STORAGE_SETTINGS.lock_timeout
 
 
 def sanitize_domain(domain: str) -> str:

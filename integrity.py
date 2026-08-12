@@ -16,6 +16,7 @@ from storage import (
     sanitize_domain,
 )
 
+from settings import DEFAULT_INTEGRITY_SOURCES_URL, Settings
 from validation import parse_iso_ts
 
 logger = logging.getLogger(__name__)
@@ -39,14 +40,11 @@ def normalize_status(value: Any) -> str:
     v = value.strip().upper()
     return v if v in ALLOWED_STATUS else "UNCLEAR"
 
-DEFAULT_SOURCES_URL = "https://github.com/heimgewebe/metarepo/releases/download/integrity/sources.v1.json"
+DEFAULT_SOURCES_URL = DEFAULT_INTEGRITY_SOURCES_URL
 
 # Concurrency limit for integrity aggregation to prevent threadpool starvation.
 # Default is 20, which is safe for standard Starlette/AnyIO threadpools.
-try:
-    INTEGRITY_CONCURRENCY_LIMIT = int(os.getenv("CHRONIK_INTEGRITY_CONCURRENCY", "20"))
-except ValueError:
-    INTEGRITY_CONCURRENCY_LIMIT = 20
+INTEGRITY_CONCURRENCY_LIMIT = Settings().integrity_concurrency_limit
 
 def get_current_utc_str() -> str:
     """Return current UTC time in strict ISO8601 format (Z-suffix)."""
@@ -55,11 +53,12 @@ def get_current_utc_str() -> str:
 
 class IntegrityManager:
     def __init__(self):
-        self.sources_url = os.getenv("INTEGRITY_SOURCES_URL", DEFAULT_SOURCES_URL)
-        self.override = os.getenv("INTEGRITY_SOURCES_OVERRIDE")
-        self.fetch_interval = int(os.getenv("INTEGRITY_FETCH_INTERVAL_SEC", "300"))
+        settings = Settings()
+        self.sources_url = settings.integrity_sources_url
+        self.override = settings.integrity_sources_override
+        self.fetch_interval = settings.integrity_fetch_interval
         # Default 10 min tolerance for future timestamps
-        self.future_tolerance_min = int(os.getenv("INTEGRITY_FUTURE_TOLERANCE_MIN", "10"))
+        self.future_tolerance_min = settings.integrity_future_tolerance_min
         self._running = False
 
     async def loop(self):
