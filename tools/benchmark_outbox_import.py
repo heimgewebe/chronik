@@ -98,6 +98,7 @@ def _measure(
         "events_skipped_existing": result["events_skipped_existing"],
         "source_index_mode": result["source_index_mode"],
         "steady_fast_path": result.get("steady_fast_path") is True,
+        "delta_fast_path": result.get("delta_fast_path") is True,
         "sources_reused": result["sources_reused"],
         "sources_revalidated": result["sources_revalidated"],
         "sources_changed": result["sources_changed"],
@@ -230,6 +231,7 @@ def benchmark_tier(
             and first["steady_fast_path"] is False
             and repeat["steady_fast_path"] is True
             and small_delta["steady_fast_path"] is False
+            and small_delta["delta_fast_path"] is True
             and bundled_rebuild["steady_fast_path"] is False
             and bundled_repeat["steady_fast_path"] is True
             and first["target_scans"] <= MAX_TARGET_SCANS

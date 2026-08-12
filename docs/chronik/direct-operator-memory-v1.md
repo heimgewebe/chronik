@@ -180,19 +180,39 @@ diesen Vollabgleich überspringen, aber nur auf Basis eines kleinen privaten
 `steady-import-checkpoint.v1.json`, der **nach** einem erfolgreichen Vollabgleich
 geschrieben wurde. Der Checkpoint bindet die Metadatenidentität aller losen
 Quellen, Bundle-Manifeste und Bundle-Dateien, aller Import-Receipts, des
-Source-Index sowie des Ledger- und Identity-Index-Paares. Vor einem Fast-Return
-werden Source- und Receipt-Inventar nach dem Ledger-/Index-Read ein zweites Mal
-abgeglichen, um Änderungen im Prüfzeitfenster zu erkennen. Nur wenn sämtliche
-Identitäten exakt dem vorherigen Vollabgleich entsprechen, werden Source-Index-
-Laden, logische Quellmaterialisierung, Merge und erneuter Ledger-Abgleich
-ausgelassen. Jede Abweichung, fehlende Datei, unsichere Dateiform, beschädigte
-Checkpoint-Struktur oder Digest-Abweichung fällt deterministisch auf den
-bestehenden Vollpfad zurück. `--output-mode full` verwendet diesen Fast-Path
-nicht.
+Source-Index, der privaten Delta-Projektionen sowie des Ledger- und
+Identity-Index-Paares. Vor einem Fast-Return werden Source- und Receipt-Inventar
+nach dem Ledger-/Index-Read ein zweites Mal abgeglichen, um Änderungen im
+Prüfzeitfenster zu erkennen. Nur wenn sämtliche Identitäten exakt dem vorherigen
+Vollabgleich entsprechen, werden Quellmaterialisierung, Merge und erneuter
+Ledger-Abgleich ausgelassen.
 
-Der Checkpoint ist eine rekonstruierbare Beschleunigungsprojektion. Er ist weder
-Replay- noch Historienautorität und begründet insbesondere keine aktuelle Git-,
-CI-, Runtime-, Task- oder Retry-Wahrheit.
+Ein Source-only-Delta darf im selben `summary`-Pfad enger verarbeitet werden.
+Dafür muss der vorherige erfolgreiche Checkpoint weiterhin exakt den
+kanonischen Source-Index, einen privaten `delta-source-index.v1.json`, dessen
+gebundenes `delta-source-overlay.v1.json` sowie Ledger und Identity-Index
+verankern. Der Delta-Index enthält nur rekonstruierbare Metadaten; das auf 2048
+Einträge begrenzte Overlay hält ausschließlich seit dem letzten Vollabgleich
+neue oder geänderte lose Quellen. Vor dem Ledger-Effekt werden diese Cache- und
+Target-Identitäten nochmals geprüft. Nur die tatsächlich neuen oder geänderten
+Quellen werden aus ihren stabil gelesenen Bytes validiert und gegen den
+autoritativen Identity-Index abgeglichen. Entfernte Quellen, Bundle-Drift,
+Generationsüberlappungen, beschädigte Projektionen, überschrittene
+Overlay-Grenzen oder irgendeine Autoritätsdrift fallen deterministisch auf den
+Vollpfad zurück.
+
+Import-Receipts bleiben auch dabei reine Evidenz. Ein Delta-Lauf behauptet für
+übersprungene Altquellen deshalb keine aktuelle Receipt-Wiederverwendung,
+sondern zählt sie als `receipts_deferred`. Der nächste Lauf ohne neue
+Source-Änderung führt einmal den Vollabgleich aus, attestiert bzw. repariert die
+Receipts und setzt Delta-Basis und Overlay wieder zusammen. Erst der folgende
+exakt unveränderte Lauf darf wieder den No-change-Fast-Return nehmen.
+`--output-mode full` verwendet weder No-change- noch Delta-Fast-Path.
+
+Checkpoint, Delta-Index und Overlay sind rekonstruierbare
+Beschleunigungsprojektionen. Sie sind weder Replay- noch Historienautorität und
+begründen insbesondere keine aktuelle Git-, CI-, Runtime-, Task- oder
+Retry-Wahrheit.
 
 Ein Receipt wird erst nach dem erfolgreichen Ledger-Abgleich geschrieben. Falls
 dieser Evidenzschritt scheitert, bleiben die bereits bestätigten Ledger-Zahlen
@@ -213,8 +233,9 @@ nicht parallel ein zweites Mal gestartet; ein noch aktiver Lauf verhindert damit
 ausschließlich unter `~/.local/state/chronik` schreiben. Für systemd nutzt die
 Unit `import-outbox --output-mode summary`: Pro Lauf entsteht genau ein kompakter
 JSON-Einzeiler mit Zählern. Nur dieser Summary-Pfad aktiviert den oben
-beschriebenen no-change Fast-Path; jeder Drift führt im selben Lauf zurück in den
-normalen vollständigen Abgleich. Dateiinventare werden nicht ausgegeben; höchstens
+beschriebenen No-change- und Source-only-Delta-Pfad; nicht sicher als Delta
+klassifizierbarer Drift führt im selben Lauf zurück in den normalen vollständigen
+Abgleich. Dateiinventare werden nicht ausgegeben; höchstens
 drei gekürzte Fehlerstichproben bleiben sichtbar. Die Zeile bleibt garantiert
 unter 4096 Bytes: Gekürzt wird nach der JSON-kodierten Bytelänge, nicht nach
 Zeichenzahl, weil Escaping ein Zeichen auf bis zu zwölf Bytes ausdehnen kann.
