@@ -5,6 +5,11 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
 ./scripts/setup-venv.sh
+# Keep subprocess CLIs on the same interpreter/dependency environment as the
+# validator itself. Some contract tests execute repository scripts through
+# their /usr/bin/env python3 shebang, so merely calling .venv/bin/python for
+# pytest is not equivalent to an activated development/CI environment.
+. .venv/bin/activate
 
 TMP_DATA_DIR=$(mktemp -d)
 cleanup() {
