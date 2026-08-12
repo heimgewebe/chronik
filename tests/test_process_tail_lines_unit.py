@@ -57,70 +57,57 @@ def test_process_tail_lines_all_malformed():
     assert last_seen_dt is None
     mock_logger.warning.assert_called_once()
 
-def test_process_tail_lines_with_since_filter():
-    """
-    Test that _process_tail_lines correctly filters lines based on since_dt
-    even when malformed lines are present.
-    """
+def test_process_tail_lines_with_since_filter_ignores_legacy_timestamps():
     from app import _process_tail_lines
-
     lines = [
-        json.dumps({"ts": "2023-01-01T10:00:00Z", "id": 1}),
+        json.dumps({"ts": "2023-01-01T11:00:00Z", "id": 1}),
         "malformed",
-        json.dumps({"ts": "2023-01-01T11:00:00Z", "id": 2}),
-        json.dumps({"ts": "2023-01-01T12:00:00Z", "id": 3}),
+        json.dumps({"timestamp": "2023-01-01T12:00:00Z", "id": 2}),
     ]
-
     since_dt = datetime(2023, 1, 1, 10, 30, 0, tzinfo=timezone.utc)
-    dom = "test-domain"
-
-    results, dropped, last_seen_dt = _process_tail_lines(lines, since_dt, dom)
-
-    assert len(results) == 2
-    assert results[0]["id"] == 2
-    assert results[1]["id"] == 3
+    results, dropped, last_seen_dt = _process_tail_lines(lines, since_dt, "test-domain")
+    assert results == []
     assert dropped == 1
-    assert last_seen_dt == datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+    assert last_seen_dt is None
 
-def test_process_tail_lines_with_received_at():
-    """Regression: _process_tail_lines must use received_at for since= filtering.
 
-    Canonical wrappers store the envelope timestamp in received_at. Before the fix,
-    only ts/timestamp were checked, so all canonical-wrapper lines were treated as
-    having no timestamp and were always included (or skipped) regardless of since=.
-    """
+def test_process_tail_lines_received_at_since_is_inclusive():
     from app import _process_tail_lines
-
     lines = [
-        json.dumps({"received_at": "2023-01-01T10:00:00Z", "payload": {"id": 1}}),
-        json.dumps({"received_at": "2023-01-01T11:00:00Z", "payload": {"id": 2}}),
-        json.dumps({"received_at": "2023-01-01T12:00:00Z", "payload": {"id": 3}}),
+        json.dumps({"received_at": "2023-01-01T10:00:00Z", "id": 1}),
+        json.dumps({"received_at": "2023-01-01T11:00:00Z", "id": 2}),
+        json.dumps({"received_at": "2023-01-01T12:00:00Z", "id": 3}),
     ]
-
-    since_dt = datetime(2023, 1, 1, 10, 30, 0, tzinfo=timezone.utc)
-    dom = "test-canonical"
-
-    results, dropped, last_seen_dt = _process_tail_lines(lines, since_dt, dom)
-
-    assert len(results) == 2
-    assert results[0]["payload"]["id"] == 2
-    assert results[1]["payload"]["id"] == 3
+    since_dt = datetime(2023, 1, 1, 11, 0, 0, tzinfo=timezone.utc)
+    results, dropped, last_seen_dt = _process_tail_lines(lines, since_dt, "test-canonical")
+    assert [item["id"] for item in results] == [2, 3]
     assert dropped == 0
     assert last_seen_dt == datetime(2023, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
-    """
-    Test that _process_tail_lines handles valid JSON lines that lack timestamps.
-    """
-    from app import _process_tail_lines
 
+def test_process_tail_lines_until_is_exclusive():
+    from app import _process_tail_lines
+    lines = [
+        json.dumps({"received_at": "2023-01-01T10:00:00Z", "id": 1}),
+        json.dumps({"received_at": "2023-01-01T11:00:00Z", "id": 2}),
+    ]
+    until_dt = datetime(2023, 1, 1, 11, 0, 0, tzinfo=timezone.utc)
+    results, dropped, last_seen_dt = _process_tail_lines(
+        lines, None, "test-canonical", until_dt=until_dt
+    )
+    assert [item["id"] for item in results] == [1]
+    assert dropped == 0
+    assert last_seen_dt == datetime(2023, 1, 1, 10, 0, 0, tzinfo=timezone.utc)
+
+
+def test_process_tail_lines_without_timestamps():
+    from app import _process_tail_lines
     lines = [
         json.dumps({"msg": "no timestamp"}),
         "corrupt",
         json.dumps({"msg": "still no timestamp"}),
     ]
-
     results, dropped, last_seen_dt = _process_tail_lines(lines, None, "test")
-
     assert len(results) == 2
     assert dropped == 1
     assert last_seen_dt is None

@@ -7,7 +7,8 @@ import re
 import secrets
 import time
 import uuid
-from datetime import datetime, timezone
+from collections import deque
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 from typing import TYPE_CHECKING, Any, Callable, Final, Literal, NoReturn, TypeVar
 
@@ -348,7 +349,11 @@ storage_io_duration_seconds = Histogram(
 )
 
 StorageIOOperation = Literal[
-    "ingest_write", "events_scan", "latest_read", "tail_read"
+    "ingest_write",
+    "events_scan",
+    "latest_read",
+    "tail_read",
+    "tail_window_scan",
 ]
 _StorageResult = TypeVar("_StorageResult")
 
@@ -879,38 +884,73 @@ async def latest_v1(domain: str, unwrap: int = 0):
         raise HTTPException(status_code=500, detail="data corruption") from exc
 
 
+def _parse_tail_query_bound(
+    value: str | None, name: Literal["since", "until"]
+) -> datetime | None:
+    """Parse a public tail bound as an explicit UTC ISO8601 timestamp ending in Z."""
+    if value is None:
+        return None
+    if "T" not in value or not value.endswith("Z"):
+        raise HTTPException(status_code=400, detail=f"invalid {name} format")
+    parsed = parse_iso_ts(value)
+    if parsed is None or parsed.tzinfo is None or parsed.utcoffset() != timedelta(0):
+        raise HTTPException(status_code=400, detail=f"invalid {name} format")
+    return parsed.astimezone(timezone.utc)
+
+
+def _tail_received_at(item: Any) -> datetime | None:
+    """Return an absolute received_at timestamp without producer timestamp fallback."""
+    if not isinstance(item, dict):
+        return None
+    raw = item.get("received_at")
+    if not isinstance(raw, str):
+        return None
+    parsed = parse_iso_ts(raw)
+    if parsed is None or parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _tail_time_matches(
+    received_at: datetime,
+    since_dt: datetime | None,
+    until_dt: datetime | None,
+) -> bool:
+    if since_dt is not None and received_at < since_dt:
+        return False
+    if until_dt is not None and received_at >= until_dt:
+        return False
+    return True
+
+
 def _process_tail_lines(
-    lines: list[str], since_dt: datetime | None, dom: str
+    lines: list[str],
+    since_dt: datetime | None,
+    dom: str,
+    until_dt: datetime | None = None,
 ) -> tuple[list[Any], int, datetime | None]:
-    """CPU-bound parsing; run in threadpool."""
+    """Parse tail lines; bounded time filters apply strictly to received_at."""
     results: list[Any] = []
     dropped = 0
     last_seen_dt: datetime | None = None
+    filtering = since_dt is not None or until_dt is not None
 
     for line in lines:
         try:
             item = json.loads(line)
-
-            ts_str = None
-            if isinstance(item, dict):
-                ts_str = (
-                    item.get("received_at")
-                    or item.get("ts")
-                    or item.get("timestamp")
-                )
-
-            dt = None
-            if isinstance(ts_str, str):
-                dt = parse_iso_ts(ts_str)
-
-            if since_dt and (dt is None or dt <= since_dt):
-                continue
+            if filtering:
+                dt = _tail_received_at(item)
+                if dt is None or not _tail_time_matches(dt, since_dt, until_dt):
+                    continue
+            else:
+                ts_str = None
+                if isinstance(item, dict):
+                    ts_str = item.get("received_at") or item.get("ts") or item.get("timestamp")
+                dt = parse_iso_ts(ts_str) if isinstance(ts_str, str) else None
 
             results.append(item)
-
-            if dt is not None:
-                if last_seen_dt is None or dt > last_seen_dt:
-                    last_seen_dt = dt
+            if dt is not None and (last_seen_dt is None or dt > last_seen_dt):
+                last_seen_dt = dt
         except json.JSONDecodeError:
             dropped += 1
 
@@ -920,7 +960,37 @@ def _process_tail_lines(
             dropped,
             extra={"domain": dom, "dropped": dropped},
         )
+    return results, dropped, last_seen_dt
 
+
+def _fetch_tail_window_helper(
+    dom: str,
+    limit: int,
+    since_dt: datetime | None,
+    until_dt: datetime | None,
+) -> tuple[list[Any], int, datetime | None]:
+    """Stream forward and retain only the last matching time-window rows."""
+    selected: deque[tuple[Any, datetime]] = deque(maxlen=limit)
+    dropped = 0
+    for _start, _next, line in scan_domain(dom):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            dropped += 1
+            continue
+        received_at = _tail_received_at(item)
+        if received_at is None or not _tail_time_matches(received_at, since_dt, until_dt):
+            continue
+        selected.append((item, received_at))
+
+    if dropped > 0:
+        logger.warning(
+            "dropped corrupt lines: %d",
+            dropped,
+            extra={"domain": dom, "dropped": dropped},
+        )
+    results = [item for item, _received_at in selected]
+    last_seen_dt = max((received_at for _item, received_at in selected), default=None)
     return results, dropped, last_seen_dt
 
 
@@ -929,32 +999,37 @@ async def tail_v1(
     domain: str,
     limit: int = 200,
     since: str | None = None,
+    until: str | None = None,
 ):
     if limit < 1:
         raise HTTPException(status_code=400, detail="limit must be >= 1")
     if limit > 2000:
         raise HTTPException(status_code=400, detail="limit must be <= 2000")
 
-    since_dt: datetime | None = None
-    if since:
-        since_dt = parse_iso_ts(since)
-        if since_dt is None:
-            raise HTTPException(status_code=400, detail="invalid since format")
-
+    since_dt = _parse_tail_query_bound(since, "since")
+    until_dt = _parse_tail_query_bound(until, "until")
     try:
         dom = _sanitize_domain(domain)
     except HTTPException:
-        # If domain invalid, _sanitize_domain raises 400
         raise
 
     try:
-        lines = await _run_storage_io("tail_read", read_tail, dom, limit)
+        if since_dt is not None or until_dt is not None:
+            results, dropped, last_seen_dt = await _run_storage_io(
+                "tail_window_scan",
+                _fetch_tail_window_helper,
+                dom,
+                limit,
+                since_dt,
+                until_dt,
+            )
+        else:
+            lines = await _run_storage_io("tail_read", read_tail, dom, limit)
+            results, dropped, last_seen_dt = await run_in_threadpool(
+                _process_tail_lines, lines, None, dom
+            )
     except StorageError as exc:
         _raise_storage_http_exception(exc)
-
-    results, dropped, last_seen_dt = await run_in_threadpool(
-        _process_tail_lines, lines, since_dt, dom
-    )
 
     headers = {
         "X-Chronik-Lines-Returned": str(len(results)),

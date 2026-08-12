@@ -85,32 +85,80 @@ def test_tail_valid_data(client, auth_header):
     assert response.headers["X-Chronik-Lines-Returned"] == "5"
     assert "X-Chronik-Last-Seen-TS" in response.headers
 
-def test_tail_since_filter(client, auth_header):
+def test_tail_since_filter_is_inclusive_on_received_at(client, auth_header):
     domain = f"test-since-{secrets.token_hex(4)}"
-    # Events with timestamps
     events = [
-        {"ts": "2023-01-01T10:00:00Z", "id": 1},
-        {"ts": "2023-01-01T11:00:00Z", "id": 2},
-        {"ts": "2023-01-01T12:00:00Z", "id": 3},
+        {"received_at": "2023-01-01T10:00:00Z", "ts": "2099-01-01T00:00:00Z", "id": 1},
+        {"received_at": "2023-01-01T11:00:00Z", "id": 2},
+        {"received_at": "2023-01-01T12:00:00Z", "id": 3},
     ]
     storage.write_payload(domain, [json.dumps(e) for e in events])
-
-    # Since 10:30 -> should match id 2 and 3
     response = client.get(
-        f"/v1/tail?domain={domain}&since=2023-01-01T10:30:00Z", headers=auth_header
+        "/v1/tail",
+        params={"domain": domain, "since": "2023-01-01T11:00:00Z"},
+        headers=auth_header,
     )
     assert response.status_code == 200
-    results = response.json()
-    assert len(results) == 2
-    assert results[0]["id"] == 2
-    assert results[1]["id"] == 3
+    assert [item["id"] for item in response.json()] == [2, 3]
+    assert "12:00:00" in response.headers["X-Chronik-Last-Seen-TS"]
 
-    # Invalid since format
+
+def test_tail_until_is_exclusive_and_reaches_older_matches(client, auth_header):
+    domain = f"test-until-{secrets.token_hex(4)}"
+    events = [
+        {"received_at": f"2023-01-01T{hour:02d}:00:00Z", "id": hour}
+        for hour in (10, 11, 12, 13)
+    ]
+    storage.write_payload(domain, [json.dumps(e) for e in events])
     response = client.get(
-        f"/v1/tail?domain={domain}&since=invalid-ts", headers=auth_header
+        "/v1/tail",
+        params={"domain": domain, "limit": 2, "until": "2023-01-01T12:00:00Z"},
+        headers=auth_header,
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [10, 11]
+    assert "11:00:00" in response.headers["X-Chronik-Last-Seen-TS"]
+
+
+def test_tail_time_window_uses_received_at_only(client, auth_header):
+    domain = f"test-received-at-only-{secrets.token_hex(4)}"
+    events = [
+        {"ts": "2023-01-01T11:00:00Z", "id": 1},
+        {"timestamp": "2023-01-01T11:30:00Z", "id": 2},
+        {"received_at": "2023-01-01T11:45:00Z", "id": 3},
+    ]
+    storage.write_payload(domain, [json.dumps(e) for e in events])
+    response = client.get(
+        "/v1/tail",
+        params={
+            "domain": domain,
+            "since": "2023-01-01T10:00:00Z",
+            "until": "2023-01-01T12:00:00Z",
+        },
+        headers=auth_header,
+    )
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [3]
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("since", "invalid-ts"),
+        ("since", "2023-01-01T10:00:00+00:00"),
+        ("until", "2023-01-01T12:00:00"),
+        ("until", ""),
+    ],
+)
+def test_tail_time_bounds_require_iso8601_utc_z(client, auth_header, name, value):
+    response = client.get(
+        "/v1/tail",
+        params={"domain": "example.com", name: value},
+        headers=auth_header,
     )
     assert response.status_code == 400
-    assert "invalid since format" in response.text
+    assert response.json() == {"detail": f"invalid {name} format"}
+
 
 def test_tail_corrupt_data(client, auth_header):
     domain = f"test-corrupt-{secrets.token_hex(4)}"
