@@ -155,13 +155,13 @@ def test_auth_rejection_is_audited_before_endpoint_execution(audit_client):
         json={"data": "value"},
     )
 
-    assert response.status_code == 401
+    assert response.status_code == 403
     assert events == [
         {
             "request_id": "audit_auth",
             "domain": "example.com",
             "action": "REJECTED",
-            "reason": "unauthorized",
+            "reason": "forbidden",
             "client_ip": "testclient",
         }
     ]

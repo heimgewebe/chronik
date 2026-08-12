@@ -271,13 +271,15 @@ async def _on_http_exception(request: Request, exc: HTTPException):
     return await http_exception_handler(request, exc)
 
 
-limiter = Limiter(key_func=get_remote_address)
+# Default limits are enforced by SlowAPIMiddleware before FastAPI dependencies,
+# so brute-force attempts are counted even when authentication rejects the request.
+limiter = Limiter(key_func=get_remote_address, default_limits=[RATE_LIMIT])
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 
 
 @app.exception_handler(RateLimitExceeded)
-async def _on_rate_limited(request: Request, exc: RateLimitExceeded):
+def _on_rate_limited(request: Request, exc: RateLimitExceeded):
     _audit_ingest_decision(request, "REJECTED", "rate_limited")
     response = PlainTextResponse("too many requests", status_code=429)
     # Defaulting to 60s which matches our window size.
@@ -388,7 +390,7 @@ def _require_auth(x_auth: str) -> None:
             match_found = True
 
     if not match_found:
-        raise HTTPException(status_code=401, detail="unauthorized")
+        raise HTTPException(status_code=403, detail="forbidden")
 
 
 def _require_auth_dep(x_auth: str = Header(default="")) -> None:
@@ -599,7 +601,6 @@ def _process_and_write_combined(dom: str, items: list[Any]) -> dict[str, Any] | 
     status_code=202,
     openapi_extra=ingest_request_body_openapi(include_ndjson=True),
 )
-@limiter.limit(RATE_LIMIT)
 async def ingest_v1(
     request: Request,
     domain: str | None = None,
@@ -677,7 +678,6 @@ async def ingest_v1(
     deprecated=True,
     openapi_extra=ingest_request_body_openapi(include_ndjson=False),
 )
-@limiter.limit(RATE_LIMIT)
 async def ingest(
     domain: str,
     request: Request,

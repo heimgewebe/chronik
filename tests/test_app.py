@@ -263,7 +263,7 @@ def test_ingest_auth_fail(monkeypatch, client):
     response = client.post(
         "/ingest/example.com", headers={"X-Auth": "wrong"}, json={"data": "value"}
     )
-    assert response.status_code == 401
+    assert response.status_code == 403
 
 
 def test_ingest_auth_missing(monkeypatch, client):

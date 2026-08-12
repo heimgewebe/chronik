@@ -25,7 +25,7 @@ def client():
             "alpha,, beta\nalpha,\r\n gamma,beta",
             "invalid",
             ("alpha", "beta", "gamma"),
-            401,
+            403,
         ),
     ],
     ids=[
@@ -97,7 +97,7 @@ def test_auth_multiple_tokens_comma(client, monkeypatch):
 
     # Test invalid token
     response = client.get("/health", headers={"X-Auth": "wrong"})
-    assert response.status_code == 401
+    assert response.status_code == 403
 
 def test_auth_multiple_tokens_newline(client, monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", "token-a\ntoken-b\ntoken-c")
@@ -126,7 +126,7 @@ def test_auth_multiple_tokens_mixed_and_whitespace(client, monkeypatch):
         assert response.status_code == 200, f"Token {t} should be valid"
 
     response = client.get("/health", headers={"X-Auth": "token1 "})
-    assert response.status_code == 401, "Trailing space in provided token should fail if not in config"
+    assert response.status_code == 403, "Trailing space in provided token should be forbidden"
 
 def test_auth_empty_token_in_list_ignored(client, monkeypatch):
     # This ensures that a misconfiguration like "secret1,,secret2" doesn't allow empty X-Auth
@@ -154,7 +154,7 @@ def test_auth_dynamic_token_rotation_no_restart(client, monkeypatch):
     # 1. Start with one token
     monkeypatch.setenv("CHRONIK_TOKEN", "token1")
     assert client.get("/health", headers={"X-Auth": "token1"}).status_code == 200
-    assert client.get("/health", headers={"X-Auth": "token2"}).status_code == 401
+    assert client.get("/health", headers={"X-Auth": "token2"}).status_code == 403
 
     # 2. Rotate to two tokens
     monkeypatch.setenv("CHRONIK_TOKEN", "token1,token2")
@@ -164,7 +164,7 @@ def test_auth_dynamic_token_rotation_no_restart(client, monkeypatch):
 
     # 3. Remove old token
     monkeypatch.setenv("CHRONIK_TOKEN", "token2")
-    assert client.get("/health", headers={"X-Auth": "token1"}).status_code == 401
+    assert client.get("/health", headers={"X-Auth": "token1"}).status_code == 403
     assert client.get("/health", headers={"X-Auth": "token2"}).status_code == 200
 
 def test_auth_no_tokens_configured(client, monkeypatch):
@@ -181,4 +181,20 @@ def test_auth_header_missing(client, monkeypatch):
 def test_auth_wrong_token(client, monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", "secret")
     response = client.get("/health", headers={"X-Auth": "wrong"})
-    assert response.status_code == 401
+    assert response.status_code == 403
+    assert response.json() == {"detail": "forbidden"}
+
+
+def test_rate_limit_counts_invalid_auth_before_endpoint(client, monkeypatch):
+    monkeypatch.setenv("CHRONIK_TOKEN", "secret")
+    app_module.limiter.reset()
+    try:
+        for _ in range(60):
+            response = client.get("/health", headers={"X-Auth": "wrong"})
+            assert response.status_code == 403
+
+        blocked = client.get("/health", headers={"X-Auth": "wrong"})
+        assert blocked.status_code == 429
+        assert blocked.headers["Retry-After"] == "60"
+    finally:
+        app_module.limiter.reset()
