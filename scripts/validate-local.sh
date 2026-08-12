@@ -19,6 +19,14 @@ export CHRONIK_DATA_DIR="$TMP_DATA_DIR"
 # worker control / orchestration authority).
 ./.venv/bin/python scripts/check_role.py
 
+# Keep static analysis in the same canonical validation path used by local
+# development and the Metarepo repository-verification workflow. Ruff is
+# intentionally limited to high-signal correctness rules while historical
+# style debt remains outside this gate. Mypy owns the typed HTTP/ingest slice
+# declared in mypy.ini and follows its real storage dependencies.
+./.venv/bin/ruff check .
+./.venv/bin/mypy
+
 ./.venv/bin/python -m pytest -q
 
 ./.venv/bin/python - <<'PY'

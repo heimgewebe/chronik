@@ -1,16 +1,21 @@
 import copy
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
 import app
+import storage
 from canonical_ingest import apply_retention_policy, build_quality_envelope
 from ingest_validation import validate_and_normalize_item
 
 
 RECEIVED_AT = datetime(2026, 1, 1, 12, 34, 56, 789000, tzinfo=timezone.utc)
+GOLDEN_QUALITY_DISABLED = (
+    Path(__file__).parent / "fixtures" / "golden-quality-disabled-v1.jsonl"
+)
 
 
 class _FixedDateTime:
@@ -301,3 +306,20 @@ def test_process_items_preserves_metrics_for_valid_prefix_of_failed_batch(
     assert process_context["ingested"].increments == [
         ({"domain": "batch.example", "event_type": "test.first"}, 1)
     ]
+
+
+def test_persisted_quality_disabled_matches_golden_jsonl(
+    monkeypatch, process_context, tmp_path
+):
+    monkeypatch.setenv("CHRONIK_ENFORCE_PROVENANCE", "0")
+    monkeypatch.setenv("CHRONIK_ENABLE_QUALITY", "0")
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
+
+    lines = app._process_items(
+        [{"type": "temp.event", "summary": "accepted"}],
+        "quality.disabled",
+    )
+    storage.write_payload("quality.disabled", lines)
+
+    persisted = tmp_path / "quality.disabled.jsonl"
+    assert persisted.read_bytes() == GOLDEN_QUALITY_DISABLED.read_bytes()

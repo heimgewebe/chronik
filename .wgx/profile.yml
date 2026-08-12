@@ -25,10 +25,9 @@ wgx:
       PY
     guard: |
       set -euxo pipefail
-      bash scripts/setup-venv.sh
-      . .venv/bin/activate
-      export PYTHONPATH="${PYTHONPATH:-.}:."
-      python3 -m pytest
+      # Keep CI and local verification on one canonical path. This executes the
+      # role contract, Ruff, Mypy, pytest and the hermetic API persistence smoke.
+      bash scripts/validate-local.sh
     metrics: |
       set -euxo pipefail
       if [ -x scripts/wgx-metrics-snapshot.sh ]; then

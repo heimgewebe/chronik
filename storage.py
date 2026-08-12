@@ -11,7 +11,7 @@ import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final, Iterable, Iterator, Tuple
+from typing import Final, Iterable, Iterator, NoReturn, Tuple
 
 from filelock import FileLock, Timeout
 
@@ -796,12 +796,16 @@ def _payload_fingerprint(canonical_payload: bytes) -> bytes:
     )
 
 
-def _raise_identity_index_error(exc: IdentityIndexError) -> None:
+def _raise_identity_index_error(exc: IdentityIndexError) -> NoReturn:
     """Map derived-index failures without weakening ledger conflict semantics."""
     message = str(exc)
     if isinstance(exc, IdentityIndexDriftError) and message.startswith("conflicting "):
         raise StorageError(message) from exc
     raise StorageRecoveryError(f"identity index unavailable: {message}") from exc
+
+
+_ParsedUniqueRow = tuple[str, str | None, bytes]
+_ParsedUniqueGroup = tuple[str, list[_ParsedUniqueRow], bool]
 
 
 def write_payload_unique_groups(
@@ -820,9 +824,9 @@ def write_payload_unique_groups(
     source inventory and are reconstructing an absent ledger.  It may reset only
     the derived index and only while the newly opened ledger is empty.
     """
-    materialized = []
-    materialized_verified = []
-    seen_group_ids = set()
+    materialized: list[tuple[str, list[str]]] = []
+    materialized_verified: list[tuple[str, list[tuple[str, bytes]]]] = []
+    seen_group_ids: set[str] = set()
     for group_id, lines in groups:
         if not isinstance(group_id, str) or not group_id:
             raise StorageError("group_id must be a non-empty string")
@@ -836,7 +840,7 @@ def write_payload_unique_groups(
         if group_id in seen_group_ids:
             raise StorageError(f"duplicate group_id: {group_id}")
         seen_group_ids.add(group_id)
-        verified = []
+        verified: list[tuple[str, bytes]] = []
         for identity, fingerprint in identities:
             if not isinstance(identity, str) or not identity:
                 raise StorageError(f"missing {identity_key}")
@@ -845,40 +849,55 @@ def write_payload_unique_groups(
             verified.append((identity, fingerprint))
         materialized_verified.append((group_id, verified))
 
-    parsed_groups = []
+    parsed_groups: list[_ParsedUniqueGroup] = []
     candidate_fingerprints: dict[str, bytes] = {}
     candidate_count = 0
     for group_id, lines in materialized:
-        parsed = []
+        parsed_rows: list[_ParsedUniqueRow] = []
         for line in lines:
             try:
-                identity, canonical_payload = _parse_unique_payload(line, identity_key)
+                parsed_identity, canonical_payload = _parse_unique_payload(
+                    line, identity_key
+                )
             except (TypeError, ValueError) as exc:
                 raise StorageError("invalid JSON line") from exc
-            if not identity:
+            if not parsed_identity:
                 raise StorageError(f"missing {identity_key}")
             fingerprint = _payload_fingerprint(canonical_payload)
-            previous = candidate_fingerprints.get(identity)
+            previous = candidate_fingerprints.get(parsed_identity)
             if previous is None:
-                candidate_fingerprints[identity] = fingerprint
+                candidate_fingerprints[parsed_identity] = fingerprint
             elif previous != fingerprint:
-                raise StorageError(f"conflicting {identity_key}: {identity}")
-            parsed.append((identity, line, fingerprint))
+                raise StorageError(f"conflicting {identity_key}: {parsed_identity}")
+            parsed_rows.append((parsed_identity, line, fingerprint))
             candidate_count += 1
-        parsed_groups.append((group_id, parsed, False))
+        parsed_groups.append((group_id, parsed_rows, False))
     for group_id, identities in materialized_verified:
-        parsed = []
+        verified_rows: list[_ParsedUniqueRow] = []
         for identity, fingerprint in identities:
             previous = candidate_fingerprints.get(identity)
             if previous is None:
                 candidate_fingerprints[identity] = fingerprint
             elif previous != fingerprint:
                 raise StorageError(f"conflicting {identity_key}: {identity}")
-            parsed.append((identity, None, fingerprint))
+            verified_rows.append((identity, None, fingerprint))
             candidate_count += 1
-        parsed_groups.append((group_id, parsed, True))
+        parsed_groups.append((group_id, verified_rows, True))
 
     if candidate_count == 0:
+        empty_group_results = [
+            {"group_id": gid, "requested": len(lines), "written": 0, "skipped": 0}
+            for gid, lines in materialized
+        ]
+        empty_group_results.extend(
+            {
+                "group_id": gid,
+                "requested": len(identities),
+                "written": 0,
+                "skipped": 0,
+            }
+            for gid, identities in materialized_verified
+        )
         return {
             "written": 0,
             "skipped": 0,
@@ -888,10 +907,7 @@ def write_payload_unique_groups(
             "identity_index_mode": "unused",
             "identity_index_full_rebuild": False,
             "identity_index_entries_after": 0,
-            "groups": [
-                {"group_id": gid, "requested": len(lines), "written": 0, "skipped": 0}
-                for gid, lines in (*materialized, *materialized_verified)
-            ],
+            "groups": empty_group_results,
         }
 
     del candidate_fingerprints
@@ -953,20 +969,20 @@ def write_payload_unique_groups(
                 for group_id, parsed, verification_only in parsed_groups:
                     group_written = 0
                     group_skipped = 0
-                    for identity, line, fingerprint in parsed:
+                    for row_identity, row_line, fingerprint in parsed:
                         if verification_only:
                             group_skipped += 1
                             total_skipped += 1
                             continue
-                        if identity in planned:
+                        if row_identity in planned:
                             group_skipped += 1
                             total_skipped += 1
                             continue
-                        if line is None:
+                        if row_line is None:
                             raise StorageError("verification-only payload cannot be appended")
-                        append_lines.append(line)
-                        append_rows.append((identity, fingerprint))
-                        planned.add(identity)
+                        append_lines.append(row_line)
+                        append_rows.append((row_identity, fingerprint))
+                        planned.add(row_identity)
                         group_written += 1
                         total_written += 1
                     group_results.append(
