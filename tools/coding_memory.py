@@ -30,6 +30,7 @@ OUTBOX_SUMMARY_KEYS = (
     "files_unchanged",
     "receipts_written",
     "receipts_reused",
+    "receipts_deferred",
     "loose_sources_imported_or_confirmed",
     "bundled_sources_imported_or_confirmed",
     "events_imported",
@@ -49,6 +50,7 @@ OUTBOX_SUMMARY_KEYS = (
     "source_bytes_hashed",
     "source_events_validated",
     "steady_fast_path",
+    "delta_fast_path",
     "elapsed_seconds",
 )
 OUTBOX_SUMMARY_ERROR_LIMIT = 3

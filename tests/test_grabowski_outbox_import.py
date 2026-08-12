@@ -180,6 +180,486 @@ def test_summary_steady_fast_path_skips_full_source_and_ledger_reconciliation(
     assert second["import_telemetry"]["counters"]["steady_fast_path_hits"] == 1
 
 
+def test_summary_delta_fast_path_reconciles_only_added_source(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    source_index_path = receipts / coding_memory.GRABOWSKI_SOURCE_INDEX_FILENAME
+    source_index_before = source_index_path.read_bytes()
+    delta_index_path = receipts / coding_memory.GRABOWSKI_DELTA_INDEX_FILENAME
+    delta_index_before = delta_index_path.read_bytes()
+    delta_overlay_path = receipts / coding_memory.GRABOWSKI_DELTA_OVERLAY_FILENAME
+    delta_overlay_before = delta_overlay_path.read_bytes()
+    added = write_named_outbox(
+        outbox,
+        "grabowski_task-third-a1.jsonl",
+        [event("agent.run.completed", "c")],
+    )
+    original = coding_memory._import_prepared_grabowski_sources
+    observed = []
+
+    def record_batch(prepared_sources, *args, **kwargs):
+        observed.append([str(item["source"].resolve()) for item in prepared_sources])
+        return original(prepared_sources, *args, **kwargs)
+
+    monkeypatch.setattr(coding_memory, "_import_prepared_grabowski_sources", record_batch)
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert result["errors"] == []
+    assert result["steady_fast_path"] is False
+    assert result["delta_fast_path"] is True
+    assert result["events_imported"] == 1
+    assert result["events_skipped_existing"] == 2
+    assert result["sources_added"] == 1
+    assert result["sources_changed"] == 0
+    assert result["sources_revalidated"] == 1
+    assert result["sources_reused"] == 2
+    assert result["files_unchanged"] == 2
+    assert result["receipts_written"] == 1
+    assert result["receipts_reused"] == 0
+    assert result["receipts_deferred"] == 2
+    assert result["target_scans"] == 0
+    assert result["source_index_mode"] == "deferred_delta"
+    assert result["source_index_written"] is False
+    assert source_index_path.read_bytes() == source_index_before
+    assert delta_index_path.read_bytes() == delta_index_before
+    assert delta_overlay_path.read_bytes() != delta_overlay_before
+    assert result["bundle_inventory_omitted"] is True
+    assert observed == [[str(added.resolve())]]
+    assert result["import_telemetry"]["counters"]["delta_fast_path_hits"] == 1
+
+    next_result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert next_result["steady_fast_path"] is False
+    assert next_result["delta_fast_path"] is False
+    assert next_result["receipts_deferred"] == 0
+    assert next_result["events_skipped_existing"] == 3
+    steady_result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert steady_result["steady_fast_path"] is True
+    assert steady_result["events_skipped_existing"] == 3
+
+
+def test_summary_delta_fast_path_reconciles_changed_source_generation(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    source = write_named_outbox(
+        outbox,
+        "grabowski_task-changing-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    source.write_text(
+        "\n".join(
+            json.dumps(value, sort_keys=True)
+            for value in [
+                event("agent.run.completed", "a"),
+                event("agent.run.completed", "b"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert result["errors"] == []
+    assert result["delta_fast_path"] is True
+    assert result["events_imported"] == 1
+    assert result["events_skipped_existing"] == 1
+    assert result["sources_added"] == 0
+    assert result["sources_changed"] == 1
+    assert result["sources_revalidated"] == 1
+    assert result["sources_reused"] == 0
+    assert result["source_events_validated"] == 2
+    assert result["receipts_written"] == 1
+    assert result["receipts_reused"] == 0
+    assert result["receipts_deferred"] == 0
+    assert result["identity_index_mode"] == "steady"
+
+    next_result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert next_result["steady_fast_path"] is False
+    assert next_result["delta_fast_path"] is False
+    assert next_result["events_skipped_existing"] == 2
+    steady_result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert steady_result["steady_fast_path"] is True
+    assert steady_result["events_skipped_existing"] == 2
+
+
+def test_summary_delta_overlay_accumulates_consecutive_source_deltas(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    delta_index_path = receipts / coding_memory.GRABOWSKI_DELTA_INDEX_FILENAME
+    delta_index_before = delta_index_path.read_bytes()
+    overlay_path = receipts / coding_memory.GRABOWSKI_DELTA_OVERLAY_FILENAME
+
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    first_delta = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert first_delta["delta_fast_path"] is True
+    assert first_delta["events_imported"] == 1
+    assert first_delta["sources_revalidated"] == 1
+    first_overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+    assert first_overlay["record_count"] == 1
+
+    write_named_outbox(
+        outbox,
+        "grabowski_task-third-a1.jsonl",
+        [event("agent.run.completed", "c")],
+    )
+    second_delta = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert second_delta["errors"] == []
+    assert second_delta["steady_fast_path"] is False
+    assert second_delta["delta_fast_path"] is True
+    assert second_delta["events_imported"] == 1
+    assert second_delta["events_skipped_existing"] == 2
+    assert second_delta["sources_added"] == 1
+    assert second_delta["sources_changed"] == 0
+    assert second_delta["sources_revalidated"] == 1
+    assert second_delta["sources_reused"] == 2
+    assert second_delta["receipts_written"] == 1
+    assert second_delta["receipts_reused"] == 0
+    assert second_delta["receipts_deferred"] == 2
+    assert second_delta["target_scans"] == 0
+    assert second_delta["source_index_mode"] == "deferred_delta"
+    assert delta_index_path.read_bytes() == delta_index_before
+    second_overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+    assert second_overlay["record_count"] == 2
+    assert [Path(item["source_path"]).name for item in second_overlay["records"]] == [
+        "grabowski_task-second-a1.jsonl",
+        "grabowski_task-third-a1.jsonl",
+    ]
+
+    repair = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert repair["steady_fast_path"] is False
+    assert repair["delta_fast_path"] is False
+    assert repair["receipts_deferred"] == 0
+    repaired_overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+    assert repaired_overlay["record_count"] == 0
+
+    steady = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert steady["steady_fast_path"] is True
+    assert steady["events_skipped_existing"] == 3
+
+
+def test_delta_overlay_capacity_falls_back_before_next_ledger_effect(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    monkeypatch.setattr(coding_memory, "GRABOWSKI_DELTA_OVERLAY_MAX_RECORDS", 1)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    first_delta = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert first_delta["delta_fast_path"] is True
+    overlay_path = receipts / coding_memory.GRABOWSKI_DELTA_OVERLAY_FILENAME
+    assert json.loads(overlay_path.read_text(encoding="utf-8"))["record_count"] == 1
+
+    write_named_outbox(
+        outbox,
+        "grabowski_task-third-a1.jsonl",
+        [event("agent.run.completed", "c")],
+    )
+    fallback = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert fallback["errors"] == []
+    assert fallback["delta_fast_path"] is False
+    assert fallback["steady_fast_path"] is False
+    assert fallback["events_imported"] == 1
+    assert fallback["events_skipped_existing"] == 2
+    assert fallback["receipts_deferred"] == 0
+    assert (
+        fallback["import_telemetry"]["counters"][
+            "delta_overlay_capacity_fallbacks"
+        ]
+        == 1
+    )
+    delta_index = json.loads(
+        (receipts / coding_memory.GRABOWSKI_DELTA_INDEX_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert delta_index["source_count"] == 3
+    assert json.loads(overlay_path.read_text(encoding="utf-8"))["record_count"] == 0
+
+
+def test_corrupt_delta_overlay_falls_back_and_repairs_full_cache(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    delta = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert delta["delta_fast_path"] is True
+
+    overlay_path = receipts / coding_memory.GRABOWSKI_DELTA_OVERLAY_FILENAME
+    overlay_path.write_text("{broken\n", encoding="utf-8")
+    overlay_path.chmod(0o600)
+
+    repaired = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert repaired["errors"] == []
+    assert repaired["steady_fast_path"] is False
+    assert repaired["delta_fast_path"] is False
+    assert repaired["events_imported"] == 0
+    assert repaired["events_skipped_existing"] == 2
+    assert repaired["receipts_deferred"] == 0
+    delta_index = json.loads(
+        (receipts / coding_memory.GRABOWSKI_DELTA_INDEX_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert delta_index["source_count"] == 2
+    overlay = json.loads(overlay_path.read_text(encoding="utf-8"))
+    assert overlay["record_count"] == 0
+
+    steady = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert steady["steady_fast_path"] is True
+    assert steady["events_skipped_existing"] == 2
+
+
+def test_summary_delta_fast_path_falls_back_on_source_removal(tmp_path, monkeypatch):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    removed = write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    removed.unlink()
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert result["errors"] == []
+    assert result["delta_fast_path"] is False
+    assert result["steady_fast_path"] is False
+    assert result["sources_removed"] == 1
+    assert result["events_imported"] == 0
+    assert result["events_skipped_existing"] == 1
+    assert result["import_telemetry"]["counters"]["delta_fast_path_fallbacks"] == 1
+
+
+def test_corrupt_delta_index_falls_back_and_repairs_canonical_source_index(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    source_index_path = receipts / coding_memory.GRABOWSKI_SOURCE_INDEX_FILENAME
+    source_index_before = source_index_path.read_bytes()
+    delta_index_path = receipts / coding_memory.GRABOWSKI_DELTA_INDEX_FILENAME
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    delta_index_path.write_text("{broken\n", encoding="utf-8")
+    delta_index_path.chmod(0o600)
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert result["errors"] == []
+    assert result["delta_fast_path"] is False
+    assert result["steady_fast_path"] is False
+    assert result["events_imported"] == 1
+    assert result["sources_added"] == 1
+    assert source_index_path.read_bytes() != source_index_before
+    source_index = json.loads(source_index_path.read_text(encoding="utf-8"))
+    assert len(source_index["loose_sources"]) == 2
+    delta_index = json.loads(delta_index_path.read_text(encoding="utf-8"))
+    assert delta_index["source_count"] == 2
+
+    next_result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert next_result["steady_fast_path"] is True
+    assert next_result["events_skipped_existing"] == 2
+
+
+def test_summary_delta_fast_path_rechecks_authoritative_target_anchor(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    original = coding_memory.storage.read_unique_storage_checkpoint_identity
+
+    def drifted_target_identity(domain):
+        current = dict(original(domain))
+        current["test_drift"] = 1
+        return current
+
+    monkeypatch.setattr(
+        coding_memory.storage,
+        "read_unique_storage_checkpoint_identity",
+        drifted_target_identity,
+    )
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert result["errors"] == []
+    assert result["delta_fast_path"] is False
+    assert result["events_imported"] == 1
+    assert result["import_telemetry"]["counters"]["delta_fast_path_fallbacks"] == 1
+
+
 def test_summary_steady_fast_path_falls_back_when_source_directory_changes_mid_check(
     tmp_path, monkeypatch
 ):

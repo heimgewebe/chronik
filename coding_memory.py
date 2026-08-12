@@ -40,6 +40,11 @@ GRABOWSKI_ARCHIVE_INDEX_SCHEMA = "chronik-grabowski-outbox-archive-index.v1"
 GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME = ".writer-compaction.lock"
 GRABOWSKI_SOURCE_INDEX_FILENAME = "source-index.v1.json"
 GRABOWSKI_SOURCE_INDEX_SCHEMA = "chronik-grabowski-source-index.v1"
+GRABOWSKI_DELTA_INDEX_FILENAME = "delta-source-index.v1.json"
+GRABOWSKI_DELTA_INDEX_SCHEMA = "chronik-grabowski-delta-source-index.v1"
+GRABOWSKI_DELTA_OVERLAY_FILENAME = "delta-source-overlay.v1.json"
+GRABOWSKI_DELTA_OVERLAY_SCHEMA = "chronik-grabowski-delta-source-overlay.v1"
+GRABOWSKI_DELTA_OVERLAY_MAX_RECORDS = 2048
 GRABOWSKI_STEADY_CHECKPOINT_FILENAME = "steady-import-checkpoint.v1.json"
 GRABOWSKI_STEADY_CHECKPOINT_SCHEMA = "chronik-grabowski-steady-import-checkpoint.v1"
 DEFAULT_COMPACTION_MAX_SOURCES = 256
@@ -515,8 +520,11 @@ def _steady_fast_identity(
     bundle_files: list[Path],
     receipt_dir: Path,
     source_index_path: Path,
+    delta_index_path: Path,
+    delta_overlay_path: Path,
+    initial_source_inventory: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    source_inventory = _stable_source_inventory_identity(
+    source_inventory = initial_source_inventory or _stable_source_inventory_identity(
         source_dir=source_dir,
         bundle_dir=bundle_dir,
         sources=sources,
@@ -530,6 +538,8 @@ def _steady_fast_identity(
     )
     receipt_inventory = _inventory_fingerprint(receipt_paths, private=True)
     source_index_identity = _private_file_identity(source_index_path)
+    delta_index_identity = _private_file_identity(delta_index_path)
+    delta_overlay_identity = _private_file_identity(delta_overlay_path)
     try:
         target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
     except storage.StorageError:
@@ -537,6 +547,8 @@ def _steady_fast_identity(
     if (
         receipt_inventory is None
         or source_index_identity is None
+        or delta_index_identity is None
+        or delta_overlay_identity is None
         or target_identity is None
     ):
         return None
@@ -563,12 +575,16 @@ def _steady_fast_identity(
     ):
         return None
     final_source_index_identity = _private_file_identity(source_index_path)
+    final_delta_index_identity = _private_file_identity(delta_index_path)
+    final_delta_overlay_identity = _private_file_identity(delta_overlay_path)
     try:
         final_target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
     except storage.StorageError:
         return None
     if (
         final_source_index_identity != source_index_identity
+        or final_delta_index_identity != delta_index_identity
+        or final_delta_overlay_identity != delta_overlay_identity
         or final_target_identity != target_identity
     ):
         return None
@@ -576,7 +592,56 @@ def _steady_fast_identity(
         "source_inventory": final_source_inventory,
         "receipt_inventory": final_receipt_inventory,
         "source_index_identity": final_source_index_identity,
+        "delta_index_identity": final_delta_index_identity,
+        "delta_overlay_identity": final_delta_overlay_identity,
         "target_identity": final_target_identity,
+    }
+
+
+def _delta_candidate_identity(
+    *,
+    checkpoint: dict[str, Any],
+    source_dir: Path,
+    bundle_dir: Path,
+    sources: list[Path],
+    manifests: list[Path],
+    bundle_files: list[Path],
+    receipt_dir: Path,
+    source_index_path: Path,
+    delta_index_path: Path,
+    delta_overlay_path: Path,
+    source_inventory: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    del receipt_dir
+    prior = checkpoint.get("identity")
+    if (
+        not isinstance(prior, dict)
+        or not isinstance(prior.get("delta_index_identity"), dict)
+    ):
+        return None
+    source_inventory = source_inventory or _stable_source_inventory_identity(
+        source_dir=source_dir,
+        bundle_dir=bundle_dir,
+        sources=sources,
+        manifests=manifests,
+        bundle_files=bundle_files,
+    )
+    if source_inventory is None or source_inventory == prior.get("source_inventory"):
+        return None
+    source_index_identity = _private_file_identity(source_index_path)
+    delta_index_identity = _private_file_identity(delta_index_path)
+    delta_overlay_identity = _private_file_identity(delta_overlay_path)
+    if (
+        source_index_identity != prior.get("source_index_identity")
+        or delta_index_identity != prior.get("delta_index_identity")
+        or delta_overlay_identity != prior.get("delta_overlay_identity")
+    ):
+        return None
+    return {
+        "source_inventory": source_inventory,
+        "source_index_identity": source_index_identity,
+        "delta_index_identity": delta_index_identity,
+        "delta_overlay_identity": delta_overlay_identity,
     }
 
 
@@ -655,7 +720,10 @@ def _steady_summary_from_result(result: dict[str, Any]) -> dict[str, Any]:
         "files_imported_or_confirmed": source_count,
         "files_unchanged": source_count,
         "receipts_written": 0,
-        "receipts_reused": source_count,
+        "receipts_reused": (
+            0 if int(result.get("receipts_deferred", 0)) else source_count
+        ),
+        "receipts_deferred": int(result.get("receipts_deferred", 0)),
         "loose_sources_imported_or_confirmed": int(result["loose_files_seen"]),
         "bundled_sources_imported_or_confirmed": int(result["bundled_sources_seen"]),
         "events_imported": 0,
@@ -665,7 +733,11 @@ def _steady_summary_from_result(result: dict[str, Any]) -> dict[str, Any]:
         "identity_index_mode": "steady",
         "identity_index_full_rebuild": False,
         "identity_index_entries_after": int(result["identity_index_entries_after"]),
-        "source_index_mode": "steady",
+        "source_index_mode": (
+            "deferred_delta"
+            if result.get("source_index_mode") == "deferred_delta"
+            else "steady"
+        ),
         "source_index_file_bytes": int(result["source_index_file_bytes"]),
         "sources_reused": source_count,
         "sources_revalidated": 0,
@@ -742,11 +814,385 @@ def _steady_fast_result(
         "bundle_inventory": [],
         "bundle_inventory_omitted": True,
         "steady_fast_path": True,
+        "delta_fast_path": False,
         "steady_checkpoint_sha256": checkpoint["checkpoint_sha256"],
         "errors": [],
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
+
+
+def _delta_index_path(receipt_dir: Path) -> Path:
+    return receipt_dir / GRABOWSKI_DELTA_INDEX_FILENAME
+
+
+def _delta_overlay_path(receipt_dir: Path) -> Path:
+    return receipt_dir / GRABOWSKI_DELTA_OVERLAY_FILENAME
+
+
+def _load_delta_overlay(
+    path: Path,
+    *,
+    source_dir: Path,
+    base_index_sha256: str,
+) -> tuple[dict[str, Any] | None, int, str]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, 0, "rebuild_missing"
+    except OSError:
+        return None, 0, "rebuild_invalid"
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+        or info.st_nlink != 1
+    ):
+        return None, int(info.st_size), "rebuild_invalid"
+    try:
+        raw, _ = _read_immutable_artifact_snapshot(path, label="delta source overlay")
+        if not raw.endswith(b"\n"):
+            raise ValueError("incomplete delta source overlay")
+        document = json.loads(raw)
+        expected = {
+            "schema_version",
+            "source_dir",
+            "base_index_sha256",
+            "records",
+            "record_count",
+            "recorded_at",
+            "historical_only",
+            "does_not_establish",
+            "overlay_sha256",
+        }
+        if not isinstance(document, dict) or set(document) != expected:
+            raise ValueError("invalid delta-overlay fields")
+        claimed = document.get("overlay_sha256")
+        unsigned = dict(document)
+        unsigned.pop("overlay_sha256")
+        if (
+            document.get("schema_version") != GRABOWSKI_DELTA_OVERLAY_SCHEMA
+            or document.get("source_dir") != str(source_dir.resolve())
+            or document.get("base_index_sha256") != base_index_sha256
+            or document.get("historical_only") is not True
+            or document.get("does_not_establish") != DOES_NOT_ESTABLISH
+            or not isinstance(claimed, str)
+            or claimed != sha256_bytes(canonical_bytes(unsigned))
+        ):
+            raise ValueError("delta-overlay contract or digest mismatch")
+        recorded_at = document.get("recorded_at")
+        if not isinstance(recorded_at, str):
+            raise ValueError("invalid delta-overlay timestamp")
+        _parse_timestamp(recorded_at, field="delta_source_overlay.recorded_at")
+        raw_records = document.get("records")
+        if not isinstance(raw_records, list):
+            raise ValueError("invalid delta-overlay records")
+        if len(raw_records) > GRABOWSKI_DELTA_OVERLAY_MAX_RECORDS:
+            raise ValueError("delta-overlay compaction threshold exceeded")
+        resolved_source_dir = source_dir.resolve()
+        records = [
+            _validate_delta_source_record(
+                item, resolved_source_dir=resolved_source_dir
+            )
+            for item in raw_records
+        ]
+        paths = [item["source_path"] for item in records]
+        if paths != sorted(set(paths)) or document.get("record_count") != len(records):
+            raise ValueError("delta-overlay records are not unique and sorted")
+        document["_records"] = records
+        return document, len(raw), "steady"
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None, int(info.st_size), "rebuild_invalid"
+
+
+def _publish_delta_overlay(
+    path: Path,
+    *,
+    source_dir: Path,
+    base_index_sha256: str,
+    records: list[dict[str, Any]],
+) -> tuple[bool, int]:
+    normalized = sorted(records, key=lambda item: item["source_path"])
+    if len(normalized) > GRABOWSKI_DELTA_OVERLAY_MAX_RECORDS:
+        raise ValueError("delta-overlay compaction threshold exceeded")
+    document = {
+        "schema_version": GRABOWSKI_DELTA_OVERLAY_SCHEMA,
+        "source_dir": str(source_dir.resolve()),
+        "base_index_sha256": base_index_sha256,
+        "records": normalized,
+        "record_count": len(normalized),
+        "recorded_at": utc_now(),
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+    document["overlay_sha256"] = sha256_bytes(canonical_bytes(document))
+    raw = canonical_bytes(document) + b"\n"
+    _atomic_write(path, raw)
+    readback, _ = _read_immutable_artifact_snapshot(path, label="delta source overlay")
+    if readback != raw:
+        raise ValueError("delta source overlay readback mismatch")
+    return True, len(raw)
+
+
+def _validate_delta_source_record(
+    value: object, *, resolved_source_dir: Path
+) -> dict[str, Any]:
+    expected = {
+        "source_path",
+        "source_sha256",
+        "source_bytes",
+        "event_count",
+        "source_identity",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("invalid delta-index source fields")
+    source_path = value.get("source_path")
+    if not isinstance(source_path, str):
+        raise ValueError("invalid delta-index source path")
+    source = Path(source_path)
+    if (
+        not source.is_absolute()
+        or source.parent != resolved_source_dir
+        or not source.name.endswith(".jsonl")
+    ):
+        raise ValueError("delta-index source escapes the source directory")
+    source_sha256 = value.get("source_sha256")
+    if not isinstance(source_sha256, str) or len(source_sha256) != 64:
+        raise ValueError("invalid delta-index source digest")
+    try:
+        bytes.fromhex(source_sha256)
+    except ValueError as exc:
+        raise ValueError("invalid delta-index source digest") from exc
+    source_bytes = value.get("source_bytes")
+    event_count = value.get("event_count")
+    if type(source_bytes) is not int or source_bytes < 1:
+        raise ValueError("invalid delta-index source byte count")
+    if type(event_count) is not int or event_count < 1:
+        raise ValueError("invalid delta-index source event count")
+    validated = dict(value)
+    validated["_identity"] = _file_identity_from_document(value.get("source_identity"))
+    return validated
+
+
+def _validate_delta_bundle_record(
+    value: object, *, resolved_source_dir: Path, resolved_bundle_dir: Path
+) -> dict[str, Any]:
+    expected = {
+        "manifest_path",
+        "manifest_identity",
+        "bundle_path",
+        "bundle_identity",
+        "source_paths",
+        "source_count",
+        "event_count",
+    }
+    if not isinstance(value, dict) or set(value) != expected:
+        raise ValueError("invalid delta-index bundle fields")
+    manifest_path = value.get("manifest_path")
+    bundle_path = value.get("bundle_path")
+    if not isinstance(manifest_path, str) or not isinstance(bundle_path, str):
+        raise ValueError("invalid delta-index bundle paths")
+    manifest = Path(manifest_path)
+    bundle = Path(bundle_path)
+    if (
+        not manifest.is_absolute()
+        or manifest.parent != resolved_bundle_dir
+        or not manifest.name.endswith(".manifest.json")
+        or not bundle.is_absolute()
+        or bundle.parent != resolved_bundle_dir
+        or not bundle.name.endswith(".bundle.jsonl")
+    ):
+        raise ValueError("delta-index bundle escapes the bundle directory")
+    source_paths = value.get("source_paths")
+    if not isinstance(source_paths, list) or not source_paths:
+        raise ValueError("delta-index bundle has no source paths")
+    for source_path in source_paths:
+        if not isinstance(source_path, str):
+            raise ValueError("invalid delta-index archived source path")
+        source = Path(source_path)
+        if not source.is_absolute() or source.parent != resolved_source_dir:
+            raise ValueError("delta-index archived source escapes source directory")
+    source_count = value.get("source_count")
+    event_count = value.get("event_count")
+    if (
+        type(source_count) is not int
+        or source_count != len(source_paths)
+        or type(event_count) is not int
+        or event_count < source_count
+    ):
+        raise ValueError("invalid delta-index bundle counts")
+    validated = dict(value)
+    validated["_manifest_identity"] = _file_identity_from_document(
+        value.get("manifest_identity")
+    )
+    validated["_bundle_identity"] = _file_identity_from_document(
+        value.get("bundle_identity")
+    )
+    return validated
+
+
+def _load_delta_index(
+    path: Path, *, source_dir: Path, bundle_dir: Path
+) -> tuple[dict[str, Any] | None, int, str]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None, 0, "rebuild_missing"
+    except OSError:
+        return None, 0, "rebuild_invalid"
+    if (
+        not stat.S_ISREG(info.st_mode)
+        or info.st_uid != os.geteuid()
+        or info.st_mode & 0o077
+        or info.st_nlink != 1
+    ):
+        return None, int(info.st_size), "rebuild_invalid"
+    try:
+        raw, _ = _read_immutable_artifact_snapshot(path, label="delta source index")
+        if not raw.endswith(b"\n"):
+            raise ValueError("incomplete delta source index")
+        document = json.loads(raw)
+        expected = {
+            "schema_version",
+            "source_dir",
+            "selection_contract",
+            "loose_sources",
+            "bundles",
+            "source_count",
+            "event_count",
+            "recorded_at",
+            "historical_only",
+            "does_not_establish",
+            "index_sha256",
+        }
+        if not isinstance(document, dict) or set(document) != expected:
+            raise ValueError("invalid delta-index fields")
+        claimed = document.get("index_sha256")
+        unsigned = dict(document)
+        unsigned.pop("index_sha256")
+        if (
+            document.get("schema_version") != GRABOWSKI_DELTA_INDEX_SCHEMA
+            or document.get("source_dir") != str(source_dir.resolve())
+            or document.get("selection_contract") != sorted(HIGH_VALUE_KINDS)
+            or document.get("historical_only") is not True
+            or document.get("does_not_establish") != DOES_NOT_ESTABLISH
+            or not isinstance(claimed, str)
+            or claimed != sha256_bytes(canonical_bytes(unsigned))
+        ):
+            raise ValueError("delta-index contract or digest mismatch")
+        recorded_at = document.get("recorded_at")
+        if not isinstance(recorded_at, str):
+            raise ValueError("invalid delta-index timestamp")
+        _parse_timestamp(recorded_at, field="delta_source_index.recorded_at")
+        raw_loose = document.get("loose_sources")
+        raw_bundles = document.get("bundles")
+        if not isinstance(raw_loose, list) or not isinstance(raw_bundles, list):
+            raise ValueError("invalid delta-index inventories")
+        resolved_source_dir = source_dir.resolve()
+        resolved_bundle_dir = bundle_dir.resolve()
+        loose = [
+            _validate_delta_source_record(
+                item, resolved_source_dir=resolved_source_dir
+            )
+            for item in raw_loose
+        ]
+        bundles = [
+            _validate_delta_bundle_record(
+                item,
+                resolved_source_dir=resolved_source_dir,
+                resolved_bundle_dir=resolved_bundle_dir,
+            )
+            for item in raw_bundles
+        ]
+        loose_paths = [item["source_path"] for item in loose]
+        manifest_paths = [item["manifest_path"] for item in bundles]
+        if loose_paths != sorted(set(loose_paths)) or manifest_paths != sorted(
+            set(manifest_paths)
+        ):
+            raise ValueError("delta-index inventories are not unique and sorted")
+        source_count = len(loose) + sum(int(item["source_count"]) for item in bundles)
+        event_count = sum(int(item["event_count"]) for item in loose) + sum(
+            int(item["event_count"]) for item in bundles
+        )
+        if (
+            document.get("source_count") != source_count
+            or document.get("event_count") != event_count
+        ):
+            raise ValueError("delta-index aggregate counts mismatch")
+        document["_loose_sources"] = loose
+        document["_bundles"] = bundles
+        return document, len(raw), "steady"
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None, int(info.st_size), "rebuild_invalid"
+
+
+def _delta_source_record_from_source_record(record: dict[str, Any]) -> dict[str, Any]:
+    fingerprints = record.get("event_fingerprints")
+    if not isinstance(fingerprints, list) or not fingerprints:
+        raise ValueError("source record lacks event fingerprints")
+    return {
+        "source_path": record["source_path"],
+        "source_sha256": record["source_sha256"],
+        "source_bytes": record["source_bytes"],
+        "event_count": len(fingerprints),
+        "source_identity": record["source_identity"],
+    }
+
+
+def _delta_bundle_record_from_source_record(record: dict[str, Any]) -> dict[str, Any]:
+    sources = record.get("sources")
+    if not isinstance(sources, list) or not sources:
+        raise ValueError("bundle source record has no sources")
+    source_paths = sorted(str(item["source_path"]) for item in sources)
+    event_count = sum(len(item["event_fingerprints"]) for item in sources)
+    return {
+        "manifest_path": record["manifest_path"],
+        "manifest_identity": record["manifest_identity"],
+        "bundle_path": record["bundle_path"],
+        "bundle_identity": record["bundle_identity"],
+        "source_paths": source_paths,
+        "source_count": len(source_paths),
+        "event_count": event_count,
+    }
+
+
+def _publish_delta_index(
+    path: Path,
+    *,
+    source_dir: Path,
+    loose_sources: list[dict[str, Any]],
+    bundles: list[dict[str, Any]],
+) -> tuple[bool, int]:
+    normalized_loose = sorted(loose_sources, key=lambda item: item["source_path"])
+    normalized_bundles = sorted(bundles, key=lambda item: item["manifest_path"])
+    document = {
+        "schema_version": GRABOWSKI_DELTA_INDEX_SCHEMA,
+        "source_dir": str(source_dir.resolve()),
+        "selection_contract": sorted(HIGH_VALUE_KINDS),
+        "loose_sources": normalized_loose,
+        "bundles": normalized_bundles,
+        "source_count": len(normalized_loose)
+        + sum(int(item["source_count"]) for item in normalized_bundles),
+        "event_count": sum(int(item["event_count"]) for item in normalized_loose)
+        + sum(int(item["event_count"]) for item in normalized_bundles),
+        "recorded_at": utc_now(),
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+    document["index_sha256"] = sha256_bytes(canonical_bytes(document))
+    raw = canonical_bytes(document) + b"\n"
+    existing = None
+    try:
+        existing = path.read_bytes()
+    except FileNotFoundError:
+        pass
+    if existing == raw:
+        return False, len(raw)
+    _atomic_write(path, raw)
+    readback, _ = _read_immutable_artifact_snapshot(path, label="delta source index")
+    if readback != raw:
+        raise ValueError("delta source index readback mismatch")
+    return True, len(raw)
 
 
 def _source_index_path(receipt_dir: Path) -> Path:
@@ -1072,6 +1518,409 @@ def _file_matches_source_index(path: Path, expected: tuple[int, ...]) -> bool:
     except OSError:
         return False
     return stat.S_ISREG(current.st_mode) and _file_identity(current) == expected
+
+
+def _checkpoint_allows_source_only_delta(
+    checkpoint: dict[str, Any], current_identity: dict[str, Any]
+) -> bool:
+    """Return whether source-only drift can enter the read-only delta preflight."""
+    prior_identity = checkpoint.get("identity")
+    if (
+        not isinstance(prior_identity, dict)
+        or not isinstance(prior_identity.get("delta_index_identity"), dict)
+        or current_identity.get("source_inventory")
+        == prior_identity.get("source_inventory")
+    ):
+        return False
+    return all(
+        current_identity.get(key) == prior_identity.get(key)
+        for key in (
+            "source_index_identity",
+            "delta_index_identity",
+            "delta_overlay_identity",
+        )
+    )
+
+
+def _try_checkpoint_delta_import(
+    *,
+    checkpoint: dict[str, Any],
+    current_identity: dict[str, Any],
+    delta_index: dict[str, Any],
+    delta_overlay: dict[str, Any],
+    source_dir: Path,
+    bundle_dir: Path,
+    sources: list[Path],
+    manifests: list[Path],
+    bundle_files: list[Path],
+    receipt_dir: Path,
+    source_index_path: Path,
+    delta_index_path: Path,
+    delta_overlay_path: Path,
+    import_started_ns: int,
+    phase_ns: Counter[str],
+    counters: Counter[str],
+    measured_phase: Any,
+) -> dict[str, Any] | None:
+    """Reconcile a source-only loose-file delta against a prior full checkpoint.
+
+    The private delta index and overlay are accelerators only. The prior
+    checkpoint must still bind those cache projections, the canonical source
+    index, and the authoritative ledger/identity-index target. A checkpoint from
+    a full reconciliation also binds the complete receipt inventory; consecutive
+    delta checkpoints explicitly defer re-attesting receipts for unchanged old
+    sources. Any removal, bundle drift, path-generation overlap, cache/target
+    drift, or pre-effect race falls back to the normal full reconciliation path.
+    """
+    if not _checkpoint_allows_source_only_delta(checkpoint, current_identity):
+        return None
+    summary = checkpoint.get("summary")
+    if not isinstance(summary, dict):
+        return None
+    raw_loose = delta_index.get("loose_sources")
+    raw_bundles = delta_index.get("bundles")
+    cached_loose_items = delta_index.get("_loose_sources")
+    cached_bundle_items = delta_index.get("_bundles")
+    raw_overlay_records = delta_overlay.get("records")
+    cached_overlay_records = delta_overlay.get("_records")
+    if not all(
+        isinstance(value, list)
+        for value in (
+            raw_loose,
+            raw_bundles,
+            cached_loose_items,
+            cached_bundle_items,
+            raw_overlay_records,
+            cached_overlay_records,
+        )
+    ):
+        return None
+
+    cached_loose = {item["source_path"]: item for item in cached_loose_items}
+    cached_loose.update(
+        {item["source_path"]: item for item in cached_overlay_records}
+    )
+    cached_bundles = {item["manifest_path"]: item for item in cached_bundle_items}
+    current_loose = {str(path.resolve()): path for path in sources}
+    current_manifests = {str(path.resolve()): path for path in manifests}
+    current_bundle_files = {str(path.resolve()): path for path in bundle_files}
+    if (
+        len(current_loose) != len(sources)
+        or len(current_manifests) != len(manifests)
+        or len(current_bundle_files) != len(bundle_files)
+        or not set(cached_loose).issubset(current_loose)
+        or set(cached_bundles) != set(current_manifests)
+        or {item["bundle_path"] for item in cached_bundle_items}
+        != set(current_bundle_files)
+    ):
+        return None
+
+    bundle_source_paths: set[str] = set()
+    for bundle in cached_bundle_items:
+        manifest_path = current_manifests[bundle["manifest_path"]]
+        bundle_path = current_bundle_files[bundle["bundle_path"]]
+        counters["source_artifacts_metadata_checked"] += 2
+        if not (
+            _file_matches_source_index(manifest_path, bundle["_manifest_identity"])
+            and _file_matches_source_index(bundle_path, bundle["_bundle_identity"])
+        ):
+            return None
+        bundle_source_paths.update(bundle["source_paths"])
+    if set(current_loose) & bundle_source_paths:
+        # Multiple generations of one source path are valid after compaction,
+        # but they require the canonical full merge to assign generation receipts.
+        return None
+
+    try:
+        prior_source_count = int(summary["sources_after_deduplication"])
+        prior_event_count = int(summary["events_imported"]) + int(
+            summary["events_skipped_existing"]
+        )
+        combined_source_count = len(cached_loose) + sum(
+            int(item["source_count"]) for item in cached_bundle_items
+        )
+        combined_event_count = sum(
+            int(item["event_count"]) for item in cached_loose.values()
+        ) + sum(int(item["event_count"]) for item in cached_bundle_items)
+        if (
+            int(summary["files_seen"]) != len(cached_loose)
+            or int(summary["bundle_manifests_seen"]) != len(cached_bundle_items)
+            or int(summary["bundled_sources_seen"])
+            != sum(int(item["source_count"]) for item in cached_bundle_items)
+            or combined_source_count != prior_source_count
+            or combined_event_count != prior_event_count
+        ):
+            return None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    delta_prepared: list[dict[str, Any]] = []
+    changed_old_event_count = 0
+    added_count = 0
+    changed_count = 0
+    with measured_phase("delta_source_discovery"):
+        for resolved, source in current_loose.items():
+            cached = cached_loose.get(resolved)
+            counters["source_artifacts_metadata_checked"] += 1
+            if cached is not None and _file_matches_source_index(
+                source, cached["_identity"]
+            ):
+                continue
+            try:
+                prepared = _prepare_grabowski_outbox_source(
+                    source, receipt_dir=receipt_dir
+                )
+            except (OSError, ValueError, storage.StorageError):
+                return None
+            if cached is None:
+                added_count += 1
+            else:
+                changed_count += 1
+                changed_old_event_count += int(cached["event_count"])
+            delta_prepared.append(prepared)
+            counters["source_bytes_read"] += _prepared_source_bytes(prepared)
+            counters["source_bytes_hashed"] += _prepared_source_bytes(prepared)
+            counters["source_events_validated"] += _prepared_event_count(prepared)
+    if not delta_prepared:
+        return None
+    try:
+        delta_prepared = _merge_prepared_grabowski_sources(delta_prepared)
+    except ValueError:
+        return None
+    if len(delta_prepared) != added_count + changed_count:
+        return None
+    projected_overlay_paths = {
+        str(item["source_path"]) for item in raw_overlay_records
+    }
+    projected_overlay_paths.update(
+        str(prepared["source"].resolve()) for prepared in delta_prepared
+    )
+    if len(projected_overlay_paths) > GRABOWSKI_DELTA_OVERLAY_MAX_RECORDS:
+        # Compact/rebuild before any ledger effect instead of accepting the
+        # delta and discovering the bounded-overlay limit only afterwards.
+        counters["delta_overlay_capacity_fallbacks"] += 1
+        return None
+
+    # Bind the authoritative state immediately before the ledger effect. Source
+    # files already read by this run are immutable snapshots; a later source
+    # change is deliberately the next delta. Receipts are non-authoritative and
+    # are fully re-attested by the next full/steady reconciliation.
+    with measured_phase("delta_anchor_recheck"):
+        source_inventory = current_identity.get("source_inventory")
+        source_index_identity = _private_file_identity(source_index_path)
+        delta_index_identity = _private_file_identity(delta_index_path)
+        delta_overlay_identity = _private_file_identity(delta_overlay_path)
+        try:
+            target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
+        except storage.StorageError:
+            return None
+        prior_identity = checkpoint["identity"]
+        if (
+            source_inventory is None
+            or source_index_identity != prior_identity.get("source_index_identity")
+            or delta_index_identity != prior_identity.get("delta_index_identity")
+            or delta_overlay_identity != prior_identity.get("delta_overlay_identity")
+            or target_identity != prior_identity.get("target_identity")
+        ):
+            return None
+
+    errors: list[dict[str, str]] = []
+    delta_results: list[dict[str, Any]] = []
+    grouped: dict[str, object] | None = None
+    receipt_writes_succeeded = True
+    ledger_reconciled = False
+    with measured_phase("delta_ledger_reconcile"):
+        try:
+            delta_results, grouped, receipt_errors = _import_prepared_grabowski_sources(
+                delta_prepared
+            )
+            ledger_reconciled = True
+            receipt_writes_succeeded = not receipt_errors
+            errors.extend(
+                {
+                    "source_path": source_path,
+                    "error": f"receipt write failed after ledger update: {exc}",
+                }
+                for source_path, exc in receipt_errors
+            )
+        except (OSError, ValueError, storage.StorageError) as exc:
+            receipt_writes_succeeded = False
+            errors.append({"source_path": "<batch>", "error": str(exc)})
+
+    delta_overlay_written = False
+    if ledger_reconciled and receipt_writes_succeeded:
+        updated_overlay = {
+            item["source_path"]: dict(item) for item in raw_overlay_records
+        }
+        for prepared in delta_prepared:
+            source_record = _source_index_source_record(prepared, loose=True)
+            updated_overlay[str(prepared["source"].resolve())] = (
+                _delta_source_record_from_source_record(source_record)
+            )
+        with measured_phase("delta_overlay_publish"):
+            try:
+                delta_overlay_written, _ = _publish_delta_overlay(
+                    delta_overlay_path,
+                    source_dir=source_dir,
+                    base_index_sha256=str(delta_index["index_sha256"]),
+                    records=list(updated_overlay.values()),
+                )
+                if delta_overlay_written:
+                    counters["delta_overlay_writes"] += 1
+            except (OSError, ValueError) as exc:
+                errors.append(
+                    {
+                        "source_path": str(delta_overlay_path),
+                        "error": f"delta overlay update failed after ledger reconciliation: {exc}",
+                    }
+                )
+
+    bundle_source_count = sum(
+        int(item["source_count"]) for item in cached_bundle_items
+    )
+    current_source_count = prior_source_count + added_count
+    bypassed_source_count = prior_source_count - changed_count
+    bypassed_event_count = prior_event_count - changed_old_event_count
+    target_scans = int(grouped.get("target_scans", 0)) if grouped is not None else None
+    target_records_scanned = (
+        int(grouped.get("target_records_scanned", 0))
+        if grouped is not None
+        else None
+    )
+    identity_index_mode = (
+        str(grouped.get("identity_index_mode", "unknown"))
+        if grouped is not None
+        else None
+    )
+    identity_index_full_rebuild = (
+        bool(grouped.get("identity_index_full_rebuild", False))
+        if grouped is not None
+        else None
+    )
+    identity_index_entries_after = (
+        int(grouped.get("identity_index_entries_after", 0))
+        if grouped is not None
+        else None
+    )
+    prior_source_index_identity = checkpoint["identity"].get("source_index_identity")
+    source_index_file_bytes = (
+        int(prior_source_index_identity.get("size", 0))
+        if isinstance(prior_source_index_identity, dict)
+        else 0
+    )
+    base_result = {
+        "schema_version": "chronik-grabowski-outbox-batch.v2",
+        "source_dir": str(source_dir),
+        "receipt_dir": str(receipt_dir),
+        "files_seen": len(sources),
+        "loose_files_seen": len(sources),
+        "bundle_manifests_seen": len(manifests),
+        "bundles_valid": len(cached_bundle_items),
+        "bundled_sources_seen": bundle_source_count,
+        "sources_seen_total": len(sources) + bundle_source_count,
+        "sources_after_deduplication": current_source_count,
+        "orphan_bundles": 0,
+        "files_imported_or_confirmed": bypassed_source_count + len(delta_results),
+        "files_unchanged": bypassed_source_count
+        + sum(1 for result in delta_results if result.get("unchanged") is True),
+        "receipts_written": sum(
+            1 for result in delta_results if result.get("receipt_written") is True
+        ),
+        "receipts_reused": sum(
+            1 for result in delta_results if result.get("receipt_reused") is True
+        ),
+        "receipts_deferred": bypassed_source_count,
+        "loose_sources_imported_or_confirmed": len(cached_loose)
+        - changed_count
+        + len(delta_results),
+        "bundled_sources_imported_or_confirmed": bundle_source_count,
+        "events_imported": sum(int(result.get("imported", 0)) for result in delta_results),
+        "events_skipped_existing": bypassed_event_count
+        + sum(int(result.get("skipped_existing", 0)) for result in delta_results),
+        "target_scans": target_scans,
+        "target_records_scanned": target_records_scanned,
+        "identity_index_mode": identity_index_mode,
+        "identity_index_full_rebuild": identity_index_full_rebuild,
+        "identity_index_entries_after": identity_index_entries_after,
+        "source_index_path": str(source_index_path),
+        "source_index_mode": "deferred_delta",
+        "source_index_written": False,
+        "source_index_file_bytes": source_index_file_bytes,
+        "sources_reused": bypassed_source_count,
+        "sources_revalidated": len(delta_prepared),
+        "sources_changed": changed_count,
+        "sources_added": added_count,
+        "sources_removed": 0,
+        "source_bytes_read": counters["source_bytes_read"],
+        "source_bytes_hashed": counters["source_bytes_hashed"],
+        "source_events_validated": counters["source_events_validated"],
+        "bundle_inventory": [],
+        "bundle_inventory_omitted": True,
+        "errors": errors,
+        "historical_only": True,
+        "does_not_establish": DOES_NOT_ESTABLISH,
+    }
+
+    if (
+        not errors
+        and identity_index_entries_after is not None
+        and delta_overlay_written
+    ):
+        with measured_phase("delta_checkpoint_publish"):
+            final_source_index_identity = _private_file_identity(source_index_path)
+            final_delta_index_identity = _private_file_identity(delta_index_path)
+            final_delta_overlay_identity = _private_file_identity(delta_overlay_path)
+            try:
+                final_target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
+            except storage.StorageError:
+                final_target_identity = None
+            if all(
+                value is not None
+                for value in (
+                    source_inventory,
+                    final_source_index_identity,
+                    final_delta_index_identity,
+                    final_delta_overlay_identity,
+                    final_target_identity,
+                )
+            ):
+                checkpoint_identity = {
+                    "source_inventory": source_inventory,
+                    "source_index_identity": final_source_index_identity,
+                    "delta_index_identity": final_delta_index_identity,
+                    "delta_overlay_identity": final_delta_overlay_identity,
+                    "target_identity": final_target_identity,
+                    "receipt_inventory_deferred": True,
+                }
+                if _publish_steady_checkpoint(
+                    _steady_checkpoint_path(receipt_dir),
+                    source_dir=source_dir,
+                    identity=checkpoint_identity,
+                    summary=_steady_summary_from_result(base_result),
+                    previous=checkpoint,
+                ):
+                    counters["steady_checkpoint_writes"] += 1
+                else:
+                    counters["steady_checkpoint_reuses"] += 1
+
+    counters["delta_fast_path_hits"] += 1
+    elapsed_ns = time.perf_counter_ns() - import_started_ns
+    telemetry = {
+        "schema_version": "chronik-grabowski-import-telemetry.v1",
+        "elapsed_seconds": round(elapsed_ns / 1_000_000_000, 6),
+        "phases_seconds": {
+            name: round(value / 1_000_000_000, 6)
+            for name, value in sorted(phase_ns.items())
+        },
+        "counters": dict(sorted(counters.items())),
+    }
+    return {
+        **base_result,
+        "elapsed_seconds": telemetry["elapsed_seconds"],
+        "import_telemetry": telemetry,
+        "steady_fast_path": False,
+        "delta_fast_path": True,
+    }
 
 
 def _source_index_semantic(document: dict[str, Any]) -> dict[str, Any]:
@@ -1944,6 +2793,8 @@ def import_grabowski_outbox(
     source_dir = outbox_root.expanduser() / "grabowski" / "chronik-outbox"
     bundle_dir = source_dir / GRABOWSKI_BUNDLE_DIRNAME
     source_index_path = _source_index_path(receipt_dir)
+    delta_index_path = _delta_index_path(receipt_dir)
+    delta_overlay_path = _delta_overlay_path(receipt_dir)
     with measured_phase("inventory"):
         sources = sorted(source_dir.glob("*.jsonl")) if source_dir.is_dir() else []
         manifests = (
@@ -1964,9 +2815,100 @@ def import_grabowski_outbox(
     prior_steady_checkpoint = _load_steady_checkpoint(
         steady_checkpoint_path, source_dir=source_dir
     )
+    delta_candidate_identity: dict[str, Any] | None = None
     if allow_steady_fast_path and prior_steady_checkpoint is not None:
         with measured_phase("steady_fast_path"):
-            current_fast_identity = _steady_fast_identity(
+            initial_source_inventory = _stable_source_inventory_identity(
+                source_dir=source_dir,
+                bundle_dir=bundle_dir,
+                sources=sources,
+                manifests=manifests,
+                bundle_files=bundle_files,
+            )
+            prior_identity = prior_steady_checkpoint.get("identity")
+            if initial_source_inventory is not None and isinstance(prior_identity, dict):
+                if initial_source_inventory == prior_identity.get("source_inventory"):
+                    current_fast_identity = _steady_fast_identity(
+                        source_dir=source_dir,
+                        bundle_dir=bundle_dir,
+                        sources=sources,
+                        manifests=manifests,
+                        bundle_files=bundle_files,
+                        receipt_dir=receipt_dir,
+                        source_index_path=source_index_path,
+                        delta_index_path=delta_index_path,
+                        delta_overlay_path=delta_overlay_path,
+                        initial_source_inventory=initial_source_inventory,
+                    )
+                    if (
+                        current_fast_identity is not None
+                        and current_fast_identity == prior_identity
+                    ):
+                        return _steady_fast_result(
+                            prior_steady_checkpoint,
+                            source_dir=source_dir,
+                            receipt_dir=receipt_dir,
+                            source_index_path=source_index_path,
+                            import_started_ns=import_started_ns,
+                            phase_ns=phase_ns,
+                            counters=counters,
+                        )
+                else:
+                    current_fast_identity = _delta_candidate_identity(
+                        checkpoint=prior_steady_checkpoint,
+                        source_dir=source_dir,
+                        bundle_dir=bundle_dir,
+                        sources=sources,
+                        manifests=manifests,
+                        bundle_files=bundle_files,
+                        receipt_dir=receipt_dir,
+                        source_index_path=source_index_path,
+                        delta_index_path=delta_index_path,
+                        delta_overlay_path=delta_overlay_path,
+                        source_inventory=initial_source_inventory,
+                    )
+                    if (
+                        current_fast_identity is not None
+                        and _checkpoint_allows_source_only_delta(
+                            prior_steady_checkpoint, current_fast_identity
+                        )
+                    ):
+                        delta_candidate_identity = current_fast_identity
+            counters["steady_fast_path_fallbacks"] += 1
+
+    target_path = storage.safe_target_path(DOMAIN)
+    target_missing_or_empty = not target_path.exists() or target_path.stat().st_size == 0
+    if delta_candidate_identity is not None and not target_missing_or_empty:
+        with measured_phase("delta_index_load"):
+            delta_index, delta_index_bytes, delta_index_mode = _load_delta_index(
+                delta_index_path,
+                source_dir=source_dir,
+                bundle_dir=bundle_dir,
+            )
+            delta_overlay = None
+            delta_overlay_bytes = 0
+            delta_overlay_mode = "rebuild_missing"
+            if delta_index is not None and delta_index_mode == "steady":
+                delta_overlay, delta_overlay_bytes, delta_overlay_mode = (
+                    _load_delta_overlay(
+                        delta_overlay_path,
+                        source_dir=source_dir,
+                        base_index_sha256=str(delta_index["index_sha256"]),
+                    )
+                )
+        counters["delta_index_bytes_read"] = delta_index_bytes
+        counters["delta_overlay_bytes_read"] = delta_overlay_bytes
+        if (
+            delta_index is not None
+            and delta_index_mode == "steady"
+            and delta_overlay is not None
+            and delta_overlay_mode == "steady"
+        ):
+            delta_result = _try_checkpoint_delta_import(
+                checkpoint=prior_steady_checkpoint,
+                current_identity=delta_candidate_identity,
+                delta_index=delta_index,
+                delta_overlay=delta_overlay,
                 source_dir=source_dir,
                 bundle_dir=bundle_dir,
                 sources=sources,
@@ -1974,24 +2916,21 @@ def import_grabowski_outbox(
                 bundle_files=bundle_files,
                 receipt_dir=receipt_dir,
                 source_index_path=source_index_path,
+                delta_index_path=delta_index_path,
+                delta_overlay_path=delta_overlay_path,
+                import_started_ns=import_started_ns,
+                phase_ns=phase_ns,
+                counters=counters,
+                measured_phase=measured_phase,
             )
-            if (
-                current_fast_identity is not None
-                and current_fast_identity == prior_steady_checkpoint.get("identity")
-            ):
-                return _steady_fast_result(
-                    prior_steady_checkpoint,
-                    source_dir=source_dir,
-                    receipt_dir=receipt_dir,
-                    source_index_path=source_index_path,
-                    import_started_ns=import_started_ns,
-                    phase_ns=phase_ns,
-                    counters=counters,
-                )
-            counters["steady_fast_path_fallbacks"] += 1
+            if delta_result is not None:
+                return delta_result
+        if delta_index_mode == "rebuild_invalid":
+            counters["delta_index_invalid"] += 1
+        if delta_overlay_mode == "rebuild_invalid":
+            counters["delta_overlay_invalid"] += 1
+        counters["delta_fast_path_fallbacks"] += 1
 
-    target_path = storage.safe_target_path(DOMAIN)
-    target_missing_or_empty = not target_path.exists() or target_path.stat().st_size == 0
     with measured_phase("source_index_load"):
         source_index, source_index_bytes, source_index_mode = (
             _load_grabowski_source_index(
@@ -2255,6 +3194,61 @@ def import_grabowski_outbox(
     elif source_index is not None and source_index_mode == "steady":
         counters["source_index_reuses"] = 1
 
+    delta_index_written = False
+    if ledger_reconciled and receipt_writes_succeeded and not errors:
+        with measured_phase("delta_index_publish"):
+            try:
+                delta_loose_records = [
+                    _delta_source_record_from_source_record(item)
+                    for item in loose_index_records
+                ]
+                delta_bundle_records = [
+                    _delta_bundle_record_from_source_record(item)
+                    for item in bundle_index_records
+                ]
+                delta_index_written, _ = _publish_delta_index(
+                    delta_index_path,
+                    source_dir=source_dir,
+                    loose_sources=delta_loose_records,
+                    bundles=delta_bundle_records,
+                )
+                if delta_index_written:
+                    counters["delta_index_writes"] += 1
+            except (OSError, ValueError) as exc:
+                errors.append(
+                    {
+                        "source_path": str(delta_index_path),
+                        "error": f"delta index update failed after ledger reconciliation: {exc}",
+                    }
+                )
+
+    delta_overlay_written = False
+    if ledger_reconciled and receipt_writes_succeeded and not errors:
+        with measured_phase("delta_overlay_publish"):
+            try:
+                published_delta_index, _, published_delta_mode = _load_delta_index(
+                    delta_index_path,
+                    source_dir=source_dir,
+                    bundle_dir=bundle_dir,
+                )
+                if published_delta_index is None or published_delta_mode != "steady":
+                    raise ValueError("published delta index is not readable")
+                delta_overlay_written, _ = _publish_delta_overlay(
+                    delta_overlay_path,
+                    source_dir=source_dir,
+                    base_index_sha256=str(published_delta_index["index_sha256"]),
+                    records=[],
+                )
+                if delta_overlay_written:
+                    counters["delta_overlay_writes"] += 1
+            except (OSError, ValueError) as exc:
+                errors.append(
+                    {
+                        "source_path": str(delta_overlay_path),
+                        "error": f"delta overlay reset failed after full reconciliation: {exc}",
+                    }
+                )
+
     bundled_sources_seen = sum(int(item["source_count"]) for item in bundle_metadata)
     base_result = {
         "schema_version": "chronik-grabowski-outbox-batch.v2",
@@ -2272,6 +3266,7 @@ def import_grabowski_outbox(
         "files_unchanged": sum(1 for result in results if result.get("unchanged") is True),
         "receipts_written": sum(1 for result in results if result.get("receipt_written") is True),
         "receipts_reused": sum(1 for result in results if result.get("receipt_reused") is True),
+        "receipts_deferred": 0,
         "loose_sources_imported_or_confirmed": sum(
             1 for result in results if result.get("source_origin") == "loose"
         ),
@@ -2323,6 +3318,8 @@ def import_grabowski_outbox(
             )
             receipt_inventory = _inventory_fingerprint(receipt_paths, private=True)
             source_index_identity = _private_file_identity(source_index_path)
+            delta_index_identity = _private_file_identity(delta_index_path)
+            delta_overlay_identity = _private_file_identity(delta_overlay_path)
             try:
                 target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
             except storage.StorageError:
@@ -2331,12 +3328,16 @@ def import_grabowski_outbox(
                 source_inventory is not None
                 and receipt_inventory is not None
                 and source_index_identity is not None
+                and delta_index_identity is not None
+                and delta_overlay_identity is not None
                 and target_identity is not None
             ):
                 checkpoint_identity = {
                     "source_inventory": source_inventory,
                     "receipt_inventory": receipt_inventory,
                     "source_index_identity": source_index_identity,
+                    "delta_index_identity": delta_index_identity,
+                    "delta_overlay_identity": delta_overlay_identity,
                     "target_identity": target_identity,
                 }
                 checkpoint_summary = _steady_summary_from_result(base_result)
@@ -2365,6 +3366,7 @@ def import_grabowski_outbox(
         "elapsed_seconds": telemetry["elapsed_seconds"],
         "import_telemetry": telemetry,
         "steady_fast_path": False,
+        "delta_fast_path": False,
     }
 
 
