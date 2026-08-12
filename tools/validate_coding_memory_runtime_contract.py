@@ -12,6 +12,8 @@ from typing import Iterable
 ROOT = Path(__file__).resolve().parents[1]
 CONTRACT_PATH = Path("tools/coding_memory.runtime.v1.json")
 EXPECTED_SCHEMA_VERSION = "chronik-coding-memory-runtime.v1"
+EXPECTED_ENTRYPOINT = "tools/coding_memory.py"
+EXPECTED_REQUIREMENTS_SOURCE = "requirements.txt"
 
 
 def _normalize_distribution(name: str) -> str:
@@ -31,15 +33,23 @@ def _requirement_map(root: Path, source: str) -> dict[str, str]:
     return values
 
 
+def _repo_file(root: Path, relative: Path) -> Path | None:
+    candidate = root / relative
+    if candidate.is_symlink() or not candidate.is_file():
+        return None
+    resolved_root = root.resolve()
+    resolved = candidate.resolve()
+    if not resolved.is_relative_to(resolved_root):
+        return None
+    return candidate
+
+
 def _local_module(root: Path, module: str) -> Path | None:
     parts = module.split(".")
-    file_candidate = root.joinpath(*parts).with_suffix(".py")
-    if file_candidate.is_file():
+    file_candidate = _repo_file(root, Path(*parts).with_suffix(".py"))
+    if file_candidate is not None:
         return file_candidate
-    package_candidate = root.joinpath(*parts, "__init__.py")
-    if package_candidate.is_file():
-        return package_candidate
-    return None
+    return _repo_file(root, Path(*parts) / "__init__.py")
 
 
 def _import_roots(path: Path) -> set[str]:
@@ -48,13 +58,21 @@ def _import_roots(path: Path) -> set[str]:
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             roots.update(alias.name.split(".", 1)[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".", 1)[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                raise ValueError(
+                    f"relative import is not supported by coding-memory runtime contract v1: {path}"
+                )
+            if node.module:
+                roots.add(node.module.split(".", 1)[0])
     return roots
 
 
 def external_import_closure(root: Path, entrypoint: str) -> set[str]:
-    pending = [root / entrypoint]
+    entrypoint_path = _repo_file(root, Path(entrypoint))
+    if entrypoint_path is None:
+        raise ValueError(f"runtime entrypoint is missing or untrusted: {entrypoint}")
+    pending = [entrypoint_path]
     seen: set[Path] = set()
     external: set[str] = set()
     stdlib = set(sys.stdlib_module_names) | {"__future__"}
@@ -63,8 +81,6 @@ def external_import_closure(root: Path, entrypoint: str) -> set[str]:
         resolved = path.resolve()
         if resolved in seen:
             continue
-        if not path.is_file():
-            raise ValueError(f"runtime entrypoint/module is missing: {path.relative_to(root)}")
         seen.add(resolved)
         for imported in _import_roots(path):
             local = _local_module(root, imported)
@@ -76,16 +92,20 @@ def external_import_closure(root: Path, entrypoint: str) -> set[str]:
 
 
 def validate_root(root: Path) -> dict[str, object]:
-    contract_path = root / CONTRACT_PATH
+    contract_path = _repo_file(root, CONTRACT_PATH)
+    if contract_path is None:
+        raise ValueError("coding-memory runtime contract is missing or untrusted")
     contract = json.loads(contract_path.read_text(encoding="utf-8"))
     if contract.get("schema_version") != EXPECTED_SCHEMA_VERSION:
         raise ValueError("coding-memory runtime schema_version mismatch")
     entrypoint = contract.get("entrypoint")
     source = contract.get("requirements_source")
-    if not isinstance(entrypoint, str) or not entrypoint:
-        raise ValueError("coding-memory runtime entrypoint is invalid")
-    if not isinstance(source, str) or not source:
-        raise ValueError("coding-memory requirements_source is invalid")
+    if entrypoint != EXPECTED_ENTRYPOINT:
+        raise ValueError("coding-memory runtime entrypoint mismatch")
+    if source != EXPECTED_REQUIREMENTS_SOURCE:
+        raise ValueError("coding-memory requirements_source mismatch")
+    if _repo_file(root, Path(source)) is None:
+        raise ValueError("coding-memory requirements source is missing or untrusted")
 
     declared_imports: set[str] = set()
     declared_distributions: set[str] = set()
