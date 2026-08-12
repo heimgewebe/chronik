@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import fnmatch
 import logging
-import os
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 RETENTION_CONFIG_PATH: Final[Path] = Path(__file__).parent / "config" / "retention.yml"
 
 # Global cache for loaded policies
-_RETENTION_POLICIES: list[dict] | None = None
+_RETENTION_POLICIES: list["RetentionPolicy"] | None = None
 
 
 class RetentionPolicy:
@@ -88,7 +87,7 @@ def load_retention_policies(force_reload: bool = False) -> list[RetentionPolicy]
         if not config or "policies" not in config:
             raise ValueError("Invalid retention config: missing 'policies' key")
         
-        policies = []
+        policies: list[RetentionPolicy] = []
         for item in config["policies"]:
             pattern = item.get("pattern")
             ttl_days = item.get("ttl_days")

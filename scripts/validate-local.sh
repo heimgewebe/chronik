@@ -5,6 +5,11 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT_DIR"
 
 ./scripts/setup-venv.sh
+# Keep subprocess CLIs on the same interpreter/dependency environment as the
+# validator itself. Some contract tests execute repository scripts through
+# their /usr/bin/env python3 shebang, so merely calling .venv/bin/python for
+# pytest is not equivalent to an activated development/CI environment.
+. .venv/bin/activate
 
 TMP_DATA_DIR=$(mktemp -d)
 cleanup() {
@@ -18,6 +23,14 @@ export CHRONIK_DATA_DIR="$TMP_DATA_DIR"
 # Operator-ecosystem role contract must not drift (append-only ledger, no
 # worker control / orchestration authority).
 ./.venv/bin/python scripts/check_role.py
+
+# Keep static analysis in the same canonical validation path used by local
+# development and the Metarepo repository-verification workflow. Ruff is
+# intentionally limited to high-signal correctness rules while historical
+# style debt remains outside this gate. Mypy owns the typed HTTP/ingest slice
+# declared in mypy.ini and follows its real storage dependencies.
+./.venv/bin/ruff check .
+./.venv/bin/mypy
 
 ./.venv/bin/python -m pytest -q
 
