@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Final, NoReturn
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse, PlainTextResponse
 from filelock import FileLock, Timeout
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -57,6 +58,7 @@ from http_adapter import (
     adapt_ingest_http_items,
     ingest_request_body_openapi,
 )
+from audit_log import AuditAction, emit_audit_event
 from settings import Settings
 
 # --- Runtime constants & logging ---
@@ -202,6 +204,7 @@ async def request_id_logging(request: Request, call_next):
     raw_rid = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     # Sanitize to prevent log injection and limit length
     rid = _METRIC_LABEL_SANITIZER.sub("_", raw_rid)[:MAX_RID_LENGTH]
+    request.state.request_id = rid
     start = time.perf_counter()
     # Falls im Handler ein Fehler hochgeht, loggen wir konservativ 500
     status = 500
@@ -223,6 +226,51 @@ async def request_id_logging(request: Request, call_next):
         )
 
 
+def _is_ingest_request(request: Request) -> bool:
+    path = str(request.scope.get("path", ""))
+    return path == "/v1/ingest" or path.startswith("/ingest/")
+
+
+def _request_audit_domain(request: Request) -> str | None:
+    remembered = getattr(request.state, "audit_domain", None)
+    if remembered is not None:
+        return str(remembered)
+    path_domain = request.path_params.get("domain")
+    if path_domain is not None:
+        return str(path_domain)
+    query_domain = request.query_params.get("domain")
+    if query_domain is not None:
+        return str(query_domain)
+    return None
+
+
+def _audit_ingest_decision(
+    request: Request,
+    action: AuditAction,
+    reason: str,
+    *,
+    domain: str | None = None,
+) -> None:
+    if not _is_ingest_request(request):
+        return
+    if domain is not None:
+        request.state.audit_domain = domain
+    client_ip = request.client.host if request.client is not None else None
+    emit_audit_event(
+        request_id=getattr(request.state, "request_id", None),
+        domain=_request_audit_domain(request),
+        action=action,
+        reason=reason,
+        client_ip=client_ip,
+    )
+
+
+@app.exception_handler(HTTPException)
+async def _on_http_exception(request: Request, exc: HTTPException):
+    _audit_ingest_decision(request, "REJECTED", str(exc.detail))
+    return await http_exception_handler(request, exc)
+
+
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
@@ -230,6 +278,7 @@ app.add_middleware(SlowAPIMiddleware)
 
 @app.exception_handler(RateLimitExceeded)
 async def _on_rate_limited(request: Request, exc: RateLimitExceeded):
+    _audit_ingest_decision(request, "REJECTED", "rate_limited")
     response = PlainTextResponse("too many requests", status_code=429)
     # Defaulting to 60s which matches our window size.
     # A more precise calculation would require querying the limiter storage.
@@ -557,6 +606,7 @@ async def ingest_v1(
 ):
     # Determine domain from query param or payload
     if domain:
+        request.state.audit_domain = domain
         dom = _sanitize_domain(domain)
     else:
         dom = None
@@ -590,6 +640,7 @@ async def ingest_v1(
 
     if not items:
         logger.warning("empty payload received")
+        _audit_ingest_decision(request, "ACCEPTED", "empty", domain=dom)
         return PlainTextResponse("ok", status_code=202)
 
     # If domain was not in query, try to get it from the first item.
@@ -604,6 +655,7 @@ async def ingest_v1(
                 status_code=400,
                 detail="domain must be specified via query or payload",
             )
+        request.state.audit_domain = first_item_domain
         dom = _sanitize_domain(first_item_domain)
 
     try:
@@ -612,7 +664,9 @@ async def ingest_v1(
         _raise_storage_http_exception(exc, domain=dom)
 
     if result is not None:
+        _audit_ingest_decision(request, "ACCEPTED", str(result["result"]), domain=dom)
         return JSONResponse(result, status_code=202)
+    _audit_ingest_decision(request, "ACCEPTED", "accepted", domain=dom)
     return PlainTextResponse("ok", status_code=202)
 
 
@@ -628,6 +682,7 @@ async def ingest(
     domain: str,
     request: Request,
 ):
+    request.state.audit_domain = domain
     dom = _sanitize_domain(domain)
 
     # JSON parsen
@@ -649,7 +704,11 @@ async def ingest(
         _raise_storage_http_exception(exc, domain=dom)
 
     if result is not None:
+        _audit_ingest_decision(request, "ACCEPTED", str(result["result"]), domain=dom)
         return JSONResponse(result, status_code=202)
+    _audit_ingest_decision(
+        request, "ACCEPTED", "empty" if not items else "accepted", domain=dom
+    )
     return PlainTextResponse("ok", status_code=202)
 
 
