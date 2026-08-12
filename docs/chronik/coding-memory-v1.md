@@ -11,6 +11,17 @@ Grabowski task outbox -> tools/coding_memory.py import -> agent.ledger JSONL
 
 No Plexer, Heimlern, Leitstand or long-running Chronik service is required. API and CLI use the same canonical envelope constructor. Imports are idempotent by `event_id` under the domain file lock.
 
+## Runtime contract
+
+`tools/coding_memory.runtime.v1.json` is the producer-owned, machine-readable runtime contract for the coding-memory CLI. It is deliberately a static release asset: a consumer can inspect the entrypoint, Python requirement and complete external import/distribution mapping **without executing Chronik code first**.
+
+The contract is checked against two independent sources of truth:
+
+- `requirements.txt` must contain the same distribution specifier for every declared runtime dependency;
+- `tools/validate_coding_memory_runtime_contract.py` follows the local Python import closure from `tools/coding_memory.py` with the AST and fails if a non-stdlib import appears without a contract mapping, or if a declared import is no longer reachable.
+
+The current closure declares `filelock`, `jsonschema`, `pydantic`, `pydantic-settings` and `PyYAML`. Consumers may resolve those constraints into their own reproducible lock, but must validate that their selected distributions satisfy the producer contract. The contract does not prove what is installed in a consumer environment and does not by itself prove runtime success.
+
 `import-outbox` maintains a private, reconstructible `source-index.v1.json` next
 to the import receipts. The projection binds loose files and immutable bundle
 artifacts to full filesystem identity (including size, mtime and ctime) and

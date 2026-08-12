@@ -24,6 +24,10 @@ export CHRONIK_DATA_DIR="$TMP_DATA_DIR"
 # worker control / orchestration authority).
 ./.venv/bin/python scripts/check_role.py
 
+# Coding-memory is consumed cross-repository. Its static producer contract must
+# remain complete before any consumer executes Chronik code to discover imports.
+./.venv/bin/python tools/validate_coding_memory_runtime_contract.py
+
 # Keep static analysis in the same canonical validation path used by local
 # development and the Metarepo repository-verification workflow. Ruff is
 # intentionally limited to high-signal correctness rules while historical
