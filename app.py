@@ -33,6 +33,8 @@ from storage import (
     StorageCursorError,
     StorageFullError,
     StorageBusyError,
+    StorageConflictError,
+    StorageRequiredIdentityError,
     read_tail,
     read_last_line,
     scan_domain,
@@ -542,19 +544,25 @@ def _raise_storage_http_exception(
         raise HTTPException(status_code=507, detail="insufficient storage") from exc
     if isinstance(exc, StorageBusyError):
         raise HTTPException(status_code=429, detail="busy, try again") from exc
-
-    # Fallback for other storage errors (e.g. symlinks, invalid paths).
-    msg = str(exc).lower()
-    if msg.startswith("conflicting event_id:"):
+    if isinstance(exc, StorageCursorError):
+        raise HTTPException(
+            status_code=400, detail="cursor must point to a record boundary"
+        ) from exc
+    if isinstance(exc, StorageConflictError):
         if domain == "agent.ledger":
             _record_agent_ledger_outcome("conflict")
-        raise HTTPException(status_code=409, detail="conflicting event_id") from exc
-    if msg == "missing event_id":
+        raise HTTPException(
+            status_code=409, detail=f"conflicting {exc.identity_key}"
+        ) from exc
+    if isinstance(exc, StorageRequiredIdentityError):
         if domain == "agent.ledger":
             _record_agent_ledger_outcome("invalid_identity")
-        raise HTTPException(status_code=400, detail="missing event_id") from exc
-    if "invalid target" in msg:
-        raise HTTPException(status_code=400, detail="invalid target") from exc
+        raise HTTPException(
+            status_code=400, detail=f"missing {exc.identity_key}"
+        ) from exc
+
+    # All other storage failures are server-side. Internal messages can contain
+    # paths, platform details or recovery state and must never cross the HTTP boundary.
     raise HTTPException(status_code=500, detail="storage error") from exc
 
 
@@ -783,16 +791,8 @@ async def events_v1(
 
     try:
         events, next_cursor, has_more = await run_in_threadpool(_fetch_events_helper, dom, cursor, limit)
-    except StorageCursorError as exc:
-        raise HTTPException(
-            status_code=400, detail="cursor must point to a record boundary"
-        ) from exc
-    except StorageBusyError as exc:
-        raise HTTPException(status_code=429, detail="busy, try again") from exc
     except StorageError as exc:
-        if "invalid target" in str(exc):
-            raise HTTPException(status_code=400, detail="invalid domain") from exc
-        raise HTTPException(status_code=500, detail="storage error") from exc
+        _raise_storage_http_exception(exc)
 
     return {
         "events": events,
@@ -816,10 +816,8 @@ async def latest_v1(domain: str, unwrap: int = 0):
     try:
         # Use storage.read_last_line to get exactly one line efficiently
         line = await run_in_threadpool(read_last_line, dom)
-    except StorageBusyError as exc:
-        raise HTTPException(status_code=429, detail="busy, try again") from exc
     except StorageError as exc:
-        raise HTTPException(status_code=500, detail="storage error") from exc
+        _raise_storage_http_exception(exc)
 
     if line is None:
         raise HTTPException(status_code=404, detail="no data")
@@ -904,11 +902,8 @@ async def tail_v1(
 
     try:
         lines = await run_in_threadpool(read_tail, dom, limit)
-    except StorageBusyError as exc:
-        raise HTTPException(status_code=429, detail="busy, try again") from exc
     except StorageError as exc:
-        # read_tail returns [] on ENOENT, so StorageError means something else
-        raise HTTPException(status_code=500, detail="storage error") from exc
+        _raise_storage_http_exception(exc)
 
     results, dropped, last_seen_dt = await run_in_threadpool(
         _process_tail_lines, lines, since_dt, dom

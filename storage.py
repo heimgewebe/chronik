@@ -33,6 +33,8 @@ __all__ = [
     "StorageCursorError",
     "StorageFullError",
     "StorageBusyError",
+    "StorageConflictError",
+    "StorageRequiredIdentityError",
     "StorageRecoveryError",
     "StorageMissingIdentityError",
     "sanitize_domain",
@@ -73,6 +75,23 @@ class StorageFullError(StorageError):
 
 class StorageBusyError(StorageError):
     """Raised when the target file is locked/busy."""
+
+
+class StorageConflictError(StorageError):
+    """Raised when a caller-provided identity conflicts with durable ledger truth."""
+
+    def __init__(self, identity_key: str, identity: str) -> None:
+        self.identity_key = identity_key
+        self.identity = identity
+        super().__init__(f"conflicting {identity_key}: {identity}")
+
+
+class StorageRequiredIdentityError(StorageError):
+    """Raised when an append contract requires an identity field that is absent."""
+
+    def __init__(self, identity_key: str) -> None:
+        self.identity_key = identity_key
+        super().__init__(f"missing {identity_key}")
 
 
 class StorageRecoveryError(StorageError):
@@ -844,7 +863,7 @@ def write_payload_unique_groups(
         verified: list[tuple[str, bytes]] = []
         for identity, fingerprint in identities:
             if not isinstance(identity, str) or not identity:
-                raise StorageError(f"missing {identity_key}")
+                raise StorageRequiredIdentityError(identity_key)
             if not isinstance(fingerprint, bytes) or len(fingerprint) != 40:
                 raise StorageError("invalid verification-only payload fingerprint")
             verified.append((identity, fingerprint))
@@ -863,13 +882,13 @@ def write_payload_unique_groups(
             except (TypeError, ValueError) as exc:
                 raise StorageError("invalid JSON line") from exc
             if not parsed_identity:
-                raise StorageError(f"missing {identity_key}")
+                raise StorageRequiredIdentityError(identity_key)
             fingerprint = _payload_fingerprint(canonical_payload)
             previous = candidate_fingerprints.get(parsed_identity)
             if previous is None:
                 candidate_fingerprints[parsed_identity] = fingerprint
             elif previous != fingerprint:
-                raise StorageError(f"conflicting {identity_key}: {parsed_identity}")
+                raise StorageConflictError(identity_key, parsed_identity)
             parsed_rows.append((parsed_identity, line, fingerprint))
             candidate_count += 1
         parsed_groups.append((group_id, parsed_rows, False))
@@ -880,7 +899,7 @@ def write_payload_unique_groups(
             if previous is None:
                 candidate_fingerprints[identity] = fingerprint
             elif previous != fingerprint:
-                raise StorageError(f"conflicting {identity_key}: {identity}")
+                raise StorageConflictError(identity_key, identity)
             verified_rows.append((identity, None, fingerprint))
             candidate_count += 1
         parsed_groups.append((group_id, verified_rows, True))
@@ -950,7 +969,7 @@ def write_payload_unique_groups(
                     for identity, _, fingerprint in parsed:
                         previous = existing.get(identity)
                         if previous is not None and previous != fingerprint:
-                            raise StorageError(f"conflicting {identity_key}: {identity}")
+                            raise StorageConflictError(identity_key, identity)
 
                 missing_verified_groups = [
                     group_id
