@@ -36,7 +36,7 @@ def test_tail_auth_required(client):
     assert response.status_code == 401
 
     response = client.get("/v1/tail?domain=test-auth", headers={"X-Auth": "wrong"})
-    assert response.status_code == 401
+    assert response.status_code == 403
 
 def test_tail_limit_bounds(client, auth_header):
     # Test limit < 1

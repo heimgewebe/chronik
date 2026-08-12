@@ -120,8 +120,6 @@ def test_retry_after_header_logic(client):
     from app import _on_rate_limited
     from slowapi.errors import RateLimitExceeded
     from fastapi import Request
-    import asyncio
-
     class MockLimit:
         error_message = None
         limit = "60/minute"
@@ -131,10 +129,7 @@ def test_retry_after_header_logic(client):
     req = Request(scope)
     exc = RateLimitExceeded(MockLimit())
 
-    # Run the handler
-    loop = asyncio.new_event_loop()
-    response = loop.run_until_complete(_on_rate_limited(req, exc))
-    loop.close()
+    response = _on_rate_limited(req, exc)
 
     assert response.status_code == 429
     assert response.headers["Retry-After"] == "60"
