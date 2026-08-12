@@ -43,7 +43,15 @@ Retrieve events for a given domain using a robust, cursor-based pagination mecha
 ## Legacy Endpoints (Deprecated)
 
 ### GET /v1/tail (Deprecated)
-Use `/v1/events` instead.
+Use `/v1/events` instead. The legacy endpoint additionally supports bounded time-window queries for compatibility.
+
+**Parameters:**
+* `domain` (required): Domain to read.
+* `limit` (optional, default 200, max 2000): Maximum number of matching events returned.
+* `since` (optional): ISO8601 UTC timestamp ending in `Z`; inclusive lower bound.
+* `until` (optional): ISO8601 UTC timestamp ending in `Z`; exclusive upper bound.
+
+When either time bound is supplied, filtering is based **only** on the server-generated `received_at` field. Producer-controlled `ts` or `timestamp` fields are not used as substitutes, and records without a valid absolute `received_at` do not match a bounded query. The endpoint returns the last `limit` matching records in append order; newer records outside an `until` window do not hide older matching records. Unfiltered requests retain the existing fast tail behavior.
 
 ### GET /v1/latest (Deprecated)
 Use `/v1/events` with `limit=1` (and iterate backwards if needed, though `/v1/events` is forward-only currently).
