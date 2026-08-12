@@ -9,7 +9,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from threading import Lock
-from typing import TYPE_CHECKING, Any, Final, NoReturn
+from typing import TYPE_CHECKING, Any, Callable, Final, Literal, NoReturn, TypeVar
 
 from contextlib import asynccontextmanager
 
@@ -293,7 +293,7 @@ def _on_rate_limited(request: Request, exc: RateLimitExceeded):
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 # Custom metrics for event quality and provenance
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 # Event ingestion metrics
 events_ingested_total = Counter(
@@ -334,6 +334,51 @@ provenance_validation_failures = Counter(
     "Events rejected due to missing provenance",
     ["domain"],
 )
+
+# Storage I/O remains synchronous by design. These metrics make queue pressure and
+# wall-clock latency visible before any async-storage migration is considered.
+storage_io_in_flight = Gauge(
+    "chronik_storage_io_in_flight",
+    "Storage I/O calls queued or running in the shared threadpool",
+)
+storage_io_duration_seconds = Histogram(
+    "chronik_storage_io_duration_seconds",
+    "Wall-clock duration of storage I/O in the threadpool, including queue wait",
+    ["operation"],
+)
+
+StorageIOOperation = Literal[
+    "ingest_write", "events_scan", "latest_read", "tail_read"
+]
+_StorageResult = TypeVar("_StorageResult")
+
+
+async def _run_storage_io(
+    operation: StorageIOOperation,
+    func: Callable[..., _StorageResult],
+    *args: Any,
+) -> _StorageResult:
+    """Run one synchronous storage operation without making metrics authoritative."""
+    started = time.perf_counter()
+    in_flight_recorded = False
+    try:
+        try:
+            storage_io_in_flight.inc()
+            in_flight_recorded = True
+        except Exception:
+            logger.exception("failed to record storage I/O in-flight metric")
+        return await run_in_threadpool(func, *args)
+    finally:
+        elapsed = max(0.0, time.perf_counter() - started)
+        if in_flight_recorded:
+            try:
+                storage_io_in_flight.dec()
+            except Exception:
+                logger.exception("failed to release storage I/O in-flight metric")
+        try:
+            storage_io_duration_seconds.labels(operation=operation).observe(elapsed)
+        except Exception:
+            logger.exception("failed to record storage I/O duration metric")
 
 
 def _sanitize_metric_label(value: str, max_length: int = 80) -> str:
@@ -668,7 +713,7 @@ async def ingest_v1(
         dom = _sanitize_domain(first_item_domain)
 
     try:
-        result = await run_in_threadpool(_process_and_write_combined, dom, items)
+        result = await _run_storage_io("ingest_write", _process_and_write_combined, dom, items)
     except StorageError as exc:
         _raise_storage_http_exception(exc, domain=dom)
 
@@ -707,7 +752,7 @@ async def ingest(
     # Pydantic adapts only the HTTP object shape; canonical validation follows.
     items = _adapt_http_items(obj)
     try:
-        result = await run_in_threadpool(_process_and_write_combined, dom, items)
+        result = await _run_storage_io("ingest_write", _process_and_write_combined, dom, items)
     except StorageError as exc:
         _raise_storage_http_exception(exc, domain=dom)
 
@@ -790,7 +835,9 @@ async def events_v1(
         raise HTTPException(status_code=400, detail=exc.detail) from exc
 
     try:
-        events, next_cursor, has_more = await run_in_threadpool(_fetch_events_helper, dom, cursor, limit)
+        events, next_cursor, has_more = await _run_storage_io(
+            "events_scan", _fetch_events_helper, dom, cursor, limit
+        )
     except StorageError as exc:
         _raise_storage_http_exception(exc)
 
@@ -815,7 +862,7 @@ async def latest_v1(domain: str, unwrap: int = 0):
 
     try:
         # Use storage.read_last_line to get exactly one line efficiently
-        line = await run_in_threadpool(read_last_line, dom)
+        line = await _run_storage_io("latest_read", read_last_line, dom)
     except StorageError as exc:
         _raise_storage_http_exception(exc)
 
@@ -901,7 +948,7 @@ async def tail_v1(
         raise
 
     try:
-        lines = await run_in_threadpool(read_tail, dom, limit)
+        lines = await _run_storage_io("tail_read", read_tail, dom, limit)
     except StorageError as exc:
         _raise_storage_http_exception(exc)
 
