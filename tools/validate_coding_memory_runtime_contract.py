@@ -122,7 +122,7 @@ def validate_root(root: Path) -> dict[str, object]:
     stale = sorted(declared_imports - observed_imports)
     if missing or stale:
         raise ValueError(
-            "coding-memory import closure drift: "
+            "coding-memory static import closure drift: "
             f"missing={missing or []} stale={stale or []}"
         )
     return {
@@ -134,7 +134,7 @@ def validate_root(root: Path) -> dict[str, object]:
 
 
 def main(argv: Iterable[str] | None = None) -> int:
-    args = list(argv or sys.argv[1:])
+    args = list(sys.argv[1:] if argv is None else argv)
     if args:
         raise SystemExit("usage: validate_coding_memory_runtime_contract.py")
     try:

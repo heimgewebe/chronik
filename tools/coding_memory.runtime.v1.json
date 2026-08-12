@@ -33,6 +33,7 @@
     }
   ],
   "does_not_establish": [
+    "dynamic_import_absence",
     "installed_distribution_versions",
     "consumer_environment_compatibility",
     "runtime_success_without_consumer_validation"
