@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import secrets
 import time
@@ -58,13 +57,13 @@ from http_adapter import (
     adapt_ingest_http_items,
     ingest_request_body_openapi,
 )
+from settings import Settings
 
 # --- Runtime constants & logging ---
-MAX_PAYLOAD_SIZE: Final[int] = int(
-    os.getenv("CHRONIK_MAX_BODY") or str(1024 * 1024)
-)
+_STARTUP_SETTINGS = Settings()
+MAX_PAYLOAD_SIZE: Final[int] = _STARTUP_SETTINGS.max_payload_size
 MAX_RID_LENGTH: Final[int] = 128
-RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
+RATE_LIMIT: Final[str] = _STARTUP_SETTINGS.rate_limit
 
 # Provenance enforcement: set to "1" to require provenance fields
 # Quality markers: set to "0" to disable quality marker computation
@@ -73,24 +72,15 @@ RATE_LIMIT: Final[str] = os.getenv("CHRONIK_RATE_LIMIT") or "60/minute"
 
 def _is_provenance_enforced() -> bool:
     """Check if provenance enforcement is enabled at runtime."""
-    return os.getenv("CHRONIK_ENFORCE_PROVENANCE", "0") == "1"
+    return Settings.provenance_enforced_now()
 
 
 def _is_quality_enabled() -> bool:
     """Check if quality markers are enabled at runtime."""
-    return os.getenv("CHRONIK_ENABLE_QUALITY", "1") == "1"
+    return Settings.quality_enabled_now()
 
-LOG_LEVEL = (
-    os.getenv("CHRONIK_LOG_LEVEL") or os.getenv("LOG_LEVEL", "INFO")
-).upper()
-
-_debug_val = (os.getenv("CHRONIK_DEBUG") or "").lower()
-DEBUG_MODE: Final[bool] = _debug_val in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
+LOG_LEVEL = _STARTUP_SETTINGS.log_level
+DEBUG_MODE: Final[bool] = _STARTUP_SETTINGS.debug_mode
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger("chronik")
 
@@ -135,8 +125,7 @@ async def lifespan(app: FastAPI):
     app.state.integrity_manager = IntegrityManager()
 
     # Start integrity sync loop if enabled
-    integrity_enabled = os.getenv("CHRONIK_INTEGRITY_ENABLED", "1") == "1"
-    if integrity_enabled:
+    if Settings.integrity_enabled_now():
         app.state.integrity_task = asyncio.create_task(app.state.integrity_manager.loop())
     else:
         app.state.integrity_task = None
@@ -161,7 +150,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="chronik-ingest", debug=DEBUG_MODE, lifespan=lifespan)
 
-VERSION: Final[str] = os.environ.get("CHRONIK_VERSION") or "1.0.0"
+VERSION: Final[str] = _STARTUP_SETTINGS.version
 
 _METRIC_LABEL_SANITIZER = re.compile(r'[^a-zA-Z0-9._-]')
 _TOKEN_SPLITTER = re.compile(r'[,\r\n]')
@@ -179,7 +168,7 @@ def _get_valid_tokens() -> tuple[str, ...]:
     Results are cached to minimize per-request overhead.
     """
     global _VALID_TOKENS_CACHE, _RAW_TOKEN_ENV_CACHE
-    raw = os.environ.get("CHRONIK_TOKEN", "")
+    raw = Settings.current_token()
 
     # Fast path: Return cached version if environment hasn't changed.
     if _VALID_TOKENS_CACHE is not None and raw == _RAW_TOKEN_ENV_CACHE:
