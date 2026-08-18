@@ -56,6 +56,7 @@ from canonical_ingest import (
     payload_event_type,
 )
 from ingest_validation import validate_and_normalize_item
+from weltgewebe_history import WELTGEWEBE_HISTORY_DOMAIN
 from http_adapter import (
     HttpPayloadShapeError,
     adapt_ingest_http_items,
@@ -616,7 +617,9 @@ def _raise_storage_http_exception(
     raise HTTPException(status_code=500, detail="storage error") from exc
 
 
-def _agent_ledger_result(*, requested: int, written: int, skipped: int) -> dict[str, Any]:
+def _unique_ingest_result(
+    domain: str, *, requested: int, written: int, skipped: int
+) -> dict[str, Any]:
     if written == requested:
         result = "accepted"
     elif skipped == requested:
@@ -624,7 +627,7 @@ def _agent_ledger_result(*, requested: int, written: int, skipped: int) -> dict[
     else:
         result = "mixed"
     return {
-        "domain": "agent.ledger",
+        "domain": domain,
         "result": result,
         "requested": requested,
         "written": written,
@@ -633,19 +636,21 @@ def _agent_ledger_result(*, requested: int, written: int, skipped: int) -> dict[
 
 
 def _process_and_write_combined(dom: str, items: list[Any]) -> dict[str, Any] | None:
-    """Process one request and preserve existing semantics outside agent.ledger."""
+    """Process one request and preserve existing semantics outside unique domains."""
     lines_to_write = _process_items(items, dom)
     if not lines_to_write:
         return None
-    if dom == "agent.ledger":
+    if dom in {"agent.ledger", WELTGEWEBE_HISTORY_DOMAIN}:
         written, skipped = write_payload_unique(dom, lines_to_write, identity_key="event_id")
-        result = _agent_ledger_result(
+        result = _unique_ingest_result(
+            dom,
             requested=len(lines_to_write),
             written=written,
             skipped=skipped,
         )
         _record_persisted_events(dom, written)
-        _record_agent_ledger_outcome(str(result["result"]))
+        if dom == "agent.ledger":
+            _record_agent_ledger_outcome(str(result["result"]))
         return result
     write_payload(dom, lines_to_write)
     _record_persisted_events(dom, len(lines_to_write))

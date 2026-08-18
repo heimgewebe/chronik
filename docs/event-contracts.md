@@ -14,9 +14,12 @@ Die **kanonischen Contracts** (Draft 2020-12) liegen im **metarepo** unter:
 → chronik validiert seine Fixtures bereits gegen diese Schemata (siehe
   `.github/workflows/validate-*.yml`).
 
-chronik führt keine eigenen, abweichenden JSON-Schemas. Alle Änderungen an der
-Event-Struktur laufen über die Contracts im **metarepo**. Dadurch wird
-Contract-Drift zwischen Repos vermieden und der Event-Backbone stabil gehalten.
+Chronik definiert keine konkurrierenden fachlichen Primärverträge. Fachliche
+Event-Strukturen bleiben bei ihren jeweiligen Quellsystemen beziehungsweise den
+zentralen Contracts. Chronik darf jedoch enge lokale Transport- und
+Projektionsverträge definieren, wenn diese ausschließlich zusätzliche
+Provenienz-, Evidence- und Authority-Grenzen für die historische Speicherung
+festlegen und die Primärwahrheit ausdrücklich beim Quellsystem belassen.
 
 Dieses Dokument beschreibt die chronik-spezifischen Details und kontextualisiert, wie die zentralen Contracts angewendet werden.
 
@@ -122,3 +125,19 @@ Chronik spiegelt das kanonische Schema aus dem Metarepo:
 - `autonomy_level` (`dormant` | `aware` | `reflective` | `critical`)
 - `last_updated` (ISO 8601 Timestamp)
 - `basis_signals` (String Array)
+
+
+## Schema: `weltgewebe.history.v1` (Chronik-local projection contract)
+
+Für `WELTGEWEBE-OS-V1-T007` definiert Chronik einen engen lokalen Projektionsvertrag unter
+`docs/chronik/weltgewebe-history-event-v1.schema.json`. Er ersetzt keinen fachlichen
+Weltgewebe-Contract. Er legt ausschließlich fest, welche Provenienz- und
+Authority-Grenzen Chronik für die historische Spiegelung verlangt.
+
+Der Vertrag unterscheidet `domain_event`, `deployment`, `federation_delivery` und
+`operator_receipt`, bindet Ursprung, Quellversion, Korrelations-ID und mindestens einen
+hashgebundenen Quellbeleg und erzwingt `chronik_role=historical_projection` sowie
+`writeback_allowed=false`. Datenschutzklassifikation und append-only
+Redaktions-/Widerrufs-/Löschprojektionen sind ebenfalls explizit.
+
+Siehe `docs/chronik/weltgewebe-history-projection-v1.md`.
