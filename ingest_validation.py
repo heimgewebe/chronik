@@ -9,6 +9,11 @@ from fastapi import HTTPException
 from provenance import validate_provenance
 from storage import DomainError, sanitize_domain
 from validation import normalize_heimgeist_item, validate_insights_daily_payload
+from weltgewebe_history import (
+    WELTGEWEBE_HISTORY_DOMAIN,
+    WeltgewebeHistoryError,
+    validate_weltgewebe_history_event,
+)
 
 
 def validate_and_normalize_item(
@@ -24,6 +29,14 @@ def validate_and_normalize_item(
         validate_insights_daily_payload(normalized)
     elif domain == "heimgeist":
         normalized = normalize_heimgeist_item(normalized)
+    elif domain == WELTGEWEBE_HISTORY_DOMAIN:
+        try:
+            validate_weltgewebe_history_event(normalized)
+        except WeltgewebeHistoryError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"weltgewebe history validation failed: {exc}",
+            ) from exc
     else:
         summary = normalized.get("summary")
         if isinstance(summary, str) and len(summary) > 500:
