@@ -189,9 +189,13 @@ def test_chronik_retention_envelope_remains_authoritative_for_weltgewebe_history
     assert envelope["payload"]["privacy"]["classification"] == "public"
 
 
-def test_chronik_cannot_be_primary_truth() -> None:
+@pytest.mark.parametrize(
+    "primary_truth",
+    ["chronik", "chronik.runtime", "heimgewebe/chronik", "heimgewebe/chronik/runtime"],
+)
+def test_chronik_cannot_be_primary_truth(primary_truth: str) -> None:
     event = _event()
-    event["authority"]["primary_truth"] = "chronik"
+    event["authority"]["primary_truth"] = primary_truth
     with pytest.raises(WeltgewebeHistoryError, match="primary_truth"):
         validate_weltgewebe_history_event(event)
 
@@ -219,6 +223,30 @@ def test_http_round_trip_persists_only_the_historical_projection(
         headers=headers,
     )
     assert response.status_code == 202, response.text
+    assert response.json()["result"] == "accepted"
+
+    replay = client.post(
+        "/v1/ingest?domain=weltgewebe.history",
+        json=event,
+        headers=headers,
+    )
+    assert replay.status_code == 202, replay.text
+    assert replay.json() == {
+        "domain": "weltgewebe.history",
+        "result": "replayed",
+        "requested": 1,
+        "written": 0,
+        "skipped_existing": 1,
+    }
+
+    conflicting = copy.deepcopy(event)
+    conflicting["payload"]["node_id"] = "node-2"
+    conflict = client.post(
+        "/v1/ingest?domain=weltgewebe.history",
+        json=conflicting,
+        headers=headers,
+    )
+    assert conflict.status_code == 409, conflict.text
 
     readback = client.get(
         "/v1/events?domain=weltgewebe.history&limit=10",

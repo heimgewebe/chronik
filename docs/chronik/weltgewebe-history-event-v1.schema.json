@@ -230,10 +230,7 @@
           "minLength": 1,
           "maxLength": 160,
           "not": {
-            "enum": [
-              "chronik",
-              "heimgewebe/chronik"
-            ]
+            "pattern": "^(?:heimgewebe/)?chronik(?:$|[.:/])"
           }
         },
         "chronik_role": {
