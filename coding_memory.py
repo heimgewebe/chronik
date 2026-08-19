@@ -31,6 +31,9 @@ OPERATIONS = frozenset({"implement", "review", "merge", "deploy", "runtime_verif
 TASK_CLASSES = frozenset({"coding", "review", "merge", "deploy", "runtime_verify", "recovery", "maintenance", "diagnostic", "other"})
 OUTCOMES = frozenset({"started", "completed", "blocked", "failed", "reverted", "outcome_unknown"})
 MAX_INTEGRITY_DIAGNOSTICS = 20
+HISTORY_VALIDATION_CHECKPOINT_FILENAME = ".history-validation-prefix.v1.json"
+HISTORY_VALIDATION_CHECKPOINT_SCHEMA = "chronik-history-validation-prefix.v1"
+HISTORY_VALIDATION_CONTRACT = "agent-run-event-v0+utc-timestamp-v1"
 GRABOWSKI_TERMINAL_KINDS = frozenset({"agent.run.completed", "agent.run.blocked"})
 GRABOWSKI_BUNDLE_DIRNAME = "bundles"
 GRABOWSKI_BUNDLE_ENTRY_SCHEMA = "chronik-grabowski-outbox-bundle-source.v1"
@@ -3730,6 +3733,109 @@ def _compact_grabowski_outbox_unlocked(
     return result
 
 
+@lru_cache(maxsize=1)
+def _history_validation_schema_sha256() -> str:
+    return sha256_bytes(SCHEMA_PATH.read_bytes())
+
+
+def _history_validation_checkpoint_path() -> Path:
+    return storage.DATA_DIR / HISTORY_VALIDATION_CHECKPOINT_FILENAME
+
+
+def _load_history_validation_checkpoint(raw_snapshot: bytes) -> int:
+    """Return a previously validated byte prefix, or zero on any doubt."""
+    path = _history_validation_checkpoint_path()
+    try:
+        before = path.lstat()
+    except OSError:
+        return 0
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or before.st_mode & 0o077
+    ):
+        return 0
+    try:
+        raw = path.read_bytes()
+        after = path.lstat()
+    except OSError:
+        return 0
+    if _file_identity(before) != _file_identity(after):
+        return 0
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return 0
+    expected_keys = {
+        "schema_version",
+        "domain",
+        "validation_contract",
+        "event_schema_sha256",
+        "validated_bytes",
+        "prefix_sha256",
+        "record_count",
+        "checkpoint_sha256",
+    }
+    if not isinstance(document, dict) or set(document) != expected_keys:
+        return 0
+    checkpoint_sha256 = document.get("checkpoint_sha256")
+    semantic = {key: value for key, value in document.items() if key != "checkpoint_sha256"}
+    if (
+        not isinstance(checkpoint_sha256, str)
+        or checkpoint_sha256 != sha256_bytes(canonical_bytes(semantic))
+        or document.get("schema_version") != HISTORY_VALIDATION_CHECKPOINT_SCHEMA
+        or document.get("domain") != DOMAIN
+        or document.get("validation_contract") != HISTORY_VALIDATION_CONTRACT
+        or document.get("event_schema_sha256") != _history_validation_schema_sha256()
+    ):
+        return 0
+    validated_bytes = document.get("validated_bytes")
+    record_count = document.get("record_count")
+    prefix_sha256 = document.get("prefix_sha256")
+    if (
+        not isinstance(validated_bytes, int)
+        or isinstance(validated_bytes, bool)
+        or validated_bytes <= 0
+        or validated_bytes > len(raw_snapshot)
+        or not isinstance(record_count, int)
+        or isinstance(record_count, bool)
+        or record_count < 0
+        or not isinstance(prefix_sha256, str)
+        or len(prefix_sha256) != 64
+        or raw_snapshot[validated_bytes - 1 : validated_bytes] != b"\n"
+        or sha256_bytes(raw_snapshot[:validated_bytes]) != prefix_sha256
+    ):
+        return 0
+    return validated_bytes
+
+
+def _publish_history_validation_checkpoint(
+    raw_snapshot: bytes, *, snapshot_sha256: str, record_count: int
+) -> None:
+    """Best-effort publication of reconstructible validation evidence."""
+    if not raw_snapshot:
+        return
+    document: dict[str, Any] = {
+        "schema_version": HISTORY_VALIDATION_CHECKPOINT_SCHEMA,
+        "domain": DOMAIN,
+        "validation_contract": HISTORY_VALIDATION_CONTRACT,
+        "event_schema_sha256": _history_validation_schema_sha256(),
+        "validated_bytes": len(raw_snapshot),
+        "prefix_sha256": snapshot_sha256,
+        "record_count": record_count,
+    }
+    document["checkpoint_sha256"] = sha256_bytes(canonical_bytes(document))
+    try:
+        _atomic_write(
+            _history_validation_checkpoint_path(),
+            canonical_bytes(document) + b"\n",
+        )
+    except OSError:
+        # This file is only a reconstructible accelerator. Query correctness
+        # must never depend on being able to persist it.
+        return
+
+
 def _scan_record_snapshot(
     visit: Callable[[dict[str, Any], datetime, int], None],
 ) -> dict[str, Any]:
@@ -3741,6 +3847,7 @@ def _scan_record_snapshot(
     raw_snapshot = storage.read_domain_snapshot(DOMAIN)
     complete_bytes = len(raw_snapshot)
     snapshot_sha256 = sha256_bytes(raw_snapshot)
+    trusted_validated_bytes = _load_history_validation_checkpoint(raw_snapshot)
     start_offset = 0
 
     while start_offset < complete_bytes:
@@ -3761,7 +3868,10 @@ def _scan_record_snapshot(
             payload = envelope.get("payload")
             if not isinstance(payload, dict):
                 raise ValueError("payload must be an object")
-            event_at = validate_event(payload)
+            if next_offset <= trusted_validated_bytes:
+                event_at = _parse_timestamp(payload.get("ts"), field="ts")
+            else:
+                event_at = validate_event(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
             invalid_record_count += 1
             if len(diagnostics) < MAX_INTEGRITY_DIAGNOSTICS:
@@ -3779,6 +3889,14 @@ def _scan_record_snapshot(
         valid_record_count += 1
         start_offset = next_offset
 
+    integrity_valid = invalid_record_count == 0
+    if integrity_valid and trusted_validated_bytes < complete_bytes:
+        _publish_history_validation_checkpoint(
+            raw_snapshot,
+            snapshot_sha256=snapshot_sha256,
+            record_count=total_record_count,
+        )
+
     return {
         "domain": DOMAIN,
         "sha256": snapshot_sha256,
@@ -3786,7 +3904,7 @@ def _scan_record_snapshot(
         "total_record_count": total_record_count,
         "valid_record_count": valid_record_count,
         "invalid_record_count": invalid_record_count,
-        "integrity_valid": invalid_record_count == 0,
+        "integrity_valid": integrity_valid,
         "diagnostics": diagnostics,
         "diagnostics_truncated": invalid_record_count > len(diagnostics),
     }

@@ -277,6 +277,79 @@ def test_snapshot_treats_only_lf_as_jsonl_record_boundary(tmp_path,monkeypatch):
     assert snapshot["diagnostics"][0]["next_offset"]==len(raw)
 
 
+def test_history_validation_checkpoint_reuses_prefix_and_validates_only_append(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch)
+    coding_memory.import_events([event(),event("sha256:"+"b"*64)])
+    first=coding_memory.query_history(repo="heimgewebe/example")
+    checkpoint=tmp_path/coding_memory.HISTORY_VALIDATION_CHECKPOINT_FILENAME
+    assert checkpoint.is_file()
+    assert checkpoint.stat().st_mode & 0o077 == 0
+    original=coding_memory.validate_event; calls=[]
+    def tracked(value):
+        calls.append(value["event_id"]); return original(value)
+    monkeypatch.setattr(coding_memory,"validate_event",tracked)
+    second=coding_memory.query_history(repo="heimgewebe/example")
+    assert second["ledger_snapshot"]==first["ledger_snapshot"]
+    assert calls==[]
+    coding_memory.import_events([event("sha256:"+"c"*64)])
+    calls.clear()
+    third=coding_memory.query_history(repo="heimgewebe/example")
+    assert calls==["sha256:"+"c"*64]
+    assert third["ledger_snapshot"]["integrity_valid"] is True
+
+
+def test_history_validation_checkpoint_prefix_drift_forces_full_validation(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch)
+    coding_memory.import_events([event(),event("sha256:"+"b"*64)])
+    coding_memory.query_history(repo="heimgewebe/example")
+    target=tmp_path/"agent.ledger.jsonl"
+    raw=target.read_bytes()
+    changed=raw.replace(b'heimgewebe/example',b'heimgewebe/examplf',1)
+    assert len(changed)==len(raw) and changed!=raw
+    target.write_bytes(changed)
+    original=coding_memory.validate_event; calls=[]
+    def tracked(value):
+        calls.append(value["event_id"]); return original(value)
+    monkeypatch.setattr(coding_memory,"validate_event",tracked)
+    result=coding_memory.query_history(repo="heimgewebe/example")
+    assert len(calls)==2
+    assert result["ledger_snapshot"]["integrity_valid"] is True
+
+
+def test_history_validation_checkpoint_corruption_falls_back_to_full_validation(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch)
+    coding_memory.import_events([event(),event("sha256:"+"b"*64)])
+    coding_memory.query_history(repo="heimgewebe/example")
+    checkpoint=tmp_path/coding_memory.HISTORY_VALIDATION_CHECKPOINT_FILENAME
+    checkpoint.write_bytes(b'{}\n')
+    original=coding_memory.validate_event; calls=[]
+    def tracked(value):
+        calls.append(value["event_id"]); return original(value)
+    monkeypatch.setattr(coding_memory,"validate_event",tracked)
+    result=coding_memory.query_history(repo="heimgewebe/example")
+    assert len(calls)==2
+    assert result["ledger_snapshot"]["integrity_valid"] is True
+    repaired=json.loads(checkpoint.read_text())
+    assert repaired["checkpoint_sha256"]
+
+
+def test_invalid_appended_record_does_not_advance_validation_checkpoint(tmp_path,monkeypatch):
+    setup(tmp_path,monkeypatch)
+    coding_memory.import_events([event()])
+    coding_memory.query_history(repo="heimgewebe/example")
+    checkpoint=tmp_path/coding_memory.HISTORY_VALIDATION_CHECKPOINT_FILENAME
+    before=checkpoint.read_bytes()
+    target=tmp_path/"agent.ledger.jsonl"
+    with target.open("ab") as handle:
+        handle.write(b'{"payload":{"schema_version":"agent-run-event.v0"}}\n')
+    degraded=coding_memory.query_history(repo="heimgewebe/example")
+    assert degraded["ledger_snapshot"]["invalid_record_count"]==1
+    assert degraded["ledger_snapshot"]["integrity_valid"] is False
+    assert checkpoint.read_bytes()==before
+    with pytest.raises(ValueError,match="invalid records"):
+        coding_memory.freeze_history(tmp_path/"bad-cache.jsonl",repo="heimgewebe/example")
+
+
 def test_queries_keep_bounded_latest_candidates(tmp_path, monkeypatch):
     setup(tmp_path, monkeypatch)
     values = [
