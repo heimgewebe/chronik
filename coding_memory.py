@@ -3773,7 +3773,6 @@ def _load_history_validation_checkpoint(raw_snapshot: bytes) -> int:
         "event_schema_sha256",
         "validated_bytes",
         "prefix_sha256",
-        "record_count",
         "checkpoint_sha256",
     }
     if not isinstance(document, dict) or set(document) != expected_keys:
@@ -3790,16 +3789,12 @@ def _load_history_validation_checkpoint(raw_snapshot: bytes) -> int:
     ):
         return 0
     validated_bytes = document.get("validated_bytes")
-    record_count = document.get("record_count")
     prefix_sha256 = document.get("prefix_sha256")
     if (
         not isinstance(validated_bytes, int)
         or isinstance(validated_bytes, bool)
         or validated_bytes <= 0
         or validated_bytes > len(raw_snapshot)
-        or not isinstance(record_count, int)
-        or isinstance(record_count, bool)
-        or record_count < 0
         or not isinstance(prefix_sha256, str)
         or len(prefix_sha256) != 64
         or raw_snapshot[validated_bytes - 1 : validated_bytes] != b"\n"
@@ -3810,7 +3805,7 @@ def _load_history_validation_checkpoint(raw_snapshot: bytes) -> int:
 
 
 def _publish_history_validation_checkpoint(
-    raw_snapshot: bytes, *, snapshot_sha256: str, record_count: int
+    raw_snapshot: bytes, *, snapshot_sha256: str
 ) -> None:
     """Best-effort publication of reconstructible validation evidence."""
     if not raw_snapshot:
@@ -3822,7 +3817,6 @@ def _publish_history_validation_checkpoint(
         "event_schema_sha256": _history_validation_schema_sha256(),
         "validated_bytes": len(raw_snapshot),
         "prefix_sha256": snapshot_sha256,
-        "record_count": record_count,
     }
     document["checkpoint_sha256"] = sha256_bytes(canonical_bytes(document))
     try:
@@ -3894,7 +3888,6 @@ def _scan_record_snapshot(
         _publish_history_validation_checkpoint(
             raw_snapshot,
             snapshot_sha256=snapshot_sha256,
-            record_count=total_record_count,
         )
 
     return {
