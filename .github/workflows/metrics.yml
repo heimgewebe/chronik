@@ -10,7 +10,8 @@ on:
     - cron: "0 * * * *"
 
 env:
-  METRICS_SCHEMA_URL: https://raw.githubusercontent.com/heimgewebe/metarepo/contracts-v1/contracts/wgx/metrics.json
+  METRICS_SCHEMA_URL: https://raw.githubusercontent.com/heimgewebe/metarepo/ad1200c7c76692440d6c279a581b15419d02f3d8/contracts/metrics.snapshot.schema.json
+  METRICS_SCHEMA_SHA256: 1b1de44ea326ce8de36da6fc6d8f2da0abe279df8c47ab10e58ddc2cf604b914
   HAUSKI_POST_URL: ${{ secrets.HAUSKI_METRICS_URL }}
 
 jobs:
@@ -28,13 +29,14 @@ jobs:
 
       - name: Snapshot metrics
         run: bash scripts/wgx-metrics-snapshot.sh --json
-      - name: Fetch AJV schema (local file)
+      - name: Fetch pinned AJV schema
         run: |
           mkdir -p .ci
-          curl -fsSL "$METRICS_SCHEMA_URL" -o .ci/metrics.schema.json
+          curl --fail --silent --show-error --location --connect-timeout 5 --max-time 30 --retry 3 --retry-delay 2 "$METRICS_SCHEMA_URL" -o .ci/metrics.schema.json
+          printf '%s  %s\n' "$METRICS_SCHEMA_SHA256" .ci/metrics.schema.json | sha256sum --check --strict
 
       - name: Validate metrics contract
-        run: npx --yes ajv-cli@5 validate -s .ci/metrics.schema.json -d metrics.json
+        run: npx --yes ajv-cli@5.0.0 validate --spec=draft2020 --strict=log -s .ci/metrics.schema.json -d metrics.json
 
       - name: Optional POST to hausKI
         if: ${{ env.HAUSKI_POST_URL && env.HAUSKI_POST_URL != '' }}
