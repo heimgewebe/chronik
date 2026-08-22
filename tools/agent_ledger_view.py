@@ -54,22 +54,33 @@ def extract_payload(record: dict[str, Any]) -> dict[str, Any] | None:
     return record
 
 
-def load_records(path: Path) -> list[dict[str, Any]]:
+def iter_records(path: Path) -> Iterable[dict[str, Any]]:
+    if path.suffix == ".jsonl":
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    yield json.loads(line)
+        return
+
     text = path.read_text(encoding="utf-8").strip()
     if not text:
-        return []
-
-    if path.suffix == ".jsonl":
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
+        return
 
     loaded = json.loads(text)
     if isinstance(loaded, dict) and isinstance(loaded.get("events"), list):
-        return loaded["events"]
+        yield from loaded["events"]
+        return
     if isinstance(loaded, list):
-        return loaded
+        yield from loaded
+        return
     if isinstance(loaded, dict):
-        return [loaded]
+        yield loaded
+        return
     raise ValueError(f"unsupported JSON payload in {path}")
+
+
+def load_records(path: Path) -> list[dict[str, Any]]:
+    return list(iter_records(path))
 
 
 def iter_agent_run_events(records: Iterable[dict[str, Any]]) -> Iterable[dict[str, Any]]:
@@ -162,9 +173,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--view", choices=["repo", "run"], default="repo")
     args = parser.parse_args(argv)
 
-    records: list[dict[str, Any]] = []
-    for input_path in args.input:
-        records.extend(load_records(Path(input_path)))
+    records = (
+        record
+        for input_path in args.input
+        for record in iter_records(Path(input_path))
+    )
 
     rows = build_run_view(records) if args.view == "run" else build_view(records)
     if args.format == "json":
