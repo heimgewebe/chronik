@@ -62,6 +62,50 @@ def test_load_records_accepts_jsonl_envelopes(tmp_path):
     assert rows[0].result == "completed"
 
 
+def test_iter_records_streams_jsonl_without_read_text(tmp_path, monkeypatch):
+    started = load_fixture("agent-run-started.v0.json")
+    completed = load_fixture("agent-run-completed.v0.json")
+    path = tmp_path / "events.jsonl"
+    path.write_text(
+        json.dumps({"payload": started})
+        + "\n"
+        + json.dumps({"payload": completed})
+        + "\n",
+        encoding="utf-8",
+    )
+
+    def fail_read_text(*args, **kwargs):
+        raise AssertionError("JSONL input must not use whole-file read_text")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    records = list(agent_ledger_view.iter_records(path))
+
+    assert [record["payload"]["kind"] for record in records] == [
+        started["kind"],
+        completed["kind"],
+    ]
+
+
+def test_main_passes_lazy_records_to_view(tmp_path, monkeypatch, capsys):
+    completed = load_fixture("agent-run-completed.v0.json")
+    path = tmp_path / "events.jsonl"
+    path.write_text(json.dumps({"payload": completed}) + "\n", encoding="utf-8")
+    observed = {}
+
+    original_build_view = agent_ledger_view.build_view
+
+    def tracked_build_view(records):
+        observed["is_list"] = isinstance(records, list)
+        return original_build_view(records)
+
+    monkeypatch.setattr(agent_ledger_view, "build_view", tracked_build_view)
+
+    assert agent_ledger_view.main([str(path), "--format", "json"]) == 0
+    assert observed["is_list"] is False
+    assert json.loads(capsys.readouterr().out)[0]["result"] == "completed"
+
+
 def test_format_table_contains_expected_columns():
     row = agent_ledger_view.AgentRunViewRow(
         repo="heimgewebe/chronik",
