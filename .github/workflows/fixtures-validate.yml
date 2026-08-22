@@ -59,7 +59,7 @@ jobs:
             fi
 
             echo "Validating $fixture against $schema..."
-            temp_file=$(mktemp)
+            temp_file=$(mktemp --suffix=.json)
             line_num=0
             while IFS= read -r line || [ -n "$line" ]; do
               line_num=$((line_num + 1))
