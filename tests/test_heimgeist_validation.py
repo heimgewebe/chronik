@@ -99,7 +99,7 @@ def test_other_domain_loose_validation(monkeypatch, tmp_path, client):
     response = client.post("/v1/ingest?domain=other", json=payload, headers={"X-Auth": "secret"})
     assert response.status_code == 202
 
-def test_heimgeist_legacy_path(monkeypatch, tmp_path: Path, client):
+def test_heimgeist_legacy_path_is_removed(monkeypatch, tmp_path: Path, client):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     monkeypatch.setenv("CHRONIK_TOKEN", "secret")
 
@@ -114,7 +114,8 @@ def test_heimgeist_legacy_path(monkeypatch, tmp_path: Path, client):
         "data": {"foo": "bar"}
     }
     response = client.post("/ingest/heimgeist", json=payload, headers={"X-Auth": "secret"})
-    assert response.status_code == 202
+    assert response.status_code == 404
+    assert not list(tmp_path.glob("*.jsonl"))
 
 def test_retry_after_header_logic(client):
     from app import _on_rate_limited

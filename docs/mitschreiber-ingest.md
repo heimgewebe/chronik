@@ -3,15 +3,15 @@
 chronik ist Single Point of Ingest, Audit & Panels.
 
 ## Endpoints
-- `POST /ingest/os/context/state`
-- `POST /ingest/os/context/text/embed`
+- `POST /v1/ingest?domain=os.context.state`
+- `POST /v1/ingest?domain=os.context.text.embed`
 
 ### Auth
 - Lokaler Token (env/Secret); mTLS empfohlen, wenn getrennte Prozesse/Hosts.
 
 ### Beispiel-Requests
 ```http
-POST /ingest/os/context/state
+POST /v1/ingest?domain=os.context.state
 {
   "ts": "...",
   "source": "os.context.state",
@@ -23,7 +23,7 @@ POST /ingest/os/context/state
 ```
 
 ```http
-POST /ingest/os/context/text/embed
+POST /v1/ingest?domain=os.context.text.embed
 {
   "ts": "...",
   "source": "os.context.text.embed",

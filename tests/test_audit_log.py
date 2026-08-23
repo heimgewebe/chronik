@@ -125,7 +125,7 @@ def test_invalid_json_emits_rejected_audit_event(audit_client):
     client, events = audit_client
 
     response = client.post(
-        "/ingest/example.com",
+        "/v1/ingest?domain=example.com",
         headers={
             "X-Auth": "test-token",
             "X-Request-ID": "audit:json",
@@ -150,7 +150,7 @@ def test_auth_rejection_is_audited_before_endpoint_execution(audit_client):
     client, events = audit_client
 
     response = client.post(
-        "/ingest/example.com",
+        "/v1/ingest?domain=example.com",
         headers={"X-Auth": "wrong", "X-Request-ID": "audit:auth"},
         json={"data": "value"},
     )

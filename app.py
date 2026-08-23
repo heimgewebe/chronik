@@ -232,7 +232,7 @@ async def request_id_logging(request: Request, call_next):
 
 def _is_ingest_request(request: Request) -> bool:
     path = str(request.scope.get("path", ""))
-    return path == "/v1/ingest" or path.startswith("/ingest/")
+    return path == "/v1/ingest"
 
 
 def _request_audit_domain(request: Request) -> str | None:
@@ -733,46 +733,6 @@ async def ingest_v1(
     _audit_ingest_decision(request, "ACCEPTED", "accepted", domain=dom)
     return PlainTextResponse("ok", status_code=202)
 
-
-@app.post(
-    "/ingest/{domain}",
-    # Dependency order matters: auth FIRST, then size check.
-    dependencies=[Depends(_require_auth_dep), Depends(_validate_body_size)],
-    deprecated=True,
-    openapi_extra=ingest_request_body_openapi(include_ndjson=False),
-)
-async def ingest(
-    domain: str,
-    request: Request,
-):
-    request.state.audit_domain = domain
-    dom = _sanitize_domain(domain)
-
-    # JSON parsen
-    try:
-        body = await _read_body_as_utf8(request, MAX_PAYLOAD_SIZE)
-    except UnicodeError as exc:
-        raise HTTPException(status_code=400, detail="invalid encoding") from exc
-
-    try:
-        obj = json.loads(body)
-    except json.JSONDecodeError as exc:
-        raise HTTPException(status_code=400, detail="invalid json") from exc
-
-    # Pydantic adapts only the HTTP object shape; canonical validation follows.
-    items = _adapt_http_items(obj)
-    try:
-        result = await _run_storage_io("ingest_write", _process_and_write_combined, dom, items)
-    except StorageError as exc:
-        _raise_storage_http_exception(exc, domain=dom)
-
-    if result is not None:
-        _audit_ingest_decision(request, "ACCEPTED", str(result["result"]), domain=dom)
-        return JSONResponse(result, status_code=202)
-    _audit_ingest_decision(
-        request, "ACCEPTED", "empty" if not items else "accepted", domain=dom
-    )
-    return PlainTextResponse("ok", status_code=202)
 
 
 def _fetch_events_helper(d: str, start: int, lim: int):
