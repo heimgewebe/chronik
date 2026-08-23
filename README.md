@@ -11,7 +11,7 @@ als JSON entgegennimmt und domain-spezifisch in JSON Lines Dateien ablegt. Die A
 FastAPI implementiert und lässt sich lokal oder in Codespaces betreiben.
 
 - **API-Spezifikation:** siehe `docs/openapi.yaml`.
- Alte Pfade `POST /ingest/{domain}` sind **deprecated** (Ablauf 6 Monate nach Merge) und werden durch `POST /v1/ingest` ersetzt.
+- `POST /v1/ingest` ist der kanonische Schreibendpunkt; die frühere domainspezifische Ingest-Route wurde nach Ablauf ihrer Deprecation-Frist entfernt.
 
 ## 🔗 Contracts (kanonische Definitionen)
 
@@ -102,8 +102,8 @@ In GitHub Codespaces sollte der Port 8788 veröffentlicht werden, um Anfragen an
 
 Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml).
 
-> **Deprecation (6 Monate):** Domainspezifische Endpoints (`/ingest/aussen`, …) sind veraltet.
-> Bitte auf `POST /v1/ingest` migrieren. Die Domain wird per `event.domain` oder `?domain=aussen` bestimmt.
+> **Ingest:** `POST /v1/ingest` ist der kanonische Schreibendpunkt.
+> Die Domain wird per `event.domain` oder `?domain=aussen` bestimmt.
 
 ## Clients
 - **Rust (Stub):** `clients/rust/chronik_producer`

@@ -8,10 +8,10 @@ Chronik ist ein einfacher Ingest-Dienst, der auf Python und FastAPI basiert. Die
     *   Dies ist der Kern des Dienstes, der die HTTP-Endpunkte bereitstellt.
     *   Es verwendet `uvicorn` als ASGI-Server.
 
-2.  **Ingest-Endpunkt (`/ingest/{domain}`):**
+2.  **Ingest-Endpunkt (`/v1/ingest?domain={domain}`):**
     *   Nimmt JSON-Daten per `POST`-Request entgegen.
     *   Authentifiziert Anfragen über einen Shared-Secret-Token (`CHRONIK_TOKEN`), der im `X-Auth`-Header übergeben wird.
-    *   Validiert und bereinigt den `domain`-Pfadparameter.
+    *   Validiert und bereinigt die Domain aus `?domain=...` oder dem ersten Payload-Objekt.
 
 3.  **Speicherschicht (`storage.py`):**
     *   Eingehende Daten werden in domain-spezifischen JSON-Lines-Dateien (`.jsonl`) im `CHRONIK_DATA_DIR`-Verzeichnis gespeichert.
@@ -21,7 +21,7 @@ Chronik ist ein einfacher Ingest-Dienst, der auf Python und FastAPI basiert. Die
 
 ## Datenfluss
 
-1.  Ein Client sendet eine `POST`-Anfrage mit einem JSON-Body an `/ingest/{domain}`.
+1.  Ein Client sendet eine `POST`-Anfrage mit einem JSON-Body an `/v1/ingest?domain={domain}`.
 2.  Die FastAPI-Anwendung empfängt die Anfrage.
 3.  Die Authentifizierung wird über den `X-Auth`-Header überprüft.
 4.  Der `domain`-Parameter wird validiert und bereinigt.

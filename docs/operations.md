@@ -15,7 +15,7 @@ uvicorn app:app --host 0.0.0.0 --port 8788
 * Warten, bis keine weiteren Schreibzugriffe auf dem Datenverzeichnis stattfinden.
 
 ## Überwachung
-* **Health**: Ein Test-Request gegen `/ingest/<test-domain>` (ggf. mit Dummy-Token) sollte Status `200` liefern.
+* **Health**: Ein Test-Request gegen `/v1/ingest?domain=<test-domain>` (ggf. mit Dummy-Token) sollte Status `202` liefern.
 * **Logging**: Standardmäßig loggt Uvicorn nach STDOUT. Produktionsumgebungen sollten die Ausgabe an ein Log-Aggregationssystem weiterleiten.
 * **Metriken**: Anzahl erfolgreicher Ingest-Requests kann über Log-Analyse oder Reverse-Proxy-Zähler ermittelt werden.
 
