@@ -146,12 +146,19 @@ def outbox_summary_line(result: dict) -> str:
     return line
 
 
+def _iter_jsonl(path: Path):
+    with path.open("r", encoding="utf-8", newline="\n") as handle:
+        for line in handle:
+            if line.strip():
+                yield json.loads(line)
+
+
 def load(path: Path):
+    if path.suffix == ".jsonl":
+        return _iter_jsonl(path)
     text = path.read_text(encoding="utf-8").strip()
     if not text:
         return []
-    if path.suffix == ".jsonl":
-        return [json.loads(line) for line in text.splitlines() if line.strip()]
     value = json.loads(text)
     return value if isinstance(value, list) else [value]
 

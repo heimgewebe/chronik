@@ -1,4 +1,4 @@
-import hashlib, json
+import hashlib, importlib.util, json
 from pathlib import Path
 import pytest
 import coding_memory, storage
@@ -448,3 +448,55 @@ def test_queries_reuse_timestamp_parsed_during_validation(tmp_path, monkeypatch)
     calls.clear()
     coding_memory.operator_summary()
     assert len(calls) == 3
+
+def _load_coding_memory_cli():
+    path = Path(__file__).parents[1] / "tools" / "coding_memory.py"
+    spec = importlib.util.spec_from_file_location("chronik_coding_memory_cli_test", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_cli_jsonl_loader_streams_without_whole_file_read(tmp_path, monkeypatch):
+    cli = _load_coding_memory_cli()
+    target = tmp_path / "events.jsonl"
+    target.write_text('{"index":1}\n\n  {"index":2}  \n', encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def guarded_read_text(path, *args, **kwargs):
+        if path == target:
+            raise AssertionError("JSONL input must not be materialized with Path.read_text")
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", guarded_read_text)
+    records = cli.load(target)
+    assert iter(records) is records
+    assert list(records) == [{"index": 1}, {"index": 2}]
+
+
+def test_cli_jsonl_loader_treats_only_lf_as_record_boundary(tmp_path):
+    cli = _load_coding_memory_cli()
+    target = tmp_path / "events.jsonl"
+    target.write_text(
+        '{"text":"left\u2028right"}\n{"text":"next"}\n', encoding="utf-8"
+    )
+
+    assert list(cli.load(target)) == [
+        {"text": "left\u2028right"},
+        {"text": "next"},
+    ]
+
+
+def test_cli_regular_json_loader_keeps_existing_list_semantics(tmp_path):
+    cli = _load_coding_memory_cli()
+    object_path = tmp_path / "event.json"
+    object_path.write_text('{"index":1}', encoding="utf-8")
+    list_path = tmp_path / "events.json"
+    list_path.write_text('[{"index":1},{"index":2}]', encoding="utf-8")
+    empty_path = tmp_path / "empty.json"
+    empty_path.write_text('  \n', encoding="utf-8")
+
+    assert cli.load(object_path) == [{"index": 1}]
+    assert cli.load(list_path) == [{"index": 1}, {"index": 2}]
+    assert cli.load(empty_path) == []
