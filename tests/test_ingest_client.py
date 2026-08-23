@@ -58,6 +58,43 @@ def test_ingest_event_hermetic(monkeypatch):
     assert response == "ok"
 
 
+def test_ingest_event_reuses_app_transport_across_retry(monkeypatch):
+    """Retryable responses must not close the app transport between attempts."""
+    test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
+    monkeypatch.setenv("CHRONIK_TOKEN", test_token)
+
+    class RetryOnceTransport(_ChronikAppTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests = 0
+            self.close_calls = 0
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            self.requests += 1
+            if self.requests == 1:
+                return httpx.Response(503, text="retry", request=request)
+            return super().handle_request(request)
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    transport = RetryOnceTransport()
+    response = ingest_event(
+        "example.com",
+        {"event": "retry", "status": "ok"},
+        url="http://test",
+        token=test_token,
+        transport=transport,
+        retries=1,
+        backoff=0,
+    )
+
+    assert response == "ok"
+    assert transport.requests == 2
+    assert transport.close_calls == 1
+
+
 def test_ingest_event_handles_non_json_error(monkeypatch):
     """ingest_event should surface text responses even if they are not JSON."""
 

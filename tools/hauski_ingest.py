@@ -43,17 +43,17 @@ def _parse_strict_mode(strict: Optional[bool]) -> bool:
     """Parse strict mode from parameter or environment variable."""
     if strict is not None:
         return strict
-    
+
     env_val = (_get_env("HAUSKI_INGEST_STRICT") or "").lower()
     return env_val in {"1", "true", "yes"}
 
 
 def _validate_strict_payload(data: Any) -> None:
     """Validate payload in strict mode.
-    
+
     Requires minimal event fields: kind, ts, source.
     These fields ensure traceability and semantic clarity.
-    
+
     Raises:
         IngestError if required fields are missing
     """
@@ -93,7 +93,7 @@ def ingest_event(
 ) -> str:
     """
     Send one or more JSON events to Chronik.
-    
+
     By default, accepts arbitrary JSON objects. Enable strict mode via the
     strict parameter or HAUSKI_INGEST_STRICT environment variable to enforce
     canonical event shape with required fields: kind, ts, source.
@@ -136,7 +136,7 @@ def ingest_event(
 
     # Parse strict mode
     strict_mode = _parse_strict_mode(strict)
-    
+
     # Validate in strict mode
     if strict_mode:
         _validate_strict_payload(data)
@@ -151,7 +151,6 @@ def ingest_event(
     else:
         raise IngestError("payload must be a mapping or sequence of mappings")
 
-    # httpx client per call keeps things simple for small volumes
     url_full = f"{base_url}/v1/ingest"
     params = {"domain": domain}
     headers = {"X-Auth": tok, "Content-Type": "application/json"}
@@ -159,42 +158,42 @@ def ingest_event(
     # Let server enforce "domain" field; if caller sets it, do not contradict path
     # (server already checks for mismatch and will 400 if different).
 
-    for attempt in range(0, n + 1):
-        try:
-            # If a custom transport is provided, no real sockets are used.
-            with httpx.Client(
-                timeout=t, base_url=base_url, transport=transport
-            ) as client:
+    # Keep one client alive for the full retry sequence. Besides reusing pooled
+    # connections, this prevents stateful custom transports from being closed
+    # between attempts; the client still closes exactly once when the call ends.
+    with httpx.Client(timeout=t, base_url=base_url, transport=transport) as client:
+        for attempt in range(0, n + 1):
+            try:
                 r = client.post(
                     url_full, params=params, headers=headers, json=payload
                 )
-        except (httpx.TimeoutException, httpx.NetworkError) as exc:
-            if attempt < n:
-                time.sleep(b0 * (2**attempt))
-                continue
-            raise IngestError(f"network/timeout after {attempt} retries") from exc
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                if attempt < n:
+                    time.sleep(b0 * (2**attempt))
+                    continue
+                raise IngestError(f"network/timeout after {attempt} retries") from exc
 
-        # Fast path
-        if r.status_code in (200, 202) and r.text.strip() == "ok":
-            return "ok"
+            # Fast path
+            if r.status_code in (200, 202) and r.text.strip() == "ok":
+                return "ok"
 
-        # Retryable statuses
-        if r.status_code in (429, 500, 502, 503, 504):
-            if attempt < n:
-                time.sleep(b0 * (2**attempt))
-                continue
-            raise IngestError(
-                f"ingest failed with {r.status_code} "
-                f"after {attempt} retries: {r.text}"
-            )
+            # Retryable statuses
+            if r.status_code in (429, 500, 502, 503, 504):
+                if attempt < n:
+                    time.sleep(b0 * (2**attempt))
+                    continue
+                raise IngestError(
+                    f"ingest failed with {r.status_code} "
+                    f"after {attempt} retries: {r.text}"
+                )
 
-        # Non-retryable: raise immediately with details
-        try:
-            detail = r.json()
-        except (json.JSONDecodeError, ValueError):
-            # httpx.Response.json() can raise ValueError if the body isn't valid JSON
-            detail = r.text
-        raise IngestError(f"ingest rejected: {r.status_code} {detail}")
+            # Non-retryable: raise immediately with details
+            try:
+                detail = r.json()
+            except (json.JSONDecodeError, ValueError):
+                # httpx.Response.json() can raise ValueError if the body isn't valid JSON
+                detail = r.text
+            raise IngestError(f"ingest rejected: {r.status_code} {detail}")
 
     # Should not get here
     raise IngestError("ingest failed unexpectedly")
