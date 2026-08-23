@@ -15,21 +15,84 @@ from app import app  # noqa: E402
 from tools.hauski_ingest import IngestError, ingest_event  # noqa: E402
 
 
+class _ChronikAppTransport(httpx.BaseTransport):
+    """Bridge the public TestClient API into an httpx transport for ingest tests."""
+
+    def __init__(self) -> None:
+        self._client = TestClient(app)
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        response = self._client.request(
+            request.method,
+            str(request.url),
+            headers=dict(request.headers),
+            content=request.read(),
+        )
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=dict(response.headers),
+            content=response.content,
+            request=request,
+        )
+
+    def close(self) -> None:
+        self._client.close()
+
+
+def _app_transport() -> httpx.BaseTransport:
+    return _ChronikAppTransport()
+
+
 def test_ingest_event_hermetic(monkeypatch):
     # Ensure the app's secret matches the token we're sending.
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
 
-    # Use TestClient's transport for hermetic testing
-    client = TestClient(app)
     response = ingest_event(
         "example.com",
         {"event": "test", "status": "ok"},
         url="http://test",
         token=test_token,
-        transport=client._transport,
+        transport=_app_transport(),
     )
     assert response == "ok"
+
+
+def test_ingest_event_reuses_app_transport_across_retry(monkeypatch):
+    """Retryable responses must not close the app transport between attempts."""
+    test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
+    monkeypatch.setenv("CHRONIK_TOKEN", test_token)
+
+    class RetryOnceTransport(_ChronikAppTransport):
+        def __init__(self) -> None:
+            super().__init__()
+            self.requests = 0
+            self.close_calls = 0
+
+        def handle_request(self, request: httpx.Request) -> httpx.Response:
+            self.requests += 1
+            if self.requests == 1:
+                return httpx.Response(503, text="retry", request=request)
+            return super().handle_request(request)
+
+        def close(self) -> None:
+            self.close_calls += 1
+            super().close()
+
+    transport = RetryOnceTransport()
+    response = ingest_event(
+        "example.com",
+        {"event": "retry", "status": "ok"},
+        url="http://test",
+        token=test_token,
+        transport=transport,
+        retries=1,
+        backoff=0,
+    )
+
+    assert response == "ok"
+    assert transport.requests == 2
+    assert transport.close_calls == 1
 
 
 def test_ingest_event_handles_non_json_error(monkeypatch):
@@ -69,14 +132,13 @@ def test_ingest_event_without_event_field(monkeypatch):
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
 
-    client = TestClient(app)
     # Payload without 'event' field should be accepted
     response = ingest_event(
         "example.com",
         {"status": "ok", "message": "hello"},
         url="http://test",
         token=test_token,
-        transport=client._transport,
+        transport=_app_transport(),
     )
     assert response == "ok"
 
@@ -86,14 +148,13 @@ def test_ingest_event_arbitrary_fields(monkeypatch):
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
 
-    client = TestClient(app)
     # Payload with completely different fields
     response = ingest_event(
         "example.com",
         {"foo": "bar", "baz": 123, "nested": {"key": "value"}},
         url="http://test",
         token=test_token,
-        transport=client._transport,
+        transport=_app_transport(),
     )
     assert response == "ok"
 
@@ -104,8 +165,6 @@ def test_ingest_event_strict_rejects_missing_fields(monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
     monkeypatch.setenv("HAUSKI_INGEST_STRICT", "1")
 
-    client = TestClient(app)
-    
     # Missing all required fields
     with pytest.raises(IngestError) as excinfo:
         ingest_event(
@@ -113,7 +172,7 @@ def test_ingest_event_strict_rejects_missing_fields(monkeypatch):
             {"status": "ok"},
             url="http://test",
             token=test_token,
-            transport=client._transport,
+            transport=_app_transport(),
         )
     assert "missing required fields" in str(excinfo.value)
     assert "kind" in str(excinfo.value)
@@ -127,8 +186,6 @@ def test_ingest_event_strict_accepts_minimal_fields(monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
     monkeypatch.setenv("HAUSKI_INGEST_STRICT", "1")
 
-    client = TestClient(app)
-    
     # Has all required fields
     response = ingest_event(
         "example.com",
@@ -136,11 +193,11 @@ def test_ingest_event_strict_accepts_minimal_fields(monkeypatch):
             "kind": "test.event",
             "ts": "2025-12-31T10:00:00Z",
             "source": "test-client",
-            "data": {"value": 42}
+            "data": {"value": 42},
         },
         url="http://test",
         token=test_token,
-        transport=client._transport,
+        transport=_app_transport(),
     )
     assert response == "ok"
 
@@ -151,15 +208,13 @@ def test_ingest_event_strict_parameter_overrides_env(monkeypatch):
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
     monkeypatch.setenv("HAUSKI_INGEST_STRICT", "1")
 
-    client = TestClient(app)
-    
     # strict=False should override env
     response = ingest_event(
         "example.com",
         {"status": "ok"},  # Missing required fields, but strict=False
         url="http://test",
         token=test_token,
-        transport=client._transport,
+        transport=_app_transport(),
         strict=False,
     )
     assert response == "ok"
@@ -170,8 +225,6 @@ def test_ingest_event_strict_batch_validation(monkeypatch):
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
 
-    client = TestClient(app)
-    
     # Batch with one invalid item
     with pytest.raises(IngestError) as excinfo:
         ingest_event(
@@ -182,7 +235,7 @@ def test_ingest_event_strict_batch_validation(monkeypatch):
             ],
             url="http://test",
             token=test_token,
-            transport=client._transport,
+            transport=_app_transport(),
             strict=True,
         )
     assert "batch item 1" in str(excinfo.value)
@@ -192,18 +245,16 @@ def test_ingest_event_strict_batch_validation(monkeypatch):
 def test_ingest_json_alias(monkeypatch):
     """ingest_json should be an alias for ingest_event."""
     from tools.hauski_ingest import ingest_json
-    
+
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
 
-    client = TestClient(app)
-    
     # Should work exactly like ingest_event
     response = ingest_json(
         "example.com",
         {"foo": "bar"},
         url="http://test",
         token=test_token,
-        transport=client._transport,
+        transport=_app_transport(),
     )
     assert response == "ok"

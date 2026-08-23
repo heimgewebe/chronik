@@ -248,24 +248,30 @@ python -c 'import os; os.environ["CHRONIK_TOKEN"]="dev"; from tools.hauski_inges
 ```
 
 ### Testen ohne echte Netzwerk-Sockets
-Für hermetische Tests kann `httpx` direkt gegen die laufende FastAPI-App genutzt werden. Da `hauski_ingest` einen synchronen Client verwendet, die FastAPI-App aber asynchron ist, empfiehlt sich die Nutzung von `TestClient` aus `fastapi.testclient`:
+`hauski_ingest` verwendet weiterhin `httpx`; FastAPIs `TestClient` kann dagegen intern `httpx2` verwenden. Private Transportobjekte wie `TestClient._transport` dürfen deshalb nicht zwischen den beiden Client-Stacks weitergereicht werden.
+
+Für reine Clienttests genügt ein öffentlicher `httpx.MockTransport`:
 
 ```python
-import os
-os.environ["CHRONIK_TOKEN"] = "dev"
-from fastapi.testclient import TestClient
-from app import app  # die FastAPI-App
+import httpx
 from tools.hauski_ingest import ingest_event
 
-# TestClient stellt einen synchronen Transport bereit
-client = TestClient(app)
+
+def handler(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(202, text="ok", request=request)
+
+
+transport = httpx.MockTransport(handler)
 print(ingest_event(
     "example.com",
     {"event":"test","status":"ok"},
     url="http://test",
-    transport=client._transport
+    token="dev",
+    transport=transport,
 ))
 ```
+
+Für hermetische App-Integration zeigt `tests/test_ingest_client.py` den geprüften Adapter: Er verwendet nur die öffentliche `TestClient`-API und übersetzt Request/Response explizit an der `httpx`-Transportgrenze.
 
 ## Systemkontext
 

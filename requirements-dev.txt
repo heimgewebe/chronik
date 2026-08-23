@@ -1,5 +1,6 @@
 -r requirements.txt
 pytest
 pytest-asyncio
+httpx2>=2.0.0
 ruff
 mypy
