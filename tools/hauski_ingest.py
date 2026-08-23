@@ -106,7 +106,7 @@ def ingest_event(
         timeout: request timeout seconds (env CHRONIK_TIMEOUT, default 5)
         retries: retry count for 429/5xx/timeout (env CHRONIK_RETRIES, default 3)
         backoff: initial backoff seconds (env CHRONIK_BACKOFF, default 0.5)
-        transport: optional httpx transport (e.g., TestClient's transport)
+        transport: optional httpx transport (e.g., httpx.MockTransport)
             for in-process testing
         strict: enforce canonical event fields (kind, ts, source) if True.
             Defaults to HAUSKI_INGEST_STRICT env var, or False if unset.
@@ -161,8 +161,7 @@ def ingest_event(
 
     for attempt in range(0, n + 1):
         try:
-            # If transport is provided (e.g., TestClient transport), no real sockets
-            # are used.
+            # If a custom transport is provided, no real sockets are used.
             with httpx.Client(
                 timeout=t, base_url=base_url, transport=transport
             ) as client:
