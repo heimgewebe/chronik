@@ -7,22 +7,7 @@ wgx:
       bash scripts/setup-venv.sh
       . .venv/bin/activate
       export CHRONIK_TOKEN="${CHRONIK_TOKEN:-dev}"
-      python3 - <<'PY'
-      from fastapi.testclient import TestClient
-      from app import app
-      from tools.hauski_ingest import ingest_event
-
-      # Use TestClient's transport for hermetic testing
-      client = TestClient(app)
-
-      result = ingest_event(
-          "example.com",
-          {"event": "test", "status": "ok"},
-          url="http://test",
-          transport=client._transport,
-      )
-      print(result)
-      PY
+      python3 -m pytest -q tests/test_ingest_client.py::test_ingest_event_hermetic
     guard: |
       set -euxo pipefail
       # Keep CI and local verification on one canonical path. This executes the
