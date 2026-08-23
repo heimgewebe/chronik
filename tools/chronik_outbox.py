@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from typing import Any, BinaryIO, Callable, Iterable, Iterator
 from urllib.parse import urlencode
 
@@ -94,8 +95,26 @@ def load_schema() -> dict[str, Any]:
     return schema
 
 
+_EVENT_VALIDATOR: Draft7Validator | None = None
+_EVENT_VALIDATOR_LOCK = Lock()
+
+
+def _event_validator() -> Draft7Validator:
+    """Compile the immutable agent-run schema exactly once per process."""
+    global _EVENT_VALIDATOR
+    validator = _EVENT_VALIDATOR
+    if validator is not None:
+        return validator
+    with _EVENT_VALIDATOR_LOCK:
+        validator = _EVENT_VALIDATOR
+        if validator is None:
+            validator = Draft7Validator(load_schema())
+            _EVENT_VALIDATOR = validator
+        return validator
+
+
 def validate_event(event: dict[str, Any]) -> None:
-    jsonschema.validate(event, load_schema())
+    _event_validator().validate(event)
 
 
 def safe_part(value: str, label: str) -> str:
@@ -449,7 +468,7 @@ def _preflight_flush_unlocked(path: Path, body_limit: int) -> _FlushSnapshot:
         progress = _receipt_header(path, initial_state.size)
         progress_bytes = progress.source_bytes if progress is not None else 0
         progress_events = progress.event_count if progress is not None else 0
-        validator = Draft7Validator(load_schema())
+        validator = _event_validator()
         source_hasher = hashlib.sha256()
         progress_hasher = source_hasher.copy() if progress_bytes == 0 else None
         progress_line_count = 0

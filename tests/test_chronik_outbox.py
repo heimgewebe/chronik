@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 from pathlib import Path
+from threading import Lock
 
 import pytest
 
@@ -36,6 +38,51 @@ def encoded_event(event):
         json.dumps(event, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         + b"\n"
     )
+
+
+def test_validate_event_reuses_compiled_validator(monkeypatch):
+    event = load_event()
+    load_calls = 0
+    original_load_schema = chronik_outbox.load_schema
+
+    def counted_load_schema():
+        nonlocal load_calls
+        load_calls += 1
+        return original_load_schema()
+
+    monkeypatch.setattr(chronik_outbox, "_EVENT_VALIDATOR", None)
+    monkeypatch.setattr(chronik_outbox, "load_schema", counted_load_schema)
+
+    chronik_outbox.validate_event(event)
+    chronik_outbox.validate_event(event)
+
+    invalid = load_event()
+    invalid["data"]["raw"] = "no"
+    with pytest.raises(chronik_outbox.jsonschema.exceptions.ValidationError):
+        chronik_outbox.validate_event(invalid)
+
+    assert load_calls == 1
+
+
+def test_validate_event_compiles_once_on_concurrent_cold_start(monkeypatch):
+    event = load_event()
+    load_calls = 0
+    calls_lock = Lock()
+    original_load_schema = chronik_outbox.load_schema
+
+    def counted_load_schema():
+        nonlocal load_calls
+        with calls_lock:
+            load_calls += 1
+        return original_load_schema()
+
+    monkeypatch.setattr(chronik_outbox, "_EVENT_VALIDATOR", None)
+    monkeypatch.setattr(chronik_outbox, "load_schema", counted_load_schema)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(lambda _: chronik_outbox.validate_event(event), range(64)))
+
+    assert load_calls == 1
 
 
 def test_append_event_writes_one_run_file(tmp_path):
