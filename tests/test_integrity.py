@@ -132,6 +132,211 @@ async def test_integrity_overwrite_protection(monkeypatch, tmp_path):
     assert data["payload"]["status"] == "OK"
     assert data["payload"]["generated_at"] == initial_ts
 
+
+@pytest.mark.asyncio
+async def test_integrity_fetch_failure_records_gap_without_churn_and_recovers(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from integrity import IntegrityManager
+    from storage import read_last_line, read_tail, sanitize_domain, write_payload
+
+    repo = "heimgewebe/gap-aware"
+    domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+    initial_ts = "2026-08-24T10:00:00Z"
+    recovered_ts = initial_ts
+
+    initial_wrapper = {
+        "domain": domain,
+        "kind": "integrity.summary.published.v1",
+        "received_at": initial_ts,
+        "payload": {
+            "repo": repo,
+            "url": "http://summary",
+            "status": "OK",
+            "generated_at": initial_ts,
+        },
+    }
+    write_payload(domain, [json.dumps(initial_wrapper)])
+
+    sources_data = {
+        "apiVersion": "integrity.sources.v1",
+        "generated_at": "2026-08-24T09:00:00Z",
+        "sources": [{"repo": repo, "summary_url": "http://summary", "enabled": True}],
+    }
+    summary_responses = [
+        create_mock_response({}, 503),
+        create_mock_response({}, 503),
+        create_mock_response({"repo": repo, "status": "OK", "generated_at": recovered_ts}),
+    ]
+
+    async def mock_handler(url, *args, **kwargs):
+        if "sources" in url:
+            return create_mock_response(sources_data)
+        if "summary" in url:
+            return summary_responses.pop(0)
+        return create_mock_response({}, 404)
+
+    manager = IntegrityManager()
+    manager.sources_url = "http://sources"
+
+    with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
+        mock_get.side_effect = mock_handler
+
+        # First failed observation appends one explicit gap while preserving the summary.
+        await manager.sync_all()
+        lines = read_tail(domain, 10)
+        assert len(lines) == 2
+        assert json.loads(lines[0]) == initial_wrapper
+
+        gap = json.loads(lines[1])
+        assert gap["kind"] == "integrity.observation.gap.published.v1"
+        assert gap["payload"]["status"] == "MISSING"
+        assert gap["payload"]["observation_status"] == "MISSING"
+        assert gap["payload"]["last_known_status"] == "OK"
+        assert gap["payload"]["last_known_generated_at"] == initial_ts
+        assert "generated_at" not in gap["payload"]
+        assert gap["payload"]["failure_class"] == "http_error"
+
+        aggregate = await manager.get_aggregate_view()
+        assert aggregate["total_status"] == "MISSING"
+        assert len(aggregate["repos"]) == 1
+        current = aggregate["repos"][0]
+        assert current["repo"] == repo
+        assert current["status"] == "MISSING"
+        assert current["observation_status"] == "MISSING"
+        assert current["observation_gap_started_at"] == gap["received_at"]
+        assert current["last_known_status"] == "OK"
+        assert current["last_known_generated_at"] == initial_ts
+
+        # Repeated failure leaves the already-open gap as the sole gap event.
+        await manager.sync_all()
+        assert len(read_tail(domain, 10)) == 2
+
+        # A non-stale successful producer summary (including equal timestamp) closes the gap.
+        await manager.sync_all()
+
+    latest = json.loads(read_last_line(domain))
+    assert latest["kind"] == "integrity.summary.published.v1"
+    assert latest["payload"]["status"] == "OK"
+    assert latest["payload"]["generated_at"] == recovered_ts
+
+    aggregate = await manager.get_aggregate_view()
+    assert aggregate["total_status"] == "OK"
+    assert aggregate["repos"][0]["status"] == "OK"
+    assert "observation_status" not in aggregate["repos"][0]
+    assert len(read_tail(domain, 10)) == 3
+
+    # Losing observability must never make a known FAIL look healthier.
+    failed_ts = "2026-08-24T12:00:00Z"
+    write_payload(domain, [json.dumps({
+        "domain": domain,
+        "kind": "integrity.summary.published.v1",
+        "received_at": failed_ts,
+        "payload": {
+            "repo": repo,
+            "url": "http://summary",
+            "status": "FAIL",
+            "generated_at": failed_ts,
+        },
+    })])
+    failing_client = MagicMock()
+    failing_client.get = AsyncMock(return_value=create_mock_response({}, 503))
+    await manager._fetch_and_update(failing_client, repo, "http://summary")
+
+    aggregate = await manager.get_aggregate_view()
+    assert aggregate["total_status"] == "FAIL"
+    current = aggregate["repos"][0]
+    assert current["status"] == "FAIL"
+    assert current["observation_status"] == "MISSING"
+    assert current["last_known_status"] == "FAIL"
+
+    # A successful fetch with an invalid producer timestamp is observable truth:
+    # close the gap as a sanitized FAIL summary instead of leaving MISSING sticky.
+    malformed_client = MagicMock()
+    malformed_client.get = AsyncMock(return_value=create_mock_response({
+        "repo": repo,
+        "status": "OK",
+        "generated_at": "not-a-date",
+    }))
+    await manager._fetch_and_update(malformed_client, repo, "http://summary")
+
+    latest = json.loads(read_last_line(domain))
+    assert latest["kind"] == "integrity.summary.published.v1"
+    assert latest["payload"]["status"] == "FAIL"
+    assert latest["payload"]["generated_at_sanitized"] is True
+    aggregate = await manager.get_aggregate_view()
+    assert aggregate["total_status"] == "FAIL"
+    assert "observation_status" not in aggregate["repos"][0]
+
+
+@pytest.mark.asyncio
+async def test_integrity_producer_reported_missing_is_not_observation_gap(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from integrity import IntegrityManager
+    from storage import read_last_line, sanitize_domain, write_payload
+
+    repo = "heimgewebe/producer-missing"
+    domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+    initial_ts = "2026-08-24T10:00:00Z"
+    producer_ts = "2026-08-24T11:00:00Z"
+    write_payload(domain, [json.dumps({
+        "domain": domain,
+        "kind": "integrity.summary.published.v1",
+        "received_at": initial_ts,
+        "payload": {"repo": repo, "status": "OK", "generated_at": initial_ts},
+    })])
+
+    client = MagicMock()
+    client.get = AsyncMock(return_value=create_mock_response({
+        "repo": repo,
+        "status": "MISSING",
+        "generated_at": producer_ts,
+        "observation_status": "MISSING",
+        "observation_gap_started_at": "forged",
+        "last_known_status": "FAIL",
+        "last_known_generated_at": "forged",
+        "failure_class": "network_error",
+    }))
+    manager = IntegrityManager()
+    await manager._fetch_and_update(client, repo, "http://summary")
+
+    latest = json.loads(read_last_line(domain))
+    assert latest["kind"] == "integrity.summary.published.v1"
+    assert latest["payload"]["status"] == "MISSING"
+    assert latest["payload"]["generated_at"] == producer_ts
+    assert "observation_status" not in latest["payload"]
+    assert "observation_gap_started_at" not in latest["payload"]
+    assert "last_known_status" not in latest["payload"]
+    assert "last_known_generated_at" not in latest["payload"]
+    assert "failure_class" not in latest["payload"]
+
+
+@pytest.mark.asyncio
+async def test_integrity_non_object_200_does_not_open_network_gap(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from integrity import IntegrityManager
+    from storage import read_last_line, read_tail, sanitize_domain, write_payload
+
+    repo = "heimgewebe/non-object"
+    domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+    initial_ts = "2026-08-24T10:00:00Z"
+    write_payload(domain, [json.dumps({
+        "domain": domain,
+        "kind": "integrity.summary.published.v1",
+        "received_at": initial_ts,
+        "payload": {"repo": repo, "status": "OK", "generated_at": initial_ts},
+    })])
+
+    client = MagicMock()
+    client.get = AsyncMock(return_value=create_mock_response([]))
+    manager = IntegrityManager()
+    await manager._fetch_and_update(client, repo, "http://summary")
+
+    assert len(read_tail(domain, 10)) == 1
+    latest = json.loads(read_last_line(domain))
+    assert latest["kind"] == "integrity.summary.published.v1"
+    assert latest["payload"]["status"] == "OK"
+    assert latest["payload"]["generated_at"] == initial_ts
+
 # 3. Invalid Timestamps (Future/Corrupt)
 @pytest.mark.asyncio
 async def test_integrity_invalid_timestamp_handling(monkeypatch, tmp_path):
