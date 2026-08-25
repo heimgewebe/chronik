@@ -342,16 +342,33 @@ class IntegrityManager:
         current_kind = None
         curr_dt = None
         has_current_state = False
+        current_has_valid_producer_summary = False
 
         if current_line:
             try:
                 current_item = json.loads(current_line)
                 current_kind = current_item.get("kind")
                 current_payload = current_item.get("payload", {})
+                current_meta = current_item.get("meta", {})
+                if not isinstance(current_meta, dict):
+                    current_meta = {}
+                current_has_valid_producer_summary = (
+                    current_kind == INTEGRITY_SUMMARY_KIND
+                    and bool(
+                        current_meta.get(
+                            "producer_summary_valid",
+                            not bool(current_meta.get("error_reason")),
+                        )
+                    )
+                )
                 current_generated_at = (
                     current_payload.get("last_known_generated_at")
                     if current_kind == INTEGRITY_OBSERVATION_GAP_KIND
-                    else current_payload.get("generated_at")
+                    else (
+                        current_payload.get("generated_at")
+                        if current_has_valid_producer_summary
+                        else None
+                    )
                 )
                 curr_dt = parse_iso_ts(current_generated_at) if current_generated_at else None
                 has_current_state = True
@@ -360,14 +377,22 @@ class IntegrityManager:
                 pass
 
         # Stability Logic:
-        # If a fetch fails after a known state, keep the last summary immutable but
-        # append one explicit observation-gap event. Repeated failures do not churn
-        # the ledger; the next non-stale successful summary closes the gap.
+        # A transport failure may open a gap only after producer truth was observed.
+        # Receiver-synthesized/invalid summaries neither qualify as last-known producer
+        # state nor contribute a producer timestamp to freshness comparisons.
         if failure_class is not None and has_current_state:
             if current_kind == INTEGRITY_OBSERVATION_GAP_KIND:
                 logger.debug(f"Integrity observation gap already open for {repo}")
                 return
+            if current_kind == INTEGRITY_SUMMARY_KIND and not current_has_valid_producer_summary:
+                logger.debug(f"No valid producer summary available for observation gap on {repo}")
+                return
+            if not current_has_valid_producer_summary:
+                has_current_state = False
 
+        # If a fetch fails after a valid producer summary, keep that summary immutable
+        # and append one explicit observation-gap event. Repeated failures do not churn.
+        if failure_class is not None and current_has_valid_producer_summary:
             last_known_status = normalize_status(current_payload.get("status", "UNCLEAR"))
             gap_status = max(("MISSING", last_known_status), key=lambda candidate: STATUS_SEVERITY[candidate])
             gap_payload = {
@@ -459,9 +484,14 @@ class IntegrityManager:
             "payload": payload_data,
         }
 
-        # Add meta with error reason if available
+        # Receiver-owned metadata distinguishes valid producer truth from summaries
+        # synthesized or sanitized after an invalid observation. Legacy summaries
+        # without error metadata remain valid for backward compatibility.
         if error_reason:
-            wrapper["meta"] = {"error_reason": error_reason}
+            wrapper["meta"] = {
+                "error_reason": error_reason,
+                "producer_summary_valid": False,
+            }
 
         # Write to storage
         try:

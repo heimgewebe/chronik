@@ -134,6 +134,61 @@ async def test_integrity_overwrite_protection(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_integrity_fetch_failure_requires_valid_producer_summary(monkeypatch, tmp_path):
+    monkeypatch.setattr("storage.DATA_DIR", tmp_path)
+    from integrity import IntegrityManager
+    from storage import read_last_line, read_tail, sanitize_domain
+
+    repo = "heimgewebe/no-producer-yet"
+    domain = sanitize_domain(f"integrity.{repo.replace('/', '.')}")
+    producer_ts = "2020-01-01T00:00:00Z"
+
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=[
+        create_mock_response({}, 503),
+        create_mock_response({}, 503),
+        create_mock_response({"repo": repo, "status": "OK", "generated_at": producer_ts}),
+        create_mock_response({}, 503),
+    ])
+    manager = IntegrityManager()
+
+    # The first transport failure keeps the historical aggregate-visible MISSING
+    # summary, but marks it as receiver-generated rather than producer truth.
+    await manager._fetch_and_update(client, repo, "http://summary")
+    lines = read_tail(domain, 10)
+    assert len(lines) == 1
+    initial = json.loads(lines[0])
+    assert initial["kind"] == "integrity.summary.published.v1"
+    assert initial["payload"]["status"] == "MISSING"
+    assert initial["meta"]["producer_summary_valid"] is False
+
+    # A repeated failure must neither invent last-known producer truth nor churn
+    # another receiver-generated summary into the append-only ledger.
+    await manager._fetch_and_update(client, repo, "http://summary")
+    assert len(read_tail(domain, 10)) == 1
+    aggregate = await manager.get_aggregate_view()
+    assert aggregate["repos"][0]["status"] == "MISSING"
+    assert "observation_status" not in aggregate["repos"][0]
+
+    # Receiver time is not a producer clock: even an older producer timestamp must
+    # replace the synthetic bootstrap summary once real producer truth is observed.
+    await manager._fetch_and_update(client, repo, "http://summary")
+    latest = json.loads(read_last_line(domain))
+    assert latest["kind"] == "integrity.summary.published.v1"
+    assert latest["payload"]["status"] == "OK"
+    assert latest["payload"]["generated_at"] == producer_ts
+    assert len(read_tail(domain, 10)) == 2
+
+    # Only now may a transport failure open an observation gap.
+    await manager._fetch_and_update(client, repo, "http://summary")
+    latest = json.loads(read_last_line(domain))
+    assert latest["kind"] == "integrity.observation.gap.published.v1"
+    assert latest["payload"]["last_known_status"] == "OK"
+    assert latest["payload"]["last_known_generated_at"] == producer_ts
+    assert len(read_tail(domain, 10)) == 3
+
+
+@pytest.mark.asyncio
 async def test_integrity_fetch_failure_records_gap_without_churn_and_recovers(monkeypatch, tmp_path):
     monkeypatch.setattr("storage.DATA_DIR", tmp_path)
     from integrity import IntegrityManager
