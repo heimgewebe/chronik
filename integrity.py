@@ -32,6 +32,16 @@ STATUS_SEVERITY = {
 }
 
 ALLOWED_STATUS = set(STATUS_SEVERITY.keys())
+INTEGRITY_SUMMARY_KIND = "integrity.summary.published.v1"
+INTEGRITY_OBSERVATION_GAP_KIND = "integrity.observation.gap.published.v1"
+INTEGRITY_OBSERVATION_RESERVED_FIELDS = (
+    "observation_status",
+    "observation_gap_started_at",
+    "last_known_status",
+    "last_known_generated_at",
+    "failure_class",
+)
+
 
 def normalize_status(value: Any) -> str:
     """Normalize status to contract-allowed values. Unknown -> UNCLEAR."""
@@ -40,11 +50,13 @@ def normalize_status(value: Any) -> str:
     v = value.strip().upper()
     return v if v in ALLOWED_STATUS else "UNCLEAR"
 
+
 DEFAULT_SOURCES_URL = DEFAULT_INTEGRITY_SOURCES_URL
 
 # Concurrency limit for integrity aggregation to prevent threadpool starvation.
 # Default is 20, which is safe for standard Starlette/AnyIO threadpools.
 INTEGRITY_CONCURRENCY_LIMIT = Settings().integrity_concurrency_limit
+
 
 def get_current_utc_str() -> str:
     """Return current UTC time in strict ISO8601 format (Z-suffix)."""
@@ -255,15 +267,20 @@ class IntegrityManager:
         payload_data = {}
         invalid_new_generated_at = False
         error_reason = None
+        failure_class = None
 
         try:
             resp = await client.get(url)
             if resp.status_code == 200:
                 try:
                     report = resp.json()
+                    if not isinstance(report, dict):
+                        raise TypeError("Integrity summary JSON must be an object")
                     status = normalize_status(report.get("status", "UNCLEAR"))
                     # Create copy to avoid mutating cache
                     payload_data = dict(report)
+                    for reserved_field in INTEGRITY_OBSERVATION_RESERVED_FIELDS:
+                        payload_data.pop(reserved_field, None)
 
                     # Ensure minimal fields in payload (report contract)
                     if "generated_at" not in payload_data:
@@ -297,6 +314,11 @@ class IntegrityManager:
                         error_reason = "Missing or empty repo in report"
                         payload_data["repo"] = repo # Fallback to source repo
 
+                except TypeError as exc:
+                    status = "FAIL"
+                    invalid_new_generated_at = True
+                    error_reason = f"Invalid summary payload: {str(exc)}"
+                    logger.warning(f"Integrity summary payload invalid for {repo} ({url}): {exc}")
                 except ValueError as exc:
                     status = "FAIL" # Schema/Parse fail
                     error_reason = f"Invalid JSON: {str(exc)}"
@@ -305,24 +327,49 @@ class IntegrityManager:
                 logger.warning(f"Integrity fetch failed for {repo}: {resp.status_code}")
                 status = "MISSING"
                 error_reason = f"HTTP {resp.status_code}"
+                failure_class = "http_error"
         except Exception as exc:
             logger.warning(f"Integrity fetch exception for {repo}: {exc}")
             status = "MISSING"
             error_reason = f"Network Error: {str(exc)}"
+            failure_class = "network_error"
 
         # Check Latest Semantics (Optimistic concurrency control manually)
         new_generated_at = payload_data.get("generated_at")
         current_line = await run_in_threadpool(read_last_line, domain)
 
         current_payload = {}
+        current_kind = None
         curr_dt = None
         has_current_state = False
+        current_has_valid_producer_summary = False
 
         if current_line:
             try:
                 current_item = json.loads(current_line)
+                current_kind = current_item.get("kind")
                 current_payload = current_item.get("payload", {})
-                current_generated_at = current_payload.get("generated_at")
+                current_meta = current_item.get("meta", {})
+                if not isinstance(current_meta, dict):
+                    current_meta = {}
+                current_has_valid_producer_summary = (
+                    current_kind == INTEGRITY_SUMMARY_KIND
+                    and bool(
+                        current_meta.get(
+                            "producer_summary_valid",
+                            not bool(current_meta.get("error_reason")),
+                        )
+                    )
+                )
+                current_generated_at = (
+                    current_payload.get("last_known_generated_at")
+                    if current_kind == INTEGRITY_OBSERVATION_GAP_KIND
+                    else (
+                        current_payload.get("generated_at")
+                        if current_has_valid_producer_summary
+                        else None
+                    )
+                )
                 curr_dt = parse_iso_ts(current_generated_at) if current_generated_at else None
                 has_current_state = True
             except (json.JSONDecodeError, ValueError):
@@ -330,15 +377,57 @@ class IntegrityManager:
                 pass
 
         # Stability Logic:
-        # If fetch failed (MISSING) and we have a valid current state, preserve it.
-        # Don't overwrite known truth with transient network failure.
-        if status == "MISSING" and has_current_state:
-            logger.debug(f"Preserving existing state for {repo} despite fetch failure")
+        # A transport failure may open a gap only after producer truth was observed.
+        # Receiver-synthesized/invalid summaries neither qualify as last-known producer
+        # state nor contribute a producer timestamp to freshness comparisons.
+        if failure_class is not None and has_current_state:
+            if current_kind == INTEGRITY_OBSERVATION_GAP_KIND:
+                logger.debug(f"Integrity observation gap already open for {repo}")
+                return
+            if current_kind == INTEGRITY_SUMMARY_KIND and not current_has_valid_producer_summary:
+                logger.debug(f"No valid producer summary available for observation gap on {repo}")
+                return
+            if not current_has_valid_producer_summary:
+                has_current_state = False
+
+        # If a fetch fails after a valid producer summary, keep that summary immutable
+        # and append one explicit observation-gap event. Repeated failures do not churn.
+        if failure_class is not None and current_has_valid_producer_summary:
+            last_known_status = normalize_status(current_payload.get("status", "UNCLEAR"))
+            gap_status = max(("MISSING", last_known_status), key=lambda candidate: STATUS_SEVERITY[candidate])
+            gap_payload = {
+                "repo": current_payload.get("repo") or repo,
+                "url": current_payload.get("url") or url,
+                "status": gap_status,
+                "observation_status": "MISSING",
+                "last_known_status": last_known_status,
+                "last_known_generated_at": current_payload.get("generated_at"),
+                "failure_class": failure_class,
+            }
+            gap_wrapper = {
+                "domain": domain,
+                "kind": INTEGRITY_OBSERVATION_GAP_KIND,
+                "received_at": received_at,
+                "payload": gap_payload,
+            }
+            if error_reason:
+                gap_wrapper["meta"] = {"error_reason": error_reason}
+
+            try:
+                await run_in_threadpool(write_payload, domain, [json.dumps(gap_wrapper)])
+            except Exception as exc:
+                logger.error(f"Failed to save integrity observation gap for {repo}: {exc}")
             return
 
         if has_current_state:
-            # If new generated_at invalid, preserve valid current state
-            if invalid_new_generated_at and curr_dt:
+            # If a malformed producer report arrives while a gap is open, record the
+            # truthful FAIL summary so the observation gap closes. Otherwise preserve
+            # the last valid summary exactly as before.
+            if (
+                invalid_new_generated_at
+                and curr_dt
+                and current_kind != INTEGRITY_OBSERVATION_GAP_KIND
+            ):
                 logger.warning(
                     f"Skipping overwrite for {repo}: invalid generated_at in fetched report "
                     f"({new_generated_at!r}); keeping current ({current_payload.get('generated_at')!r})"
@@ -348,11 +437,21 @@ class IntegrityManager:
             new_dt = parse_iso_ts(new_generated_at) if new_generated_at else None
 
             # Update logic:
-            # - Skip if older or equal (<=) to prevent redundant writes/churn.
-            if new_dt and curr_dt and new_dt <= curr_dt:
-                # New report is older or same, skip update
-                logger.debug(f"Skipping update for {repo}: {new_generated_at} <= {current_payload.get('generated_at')}")
-                return
+            # - Summary vs summary: skip older or equal producer timestamps.
+            # - Gap vs recovered summary: equal is a successful re-observation and
+            #   must close the gap; only an older producer timestamp stays blocked.
+            if new_dt and curr_dt:
+                stale_or_duplicate = (
+                    new_dt < curr_dt
+                    if current_kind == INTEGRITY_OBSERVATION_GAP_KIND
+                    else new_dt <= curr_dt
+                )
+                if stale_or_duplicate:
+                    logger.debug(
+                        f"Skipping stale integrity update for {repo}: "
+                        f"{new_generated_at} vs {current_generated_at}"
+                    )
+                    return
 
         # If we failed fetch/parse (and didn't return early), we synthesize a minimal payload
         if not payload_data:
@@ -380,14 +479,19 @@ class IntegrityManager:
         # Strict Schema: kind is in wrapper, not payload
         wrapper = {
             "domain": domain,
-            "kind": "integrity.summary.published.v1",
+            "kind": INTEGRITY_SUMMARY_KIND,
             "received_at": received_at,
             "payload": payload_data,
         }
 
-        # Add meta with error reason if available
+        # Receiver-owned metadata distinguishes valid producer truth from summaries
+        # synthesized or sanitized after an invalid observation. Legacy summaries
+        # without error metadata remain valid for backward compatibility.
         if error_reason:
-            wrapper["meta"] = {"error_reason": error_reason}
+            wrapper["meta"] = {
+                "error_reason": error_reason,
+                "producer_summary_valid": False,
+            }
 
         # Write to storage
         try:
@@ -486,15 +590,18 @@ class IntegrityManager:
             payload = payload.copy()
 
             # Check kind in wrapper (Canonical)
-            if item.get("kind") == "integrity.summary.published.v1":
+            if item.get("kind") == INTEGRITY_SUMMARY_KIND:
                 pass # Canonical path
+            elif item.get("kind") == INTEGRITY_OBSERVATION_GAP_KIND:
+                payload["observation_status"] = "MISSING"
+                payload["observation_gap_started_at"] = item.get("received_at")
             # Backward compatibility: check payload.kind/type if wrapper.kind missing
-            elif payload.get("kind") == "integrity.summary.published.v1":
+            elif payload.get("kind") == INTEGRITY_SUMMARY_KIND:
                 payload["legacy"] = True
-            elif payload.get("type") == "integrity.summary.published.v1":
+            elif payload.get("type") == INTEGRITY_SUMMARY_KIND:
                 payload["legacy"] = True
             # Optional: wrapper type fallback
-            elif item.get("type") == "integrity.summary.published.v1":
+            elif item.get("type") == INTEGRITY_SUMMARY_KIND:
                 payload["legacy"] = True
             else:
                 # Junk or unrelated event
