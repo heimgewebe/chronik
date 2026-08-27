@@ -1,8 +1,9 @@
 """Event provenance validation for chronik.
 
 Enforces that all events have clear provenance metadata:
-- source.repo: Repository/system name
-- source.component: Component within the system
+- source.repo / source.component for the canonical event shape; or
+- meta.provenance.repo / meta.provenance.component when a domain contract
+  already uses top-level ``source`` for its own source label; and
 - event_id: Unique identifier for the event
 """
 
@@ -19,12 +20,27 @@ class ProvenanceError(ValueError):
     pass
 
 
+def _provenance_source(payload: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    """Return the authoritative provenance object without masking malformed canonical provenance."""
+    source = payload.get("source")
+    if isinstance(source, dict):
+        return source, "source"
+
+    if isinstance(source, str) and source.strip():
+        meta = payload.get("meta")
+        if isinstance(meta, dict):
+            fallback = meta.get("provenance")
+            if isinstance(fallback, dict):
+                return fallback, "meta.provenance"
+    return None, "source or meta.provenance"
+
+
 def validate_provenance(payload: dict, strict: bool = True) -> None:
     """Validate that an event has required provenance fields.
     
     Required fields:
-    - source.repo: String identifying the source repository
-    - source.component: String identifying the component
+    - source.repo/source.component for canonical events; or meta.provenance.repo/
+      meta.provenance.component when top-level source is occupied by a domain schema
     - event_id: Unique event identifier
     
     Args:
@@ -41,22 +57,23 @@ def validate_provenance(payload: dict, strict: bool = True) -> None:
     
     missing_fields = []
     
-    # Check for source object
-    source = payload.get("source")
-    if not isinstance(source, dict):
+    # Prefer the canonical top-level source object. Only when top-level source
+    # is not an object may a domain-specific contract supply provenance under
+    # meta.provenance. This deliberately does not let fallback metadata hide a
+    # malformed canonical source object.
+    source, source_path = _provenance_source(payload)
+    if source is None:
         missing_fields.append("source (must be an object)")
     else:
-        # Check source.repo
         if not source.get("repo"):
-            missing_fields.append("source.repo")
+            missing_fields.append(f"{source_path}.repo")
         elif not isinstance(source["repo"], str):
-            missing_fields.append("source.repo (must be a string)")
-        
-        # Check source.component
+            missing_fields.append(f"{source_path}.repo (must be a string)")
+
         if not source.get("component"):
-            missing_fields.append("source.component")
+            missing_fields.append(f"{source_path}.component")
         elif not isinstance(source["component"], str):
-            missing_fields.append("source.component (must be a string)")
+            missing_fields.append(f"{source_path}.component (must be a string)")
     
     # Check for event_id
     event_id = payload.get("event_id") or payload.get("id")
@@ -84,7 +101,8 @@ def ensure_provenance(payload: dict) -> dict:
         payload: The event payload
     
     Returns:
-        Normalized payload with guaranteed provenance fields
+        Normalized payload with validated provenance and a normalized event_id.
+        Domain-specific source fields are preserved rather than rewritten.
     
     Raises:
         ProvenanceError: If required provenance fields are missing

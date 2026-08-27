@@ -23,6 +23,8 @@ Wenn Provenienz-Enforcement aktiviert ist (`CHRONIK_ENFORCE_PROVENANCE=1`), werd
 - **`source.component`** (string): Komponente innerhalb des Systems (z.B. `"semantAH"`, `"hausKI"`)
 - **`event_id`** (string): Eindeutiger Event-Identifier (UUID oder deterministisch)
 
+Für Domänenverträge, die `source` bereits als fachlichen Quellbezeichner belegen (z. B. `aussen.event` mit `source: "github:status"`), ist alternativ **`meta.provenance.repo`** + **`meta.provenance.component`** zulässig. Ein vorhandenes top-level `source`-Objekt bleibt dabei vorrangig: Ist es vorhanden, aber unvollständig, darf `meta.provenance` diesen Fehler nicht verdecken.
+
 ### Beispiel
 
 ```json

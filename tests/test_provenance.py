@@ -155,3 +155,77 @@ def test_validate_provenance_invalid_repo_type():
     }
     with pytest.raises(ProvenanceError):
         validate_provenance(payload, strict=True)
+
+
+def test_validate_provenance_accepts_domain_source_with_meta_fallback():
+    payload = {
+        "id": "aussen:episode",
+        "source": "github:status",
+        "meta": {
+            "provenance": {
+                "repo": "heimgewebe/aussensensor",
+                "component": "external-evidence",
+            }
+        },
+    }
+    validate_provenance(payload, strict=True)
+    assert has_provenance(payload) is True
+
+
+def test_validate_provenance_rejects_incomplete_meta_fallback():
+    payload = {
+        "id": "aussen:episode",
+        "source": "github:status",
+        "meta": {"provenance": {"repo": "heimgewebe/aussensensor"}},
+    }
+    with pytest.raises(ProvenanceError) as exc_info:
+        validate_provenance(payload, strict=True)
+    assert "meta.provenance.component" in str(exc_info.value)
+
+
+def test_validate_provenance_does_not_hide_malformed_canonical_source_with_fallback():
+    payload = {
+        "id": "event:canonical",
+        "source": {"repo": "heimgewebe/chronik"},
+        "meta": {
+            "provenance": {
+                "repo": "heimgewebe/fallback",
+                "component": "must-not-mask",
+            }
+        },
+    }
+    with pytest.raises(ProvenanceError) as exc_info:
+        validate_provenance(payload, strict=True)
+    assert "source.component" in str(exc_info.value)
+
+
+def test_ensure_provenance_preserves_domain_source_shape():
+    payload = {
+        "id": "aussen:episode",
+        "source": "github:status",
+        "meta": {
+            "provenance": {
+                "repo": "heimgewebe/aussensensor",
+                "component": "external-evidence",
+            }
+        },
+    }
+    normalized = ensure_provenance(payload)
+    assert normalized["event_id"] == payload["id"]
+    assert normalized["source"] == "github:status"
+
+
+def test_validate_provenance_does_not_rescue_invalid_source_type_with_fallback():
+    payload = {
+        "id": "event:invalid-source",
+        "source": 42,
+        "meta": {
+            "provenance": {
+                "repo": "heimgewebe/fallback",
+                "component": "must-not-mask",
+            }
+        },
+    }
+    with pytest.raises(ProvenanceError) as exc_info:
+        validate_provenance(payload, strict=True)
+    assert "source (must be an object)" in str(exc_info.value)
