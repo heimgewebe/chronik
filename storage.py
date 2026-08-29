@@ -11,7 +11,7 @@ import re
 import stat
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final, Iterable, Iterator, NoReturn, Tuple
+from typing import BinaryIO, Final, Iterable, Iterator, NoReturn, Tuple
 
 from filelock import FileLock, Timeout
 
@@ -352,6 +352,22 @@ def _target_stat_for_fd(target_path: Path, fd: int) -> os.stat_result:
     return opened
 
 
+@contextmanager
+def _open_committed_read(
+    target_path: Path,
+) -> Iterator[Tuple[BinaryIO, int]]:
+    """Capture a verified size under the domain lock, then release it for reads."""
+    with _safe_open_read(target_path) as fh:
+        lock_path = get_lock_path(target_path)
+        try:
+            with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
+                committed_size = _target_stat_for_fd(target_path, fh.fileno()).st_size
+        except Timeout as exc:
+            logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
+            raise StorageBusyError("busy, try again") from exc
+        yield fh, committed_size
+
+
 def _fsync_file(fd: int) -> None:
     """Sync file contents or expose a distinct durability failure."""
     try:
@@ -540,9 +556,10 @@ def read_last_line(domain: str) -> str | None:
 def read_domain_snapshot(domain: str, start_offset: int = 0) -> bytes:
     """Read one byte-exact, append-stable snapshot of complete JSONL records.
 
-    The file size is captured from the opened descriptor before reading. Bytes
-    appended afterwards are outside this snapshot. An incomplete tail is
-    excluded so parsing, offsets and hashes share one complete-record boundary.
+    The opened file's identity and size are verified under the domain lock,
+    which is released before reading. Bytes appended afterwards are outside
+    this snapshot. An incomplete tail is excluded so parsing, offsets and
+    hashes share one complete-record boundary.
     """
     if not isinstance(start_offset, int) or isinstance(start_offset, bool) or start_offset < 0:
         raise StorageError("start_offset must be a non-negative integer")
@@ -552,12 +569,11 @@ def read_domain_snapshot(domain: str, start_offset: int = 0) -> bytes:
         raise StorageError("invalid target path") from exc
 
     try:
-        with _safe_open_read(target_path) as fh:
-            observed_size = os.fstat(fh.fileno()).st_size
-            if start_offset >= observed_size:
+        with _open_committed_read(target_path) as (fh, committed_size):
+            if start_offset >= committed_size:
                 return b""
             fh.seek(start_offset)
-            remaining = observed_size - start_offset
+            remaining = committed_size - start_offset
             chunks: list[bytes] = []
             while remaining:
                 chunk = fh.read(min(1024 * 1024, remaining))
@@ -597,12 +613,10 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
     except DomainError as exc:
         raise StorageError("invalid target path") from exc
 
-    # Open for reading without exclusive lock to avoid blocking writers during long scans.
-    # Writers append atomically (mostly), so worst case is a partial read at EOF,
-    # which will likely be handled as a corrupt line or ignored.
     try:
-        # Use safe open to prevent symlink attacks, but no file lock
-        with _safe_open_read(target_path) as fh:
+        with _open_committed_read(target_path) as (fh, committed_size):
+            if start_offset > committed_size:
+                return
             if start_offset:
                 try:
                     fh.seek(start_offset - 1)
@@ -623,11 +637,11 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
                     )
                 # Reading the boundary byte already positions the handle exactly
                 # at start_offset; a second seek would be redundant.
-            while True:
+            while fh.tell() < committed_size:
                 # Capture start offset before reading
                 current_start = fh.tell()
 
-                line = fh.readline()
+                line = fh.readline(committed_size - current_start)
                 if not line:
                     break
 
