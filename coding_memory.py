@@ -3743,30 +3743,30 @@ def _history_validation_checkpoint_path() -> Path:
     return storage.DATA_DIR / HISTORY_VALIDATION_CHECKPOINT_FILENAME
 
 
-def _load_history_validation_checkpoint(raw_snapshot: bytes) -> int:
-    """Return a previously validated byte prefix, or zero on any doubt."""
+def _load_history_validation_checkpoint() -> tuple[int, str] | None:
+    """Return validated prefix metadata, or ``None`` on any doubt."""
     path = _history_validation_checkpoint_path()
     try:
         before = path.lstat()
     except OSError:
-        return 0
+        return None
     if (
         not stat.S_ISREG(before.st_mode)
         or before.st_uid != os.geteuid()
         or before.st_mode & 0o077
     ):
-        return 0
+        return None
     try:
         raw = path.read_bytes()
         after = path.lstat()
     except OSError:
-        return 0
+        return None
     if _file_identity(before) != _file_identity(after):
-        return 0
+        return None
     try:
         document = json.loads(raw)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return 0
+        return None
     expected_keys = {
         "schema_version",
         "domain",
@@ -3777,7 +3777,7 @@ def _load_history_validation_checkpoint(raw_snapshot: bytes) -> int:
         "checkpoint_sha256",
     }
     if not isinstance(document, dict) or set(document) != expected_keys:
-        return 0
+        return None
     checkpoint_sha256 = document.get("checkpoint_sha256")
     semantic = {key: value for key, value in document.items() if key != "checkpoint_sha256"}
     if (
@@ -3788,35 +3788,46 @@ def _load_history_validation_checkpoint(raw_snapshot: bytes) -> int:
         or document.get("validation_contract") != HISTORY_VALIDATION_CONTRACT
         or document.get("event_schema_sha256") != _history_validation_schema_sha256()
     ):
-        return 0
+        return None
     validated_bytes = document.get("validated_bytes")
     prefix_sha256 = document.get("prefix_sha256")
     if (
         not isinstance(validated_bytes, int)
         or isinstance(validated_bytes, bool)
         or validated_bytes <= 0
-        or validated_bytes > len(raw_snapshot)
         or not isinstance(prefix_sha256, str)
         or len(prefix_sha256) != 64
-        or raw_snapshot[validated_bytes - 1 : validated_bytes] != b"\n"
-        or sha256_bytes(raw_snapshot[:validated_bytes]) != prefix_sha256
     ):
-        return 0
-    return validated_bytes
+        return None
+    return validated_bytes, prefix_sha256
+
+
+def _history_snapshot_identity(
+    checkpoint: tuple[int, str],
+) -> tuple[int, str, int]:
+    """Hash one committed stream and verify a checkpoint prefix without materializing it."""
+    validated_bytes, expected_prefix_sha256 = checkpoint
+    complete_bytes, snapshot_sha256, prefix_sha256 = storage.hash_domain_snapshot(
+        DOMAIN, prefix_offset=validated_bytes
+    )
+    trusted_validated_bytes = (
+        validated_bytes if prefix_sha256 == expected_prefix_sha256 else 0
+    )
+    return complete_bytes, snapshot_sha256, trusted_validated_bytes
 
 
 def _publish_history_validation_checkpoint(
-    raw_snapshot: bytes, *, snapshot_sha256: str
+    *, complete_bytes: int, snapshot_sha256: str
 ) -> None:
     """Best-effort publication of reconstructible validation evidence."""
-    if not raw_snapshot:
+    if complete_bytes <= 0:
         return
     document: dict[str, Any] = {
         "schema_version": HISTORY_VALIDATION_CHECKPOINT_SCHEMA,
         "domain": DOMAIN,
         "validation_contract": HISTORY_VALIDATION_CONTRACT,
         "event_schema_sha256": _history_validation_schema_sha256(),
-        "validated_bytes": len(raw_snapshot),
+        "validated_bytes": complete_bytes,
         "prefix_sha256": snapshot_sha256,
     }
     document["checkpoint_sha256"] = sha256_bytes(canonical_bytes(document))
@@ -3834,25 +3845,32 @@ def _publish_history_validation_checkpoint(
 def _scan_record_snapshot(
     visit: Callable[[dict[str, Any], datetime, int], None],
 ) -> dict[str, Any]:
-    """Validate complete records from one byte-bound snapshot and visit each once."""
+    """Validate a bounded committed record stream and visit each valid row once."""
     diagnostics: list[dict[str, Any]] = []
     invalid_record_count = 0
     total_record_count = 0
     valid_record_count = 0
-    raw_snapshot = storage.read_domain_snapshot(DOMAIN)
-    complete_bytes = len(raw_snapshot)
-    snapshot_sha256 = sha256_bytes(raw_snapshot)
-    trusted_validated_bytes = _load_history_validation_checkpoint(raw_snapshot)
-    start_offset = 0
 
-    while start_offset < complete_bytes:
-        newline_at = raw_snapshot.find(b"\n", start_offset)
-        if newline_at < 0:
+    checkpoint = _load_history_validation_checkpoint()
+    expected_complete_bytes: int | None = None
+    expected_snapshot_sha256: str | None = None
+    trusted_validated_bytes = 0
+    if checkpoint is not None:
+        (
+            expected_complete_bytes,
+            expected_snapshot_sha256,
+            trusted_validated_bytes,
+        ) = _history_snapshot_identity(checkpoint)
+
+    snapshot_hasher = hashlib.sha256()
+    complete_bytes = 0
+    for start_offset, next_offset, content in storage.scan_domain_bytes(DOMAIN):
+        if expected_complete_bytes is not None and next_offset > expected_complete_bytes:
             break
-        content = raw_snapshot[start_offset:newline_at]
-        next_offset = newline_at + 1
+        snapshot_hasher.update(content)
+        snapshot_hasher.update(b"\n")
+        complete_bytes = next_offset
         if not content.strip():
-            start_offset = next_offset
             continue
         total_record_count += 1
         try:
@@ -3877,17 +3895,24 @@ def _scan_record_snapshot(
                         "error": str(exc),
                     }
                 )
-            start_offset = next_offset
             continue
         row = {"received_at": envelope.get("received_at"), "payload": payload}
         visit(row, event_at, valid_record_count)
         valid_record_count += 1
-        start_offset = next_offset
+
+    snapshot_sha256 = snapshot_hasher.hexdigest()
+    if expected_complete_bytes is not None and (
+        complete_bytes != expected_complete_bytes
+        or snapshot_sha256 != expected_snapshot_sha256
+    ):
+        raise storage.StorageRecoveryError(
+            "history snapshot changed between checkpoint verification and validation"
+        )
 
     integrity_valid = invalid_record_count == 0
     if integrity_valid and trusted_validated_bytes < complete_bytes:
         _publish_history_validation_checkpoint(
-            raw_snapshot,
+            complete_bytes=complete_bytes,
             snapshot_sha256=snapshot_sha256,
         )
 

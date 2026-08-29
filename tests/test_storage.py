@@ -1,3 +1,4 @@
+import hashlib
 import json
 import queue
 import threading
@@ -192,6 +193,52 @@ def test_write_payload_unique_groups_rejects_unrelated_historical_conflict(
         )
 
 
+def test_hash_domain_snapshot_hashes_complete_records_and_exact_prefix(
+    mock_data_dir,
+):
+    first = b"one\n"
+    second = b"two\n"
+    complete = first + second
+    (mock_data_dir / "agent.ledger.jsonl").write_bytes(complete + b"partial")
+
+    complete_bytes, snapshot_sha256, prefix_sha256 = storage.hash_domain_snapshot(
+        "agent.ledger", prefix_offset=len(first)
+    )
+
+    assert complete_bytes == len(complete)
+    assert snapshot_sha256 == hashlib.sha256(complete).hexdigest()
+    assert prefix_sha256 == hashlib.sha256(first).hexdigest()
+
+
+def test_hash_domain_snapshot_rejects_non_boundary_prefix_and_invalid_offset(
+    mock_data_dir,
+):
+    raw = b"one\ntwo\n"
+    (mock_data_dir / "agent.ledger.jsonl").write_bytes(raw)
+
+    complete_bytes, snapshot_sha256, prefix_sha256 = storage.hash_domain_snapshot(
+        "agent.ledger", prefix_offset=2
+    )
+    assert complete_bytes == len(raw)
+    assert snapshot_sha256 == hashlib.sha256(raw).hexdigest()
+    assert prefix_sha256 is None
+
+    with pytest.raises(storage.StorageError, match="non-negative integer"):
+        storage.hash_domain_snapshot("agent.ledger", prefix_offset=-1)
+    with pytest.raises(storage.StorageError, match="non-negative integer"):
+        storage.hash_domain_snapshot("agent.ledger", prefix_offset=True)
+
+
+def test_hash_domain_snapshot_empty_or_missing_domain(mock_data_dir):
+    empty_sha256 = hashlib.sha256(b"").hexdigest()
+    assert storage.hash_domain_snapshot("agent.ledger") == (0, empty_sha256, None)
+    assert storage.hash_domain_snapshot("agent.ledger", prefix_offset=0) == (
+        0,
+        empty_sha256,
+        empty_sha256,
+    )
+
+
 def test_scan_domain_bytes_preserves_raw_record_bytes_and_offsets(mock_data_dir):
     first = b'{"value":"\xff"}\n'
     second = b'{"id":2}\r\n'
@@ -380,6 +427,24 @@ def test_scan_domain_excludes_transient_append_rolled_back_after_fsync_failure(
     )
 
 
+def test_hash_domain_snapshot_excludes_transient_append_rolled_back_after_fsync_failure(
+    mock_data_dir, monkeypatch
+):
+    original = b'{"existing":1}\n'
+    _assert_reader_excludes_rolled_back_append(
+        mock_data_dir,
+        monkeypatch,
+        lambda: storage.hash_domain_snapshot(
+            "agent.ledger", prefix_offset=len(original)
+        ),
+        (
+            len(original),
+            hashlib.sha256(original).hexdigest(),
+            hashlib.sha256(original).hexdigest(),
+        ),
+    )
+
+
 def test_read_domain_snapshot_excludes_transient_append_rolled_back_after_fsync_failure(
     mock_data_dir, monkeypatch
 ):
@@ -391,7 +456,7 @@ def test_read_domain_snapshot_excludes_transient_append_rolled_back_after_fsync_
     )
 
 
-@pytest.mark.parametrize("reader_name", ["scan", "snapshot"])
+@pytest.mark.parametrize("reader_name", ["scan", "snapshot", "hash"])
 def test_committed_reader_lock_timeout_is_storage_busy(
     mock_data_dir, monkeypatch, reader_name
 ):
@@ -405,8 +470,10 @@ def test_committed_reader_lock_timeout_is_storage_busy(
     with pytest.raises(storage.StorageBusyError, match="busy, try again"):
         if reader_name == "scan":
             list(storage.scan_domain("agent.ledger"))
-        else:
+        elif reader_name == "snapshot":
             storage.read_domain_snapshot("agent.ledger")
+        else:
+            storage.hash_domain_snapshot("agent.ledger")
 
 
 def test_write_payload_unique_groups_rejects_cross_group_conflict_before_write(

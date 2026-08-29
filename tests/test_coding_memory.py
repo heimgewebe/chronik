@@ -241,17 +241,112 @@ def test_snapshot_excludes_incomplete_tail_but_includes_complete_corruption(tmp_
     assert result["event_ids"]==[event()["event_id"]]
 
 
-def test_query_uses_one_immutable_snapshot_even_if_file_grows_after_read(tmp_path,monkeypatch):
-    setup(tmp_path,monkeypatch); coding_memory.import_events([event()]); target=tmp_path/"agent.ledger.jsonl"
-    original=storage.read_domain_snapshot; observed=target.read_bytes(); calls=[]
-    def read_then_append(domain):
-        calls.append(domain); snapshot=original(domain); target.write_bytes(snapshot+b'not-json\n'); return snapshot
-    monkeypatch.setattr(storage,"read_domain_snapshot",read_then_append)
-    result=coding_memory.query_history(repo="heimgewebe/example")
-    assert calls==[coding_memory.DOMAIN]
-    assert result["ledger_snapshot"]["sha256"]==hashlib.sha256(observed).hexdigest()
+def test_query_uses_one_immutable_snapshot_even_if_file_grows_during_scan(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    coding_memory.import_events([event()])
+    target = tmp_path / "agent.ledger.jsonl"
+    observed = target.read_bytes()
+    original = storage.scan_domain_bytes
+    calls = []
+
+    def snapshot_forbidden(*_args, **_kwargs):
+        raise AssertionError("history queries must not materialize a full domain snapshot")
+
+    def scan_then_append(domain, start_offset=0):
+        calls.append(domain)
+        appended = False
+        for item in original(domain, start_offset=start_offset):
+            yield item
+            if not appended:
+                with target.open("ab") as handle:
+                    handle.write(b"not-json\n")
+                appended = True
+
+    monkeypatch.setattr(storage, "read_domain_snapshot", snapshot_forbidden)
+    monkeypatch.setattr(storage, "scan_domain_bytes", scan_then_append)
+    result = coding_memory.query_history(repo="heimgewebe/example")
+
+    assert calls == [coding_memory.DOMAIN]
+    assert result["ledger_snapshot"]["sha256"] == hashlib.sha256(observed).hexdigest()
     assert result["ledger_snapshot"]["integrity_valid"] is True
-    assert target.read_bytes()==observed+b'not-json\n'
+    assert target.read_bytes() == observed + b"not-json\n"
+
+
+def test_checkpoint_query_excludes_append_between_identity_and_validation_passes(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    coding_memory.import_events([event()])
+    first = coding_memory.query_history(repo="heimgewebe/example")
+    target = tmp_path / "agent.ledger.jsonl"
+    observed = target.read_bytes()
+    appended_event = event("sha256:" + "d" * 64)
+    appended_line = coding_memory._envelope_lines([appended_event])[0].encode("utf-8") + b"\n"
+    original_hash = storage.hash_domain_snapshot
+    original_scan = storage.scan_domain_bytes
+    calls = []
+
+    def hash_then_append(domain, *, prefix_offset=None):
+        calls.append("hash")
+        result = original_hash(domain, prefix_offset=prefix_offset)
+        with target.open("ab") as handle:
+            handle.write(appended_line)
+        return result
+
+    def tracked_scan(domain, start_offset=0):
+        calls.append("scan")
+        yield from original_scan(domain, start_offset=start_offset)
+
+    monkeypatch.setattr(storage, "hash_domain_snapshot", hash_then_append)
+    monkeypatch.setattr(storage, "scan_domain_bytes", tracked_scan)
+    second = coding_memory.query_history(repo="heimgewebe/example")
+
+    assert calls == ["hash", "scan"]
+    assert second["ledger_snapshot"] == first["ledger_snapshot"]
+    assert second["event_ids"] == first["event_ids"]
+    assert target.read_bytes() == observed + appended_line
+
+
+def test_checkpoint_query_fails_closed_if_snapshot_changes_between_passes(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    coding_memory.import_events([event()])
+    coding_memory.query_history(repo="heimgewebe/example")
+    target = tmp_path / "agent.ledger.jsonl"
+    original_bytes = target.read_bytes()
+    changed = original_bytes.replace(
+        b"heimgewebe/example", b"heimgewebe/examplf", 1
+    )
+    assert len(changed) == len(original_bytes) and changed != original_bytes
+    checkpoint = tmp_path / coding_memory.HISTORY_VALIDATION_CHECKPOINT_FILENAME
+    checkpoint_before = checkpoint.read_bytes()
+    original_hash = storage.hash_domain_snapshot
+    original_scan = storage.scan_domain_bytes
+    calls = []
+
+    def hash_then_change(domain, *, prefix_offset=None):
+        calls.append("hash")
+        result = original_hash(domain, prefix_offset=prefix_offset)
+        target.write_bytes(changed)
+        return result
+
+    def tracked_scan(domain, start_offset=0):
+        calls.append("scan")
+        yield from original_scan(domain, start_offset=start_offset)
+
+    monkeypatch.setattr(storage, "hash_domain_snapshot", hash_then_change)
+    monkeypatch.setattr(storage, "scan_domain_bytes", tracked_scan)
+    with pytest.raises(
+        storage.StorageRecoveryError,
+        match="history snapshot changed between checkpoint verification and validation",
+    ):
+        coding_memory.query_history(repo="heimgewebe/example")
+
+    assert calls == ["hash", "scan"]
+    assert checkpoint.read_bytes() == checkpoint_before
 
 
 def test_read_domain_snapshot_validates_offset_and_complete_boundary(tmp_path,monkeypatch):

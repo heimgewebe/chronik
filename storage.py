@@ -47,6 +47,7 @@ __all__ = [
     "read_tail",
     "read_last_line",
     "read_domain_snapshot",
+    "hash_domain_snapshot",
     "read_unique_storage_checkpoint_identity",
     "scan_domain",
     "scan_domain_bytes",
@@ -552,6 +553,89 @@ def read_last_line(domain: str) -> str | None:
     """
     lines = read_tail(domain, 1)
     return lines[0] if lines else None
+
+
+def _complete_jsonl_size(fh: BinaryIO, committed_size: int) -> int:
+    """Return the final LF record boundary at or before ``committed_size``."""
+    if committed_size <= 0:
+        return 0
+    fh.seek(committed_size - 1)
+    if fh.read(1) == b"\n":
+        return committed_size
+
+    pointer = committed_size - 1
+    chunk_size = 64 * 1024
+    while pointer > 0:
+        read_size = min(chunk_size, pointer)
+        pointer -= read_size
+        fh.seek(pointer)
+        chunk = fh.read(read_size)
+        if not chunk:
+            break
+        newline_at = chunk.rfind(b"\n")
+        if newline_at >= 0:
+            return pointer + newline_at + 1
+    return 0
+
+
+def hash_domain_snapshot(
+    domain: str, *, prefix_offset: int | None = None
+) -> tuple[int, str, str | None]:
+    """Hash one committed complete-record snapshot without materializing it.
+
+    Returns ``(complete_bytes, snapshot_sha256, prefix_sha256)``. The prefix
+    digest is returned only when ``prefix_offset`` is an exact LF record
+    boundary inside the same committed snapshot.
+    """
+    if prefix_offset is not None and (
+        isinstance(prefix_offset, bool)
+        or not isinstance(prefix_offset, int)
+        or prefix_offset < 0
+    ):
+        raise StorageError("prefix_offset must be a non-negative integer")
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    empty_sha256 = hashlib.sha256(b"").hexdigest()
+    try:
+        with _open_committed_read(target_path) as (fh, committed_size):
+            complete_bytes = _complete_jsonl_size(fh, committed_size)
+            prefix_valid = prefix_offset == 0
+            if (
+                prefix_offset is not None
+                and prefix_offset > 0
+                and prefix_offset <= complete_bytes
+            ):
+                fh.seek(prefix_offset - 1)
+                prefix_valid = fh.read(1) == b"\n"
+
+            snapshot_hasher = hashlib.sha256()
+            prefix_hasher = hashlib.sha256() if prefix_valid else None
+            position = 0
+            fh.seek(0)
+            while position < complete_bytes:
+                chunk = fh.read(min(1024 * 1024, complete_bytes - position))
+                if not chunk:
+                    raise StorageRecoveryError(
+                        "committed snapshot changed during hash read"
+                    )
+                snapshot_hasher.update(chunk)
+                if prefix_hasher is not None and prefix_offset is not None:
+                    prefix_remaining = prefix_offset - position
+                    if prefix_remaining > 0:
+                        prefix_hasher.update(chunk[:prefix_remaining])
+                position += len(chunk)
+            return (
+                complete_bytes,
+                snapshot_hasher.hexdigest(),
+                prefix_hasher.hexdigest() if prefix_hasher is not None else None,
+            )
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return (0, empty_sha256, empty_sha256 if prefix_offset == 0 else None)
+        raise StorageError("read error") from exc
 
 
 def read_domain_snapshot(domain: str, start_offset: int = 0) -> bytes:
