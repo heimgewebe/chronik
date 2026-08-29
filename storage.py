@@ -49,6 +49,7 @@ __all__ = [
     "read_domain_snapshot",
     "read_unique_storage_checkpoint_identity",
     "scan_domain",
+    "scan_domain_bytes",
     "list_domains",
     "get_lock_path",
     "FILENAME_RE",
@@ -593,13 +594,13 @@ def read_domain_snapshot(domain: str, start_offset: int = 0) -> bytes:
     return snapshot[: last_newline + 1] if last_newline >= 0 else b""
 
 
-def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, str]]:
-    """Scan the domain file forward starting from the given byte offset.
+def scan_domain_bytes(
+    domain: str, start_offset: int = 0
+) -> Iterator[Tuple[int, int, bytes]]:
+    """Scan committed complete JSONL records without decoding payload bytes.
 
-    Yields:
-        (start_offset, next_offset, line_str)
-
-    If start_offset is beyond EOF, yields nothing.
+    Each yielded payload excludes only the terminating LF byte. The committed
+    size and cursor-boundary contract is identical to :func:`scan_domain`.
     """
     if (
         isinstance(start_offset, bool)
@@ -628,48 +629,35 @@ def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, 
                     raise
                 previous = fh.read(1)
                 if not previous:
-                    # Preserve the documented polling contract: a cursor beyond
-                    # the current EOF yields no records and can be retried later.
                     return
                 if previous != b"\n":
                     raise StorageCursorError(
                         "start_offset must point to a JSONL record boundary"
                     )
-                # Reading the boundary byte already positions the handle exactly
-                # at start_offset; a second seek would be redundant.
+
             while fh.tell() < committed_size:
-                # Capture start offset before reading
                 current_start = fh.tell()
-
                 line = fh.readline(committed_size - current_start)
-                if not line:
+                if not line or not line.endswith(b"\n"):
                     break
-
-                # Guard against partial writes: Only process complete lines ending with newline.
-                # If we are at EOF and the line doesn't end with \n, it's likely being written.
-                # We stop here and don't yield this line or advance cursor past it.
-                if not line.endswith(b'\n'):
-                    break
-
-                # Current position is the start of the next line
                 next_offset = fh.tell()
-
-                # Decode
-                try:
-                    text = line.decode("utf-8")
-                except UnicodeDecodeError:
-                    text = line.decode("utf-8", errors="replace")
-
-                # Remove trailing newline (we know it exists now)
-                if text.endswith("\n"):
-                    text = text[:-1]
-
-                yield current_start, next_offset, text
-
+                yield current_start, next_offset, line[:-1]
     except OSError as exc:
         if exc.errno == errno.ENOENT:
             return
         raise StorageError("read error") from exc
+
+
+def scan_domain(domain: str, start_offset: int = 0) -> Iterator[Tuple[int, int, str]]:
+    """Scan the domain file forward from a committed JSONL record boundary."""
+    for current_start, next_offset, raw_line in scan_domain_bytes(
+        domain, start_offset=start_offset
+    ):
+        try:
+            text = raw_line.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw_line.decode("utf-8", errors="replace")
+        yield current_start, next_offset, text
 
 
 def list_domains(prefix: str = "") -> list[str]:

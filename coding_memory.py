@@ -1972,11 +1972,12 @@ def _publish_grabowski_source_index(
 
 
 def _ledger_payloads_by_event_id() -> tuple[dict[str, bytes], int]:
-    """Read one complete ledger snapshot and bind every event id to its payload."""
-    snapshot = storage.read_domain_snapshot(DOMAIN)
+    """Stream one committed ledger view and bind every event id to its payload."""
     payloads: dict[str, bytes] = {}
     records_scanned = 0
-    for line_number, raw_line in enumerate(snapshot.splitlines(), start=1):
+    for line_number, (_start, _next, raw_line) in enumerate(
+        storage.scan_domain_bytes(DOMAIN), start=1
+    ):
         if not raw_line.strip():
             continue
         records_scanned += 1
