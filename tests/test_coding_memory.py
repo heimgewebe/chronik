@@ -500,3 +500,35 @@ def test_cli_regular_json_loader_keeps_existing_list_semantics(tmp_path):
     assert cli.load(object_path) == [{"index": 1}]
     assert cli.load(list_path) == [{"index": 1}, {"index": 2}]
     assert cli.load(empty_path) == []
+
+
+def test_ledger_payload_index_streams_committed_records_without_snapshot(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    first = event()
+    second = event("sha256:" + "b" * 64)
+    coding_memory.import_events([first, second])
+
+    def snapshot_forbidden(*_args, **_kwargs):
+        raise AssertionError("ledger payload indexing must not materialize a full snapshot")
+
+    monkeypatch.setattr(storage, "read_domain_snapshot", snapshot_forbidden)
+    payloads, records_scanned = coding_memory._ledger_payloads_by_event_id()
+
+    assert records_scanned == 2
+    assert payloads[first["event_id"]] == coding_memory.canonical_bytes(first)
+    assert payloads[second["event_id"]] == coding_memory.canonical_bytes(second)
+
+
+def test_ledger_payload_index_treats_only_lf_as_record_boundary(
+    tmp_path, monkeypatch
+):
+    setup(tmp_path, monkeypatch)
+    first = json.dumps({"payload": event()}, separators=(",", ":")).encode("utf-8")
+    second_event = event("sha256:" + "c" * 64)
+    second = json.dumps({"payload": second_event}, separators=(",", ":")).encode("utf-8")
+    (tmp_path / "agent.ledger.jsonl").write_bytes(first + b"\r" + second + b"\n")
+
+    with pytest.raises(storage.StorageError, match="invalid ledger JSON at record 1"):
+        coding_memory._ledger_payloads_by_event_id()

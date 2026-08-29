@@ -192,6 +192,28 @@ def test_write_payload_unique_groups_rejects_unrelated_historical_conflict(
         )
 
 
+def test_scan_domain_bytes_preserves_raw_record_bytes_and_offsets(mock_data_dir):
+    first = b'{"value":"\xff"}\n'
+    second = b'{"id":2}\r\n'
+    (mock_data_dir / "agent.ledger.jsonl").write_bytes(first + second)
+
+    assert list(storage.scan_domain_bytes("agent.ledger")) == [
+        (0, len(first), first[:-1]),
+        (len(first), len(first) + len(second), second[:-1]),
+    ]
+
+
+def test_scan_domain_decodes_raw_records_with_existing_replacement_semantics(
+    mock_data_dir,
+):
+    raw = b'{"value":"\xff"}\n'
+    (mock_data_dir / "agent.ledger.jsonl").write_bytes(raw)
+
+    assert list(storage.scan_domain("agent.ledger")) == [
+        (0, len(raw), '{"value":"\ufffd"}')
+    ]
+
+
 def test_scan_domain_accepts_crlf_record_boundary(mock_data_dir):
     first = b'{"id":1}\r\n'
     second = b'{"id":2}\r\n'
