@@ -38,6 +38,24 @@ def test_query_compares_since_offset_in_utc(tmp_path,monkeypatch):
     assert result["event_ids"] == ["sha256:"+"b"*64, "sha256:"+"a"*64]
 
 
+def test_query_history_works_when_data_directory_is_read_only(tmp_path, monkeypatch):
+    setup(tmp_path, monkeypatch)
+    coding_memory.import_events([event()])
+    target = tmp_path / "agent.ledger.jsonl"
+    lock_path = storage.get_lock_path(target)
+    if lock_path.exists():
+        lock_path.unlink()
+    original_mode = tmp_path.stat().st_mode & 0o777
+    tmp_path.chmod(0o500)
+    try:
+        result = coding_memory.query_history(repo="heimgewebe/example")
+    finally:
+        tmp_path.chmod(original_mode)
+    assert result["event_ids"] == ["sha256:" + "a" * 64]
+    assert result["ledger_snapshot"]["integrity_valid"] is True
+    assert not lock_path.exists()
+
+
 def test_query_filters_and_marks_history_only(tmp_path,monkeypatch):
     setup(tmp_path,monkeypatch); coding_memory.import_events([event(),event("sha256:"+"b"*64,repo="heimgewebe/other")])
     result=coding_memory.query_history(repo="heimgewebe/example",component="grabowski",operation="implement",outcome="completed")

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import logging
 import os
 import re
 import stat
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Final, Iterable, Iterator, NoReturn, Tuple
@@ -266,34 +268,112 @@ def _safe_open_read(target_path: Path) -> Iterator:
 
 
 @contextmanager
+def _fd_lock(
+    fd: int, target_path: Path, *, exclusive: bool
+) -> Iterator[None]:
+    """Acquire one bounded advisory lock on the already-open target descriptor.
+
+    Readers use a shared lock and therefore need no writable sidecar. Writers
+    retain the existing FileLock for cross-process writer serialization and add
+    an exclusive target-fd lock so committed readers share the same boundary.
+    """
+    operation = fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH
+    deadline = time.monotonic() + LOCK_TIMEOUT
+    while True:
+        try:
+            fcntl.flock(fd, operation | fcntl.LOCK_NB)
+            break
+        except BlockingIOError as exc:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.warning("busy (fd lock timeout)", extra={"file": str(target_path)})
+                raise StorageBusyError("busy, try again") from exc
+            time.sleep(min(0.05, remaining))
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    logger.warning("busy (fd lock timeout)", extra={"file": str(target_path)})
+                    raise StorageBusyError("busy, try again") from exc
+                time.sleep(min(0.05, remaining))
+                continue
+            raise StorageError("file lock error") from exc
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError as exc:
+            raise StorageRecoveryError("file unlock failed") from exc
+
+
+@contextmanager
+def _readonly_sidecar_lock(target_path: Path) -> Iterator[None]:
+    """Honor an existing legacy FileLock without creating or writing it."""
+    lock_path = get_lock_path(target_path)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise StorageError("platform lacks O_NOFOLLOW")
+    flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(lock_path, flags)
+    except FileNotFoundError:
+        yield
+        return
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise StorageError("invalid lock target (symlink)") from exc
+        raise StorageError("lock identity unavailable") from exc
+    try:
+        try:
+            opened = os.fstat(fd)
+        except OSError as exc:
+            raise StorageRecoveryError("lock identity unavailable") from exc
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or opened.st_nlink < 1
+        ):
+            raise StorageRecoveryError("lock identity is not private and regular")
+        with _fd_lock(fd, target_path, exclusive=False):
+            yield
+    finally:
+        os.close(fd)
+
+
+@contextmanager
 def _locked_open(target_path: Path, mode: str) -> Iterator:
-    """Context manager to securely open a file with locking.
-    Handles FileLock, O_NOFOLLOW, O_CLOEXEC, and error mapping.
+    """Securely open a file with read-only-safe advisory locking.
+
+    Write modes retain the historical sidecar FileLock and additionally take an
+    exclusive lock on the target fd. Read modes never create or write a sidecar;
+    they take only a shared lock on the already-open target fd.
     """
     fname = target_path.name
-    # Extra validation
     if target_path.parent != DATA_DIR:
         raise StorageError("invalid target path: wrong parent directory")
 
     lock_path = get_lock_path(target_path)
-
-    # Determine open flags and Python mode
     if mode == "r":
         flags = os.O_RDONLY
         py_mode = "r"
         encoding = "utf-8"
+        write_mode = False
     elif mode == "rb":
         flags = os.O_RDONLY
         py_mode = "rb"
         encoding = None
+        write_mode = False
     elif mode == "a":
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
         py_mode = "ab"
         encoding = None
+        write_mode = True
     elif mode == "a+":
         flags = os.O_RDWR | os.O_CREAT | os.O_APPEND
         py_mode = "a+b"
         encoding = None
+        write_mode = True
     else:
         raise ValueError(f"unsupported mode: {mode}")
 
@@ -302,37 +382,37 @@ def _locked_open(target_path: Path, mode: str) -> Iterator:
         raise StorageError("platform lacks O_NOFOLLOW")
     flags |= os.O_NOFOLLOW
 
+    def opened_file() -> Iterator:
+        dirfd = os.open(str(DATA_DIR), os.O_RDONLY)
+        try:
+            fd = os.open(fname, flags, 0o600, dir_fd=dirfd)
+            try:
+                fh = os.fdopen(fd, py_mode, encoding=encoding)
+            except OSError:
+                os.close(fd)
+                raise
+            with fh:
+                with _fd_lock(fh.fileno(), target_path, exclusive=write_mode):
+                    yield fh
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                logger.error("disk full", extra={"file": str(target_path)})
+                raise StorageFullError("insufficient storage") from exc
+            if exc.errno == errno.ELOOP:
+                logger.warning("symlink attempt rejected", extra={"file": str(target_path)})
+                raise StorageError("invalid target (symlink)") from exc
+            raise
+        finally:
+            os.close(dirfd)
+
+    if not write_mode:
+        with _readonly_sidecar_lock(target_path):
+            yield from opened_file()
+        return
+
     try:
         with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
-            # Defense-in-depth: always use trusted DATA_DIR for dirfd
-            dirfd = os.open(str(DATA_DIR), os.O_RDONLY)
-            try:
-                fd = os.open(
-                    fname,
-                    flags,
-                    0o600,
-                    dir_fd=dirfd,
-                )
-                try:
-                    fh = os.fdopen(fd, py_mode, encoding=encoding)
-                except OSError:
-                    os.close(fd)
-                    raise
-                with fh:
-                    yield fh
-            except OSError as exc:
-                if exc.errno == errno.ENOSPC:
-                    logger.error("disk full", extra={"file": str(target_path)})
-                    raise StorageFullError("insufficient storage") from exc
-                if exc.errno == errno.ELOOP:
-                    logger.warning(
-                        "symlink attempt rejected",
-                        extra={"file": str(target_path)},
-                    )
-                    raise StorageError("invalid target (symlink)") from exc
-                raise
-            finally:
-                os.close(dirfd)
+            yield from opened_file()
     except Timeout as exc:
         logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
         raise StorageBusyError("busy, try again") from exc
@@ -358,16 +438,12 @@ def _target_stat_for_fd(target_path: Path, fd: int) -> os.stat_result:
 def _open_committed_read(
     target_path: Path,
 ) -> Iterator[Tuple[BinaryIO, int]]:
-    """Capture a verified size under the domain lock, then release it for reads."""
-    with _safe_open_read(target_path) as fh:
-        lock_path = get_lock_path(target_path)
-        try:
-            with FileLock(str(lock_path), timeout=LOCK_TIMEOUT):
+    """Capture a verified committed size without requiring directory writes."""
+    with _readonly_sidecar_lock(target_path):
+        with _safe_open_read(target_path) as fh:
+            with _fd_lock(fh.fileno(), target_path, exclusive=False):
                 committed_size = _target_stat_for_fd(target_path, fh.fileno()).st_size
-        except Timeout as exc:
-            logger.warning("busy (lock timeout)", extra={"file": str(target_path)})
-            raise StorageBusyError("busy, try again") from exc
-        yield fh, committed_size
+            yield fh, committed_size
 
 
 def _fsync_file(fd: int) -> None:
