@@ -1,11 +1,13 @@
+import fcntl
 import hashlib
 import json
+import os
 import queue
 import threading
+from contextlib import contextmanager
 
 import pytest
 import storage
-from filelock import FileLock, Timeout
 
 @pytest.fixture
 def mock_data_dir(tmp_path, monkeypatch):
@@ -250,6 +252,31 @@ def test_scan_domain_bytes_preserves_raw_record_bytes_and_offsets(mock_data_dir)
     ]
 
 
+def test_committed_readers_need_no_writable_sidecar(mock_data_dir):
+    raw = b'{"id":1}\n{"id":2}\n'
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(raw)
+    lock_path = storage.get_lock_path(target)
+    assert not lock_path.exists()
+
+    original_mode = mock_data_dir.stat().st_mode & 0o777
+    os.chmod(mock_data_dir, 0o500)
+    try:
+        assert list(storage.scan_domain_bytes("agent.ledger")) == [
+            (0, len(b'{"id":1}\n'), b'{"id":1}'),
+            (len(b'{"id":1}\n'), len(raw), b'{"id":2}'),
+        ]
+        assert storage.read_domain_snapshot("agent.ledger") == raw
+        assert storage.hash_domain_snapshot("agent.ledger")[:2] == (
+            len(raw),
+            hashlib.sha256(raw).hexdigest(),
+        )
+    finally:
+        os.chmod(mock_data_dir, original_mode)
+
+    assert not lock_path.exists()
+
+
 def test_scan_domain_decodes_raw_records_with_existing_replacement_semantics(
     mock_data_dir,
 ):
@@ -355,22 +382,14 @@ def _assert_reader_excludes_rolled_back_append(
             raise OSError(5, "simulated durability failure")
         return real_fsync(fd)
 
-    class ObservedReaderLock:
-        def __init__(self, lock):
-            self.lock = lock
+    real_fd_lock = storage._fd_lock
 
-        def __enter__(self):
-            progress.put("lock-attempt")
-            return self.lock.__enter__()
-
-        def __exit__(self, *args):
-            return self.lock.__exit__(*args)
-
-    def observed_file_lock(*args, **kwargs):
-        lock = FileLock(*args, **kwargs)
+    @contextmanager
+    def observed_fd_lock(fd, target_path, *, exclusive):
         if threading.current_thread().name == reader_thread_name:
-            return ObservedReaderLock(lock)
-        return lock
+            progress.put("lock-attempt")
+        with real_fd_lock(fd, target_path, exclusive=exclusive):
+            yield
 
     def write_transient_record():
         try:
@@ -388,7 +407,7 @@ def _assert_reader_excludes_rolled_back_append(
         progress.put("read-complete")
 
     monkeypatch.setattr(storage.os, "fsync", fail_commit_fsync)
-    monkeypatch.setattr(storage, "FileLock", observed_file_lock)
+    monkeypatch.setattr(storage, "_fd_lock", observed_fd_lock)
 
     writer_thread = threading.Thread(target=write_transient_record)
     writer_thread.start()
@@ -427,6 +446,43 @@ def test_scan_domain_excludes_transient_append_rolled_back_after_fsync_failure(
     )
 
 
+def test_committed_stream_releases_locks_before_yielding_records(
+    mock_data_dir, monkeypatch
+):
+    first = b'{"id":1}\n'
+    second = b'{"id":2}\n'
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(first + second)
+    monkeypatch.setattr(storage, "LOCK_TIMEOUT", 0.2)
+
+    stream = storage.scan_domain_bytes("agent.ledger")
+    assert next(stream) == (0, len(first), first[:-1])
+
+    outcome = queue.Queue()
+
+    def append_after_reader_yield():
+        try:
+            storage.write_payload("agent.ledger", ['{"id":3}'])
+        except BaseException as exc:
+            outcome.put(exc)
+        else:
+            outcome.put(None)
+
+    writer = threading.Thread(target=append_after_reader_yield)
+    writer.start()
+    writer.join(timeout=1)
+    try:
+        assert not writer.is_alive()
+        assert outcome.get_nowait() is None
+        assert list(stream) == [(len(first), len(first) + len(second), second[:-1])]
+    finally:
+        stream.close()
+        if writer.is_alive():
+            writer.join(timeout=1)
+
+    assert target.read_bytes() == first + second + b'{"id":3}\n'
+
+
 def test_hash_domain_snapshot_excludes_transient_append_rolled_back_after_fsync_failure(
     mock_data_dir, monkeypatch
 ):
@@ -460,20 +516,23 @@ def test_read_domain_snapshot_excludes_transient_append_rolled_back_after_fsync_
 def test_committed_reader_lock_timeout_is_storage_busy(
     mock_data_dir, monkeypatch, reader_name
 ):
-    (mock_data_dir / "agent.ledger.jsonl").write_bytes(b'{"existing":1}\n')
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(b'{"existing":1}\n')
+    holder = os.open(target, os.O_RDWR | os.O_CLOEXEC)
+    fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    monkeypatch.setattr(storage, "LOCK_TIMEOUT", 0)
 
-    def timeout_file_lock(*args, **kwargs):
-        raise Timeout("agent.ledger.jsonl.lock")
-
-    monkeypatch.setattr(storage, "FileLock", timeout_file_lock)
-
-    with pytest.raises(storage.StorageBusyError, match="busy, try again"):
-        if reader_name == "scan":
-            list(storage.scan_domain("agent.ledger"))
-        elif reader_name == "snapshot":
-            storage.read_domain_snapshot("agent.ledger")
-        else:
-            storage.hash_domain_snapshot("agent.ledger")
+    try:
+        with pytest.raises(storage.StorageBusyError, match="busy, try again"):
+            if reader_name == "scan":
+                list(storage.scan_domain("agent.ledger"))
+            elif reader_name == "snapshot":
+                storage.read_domain_snapshot("agent.ledger")
+            else:
+                storage.hash_domain_snapshot("agent.ledger")
+    finally:
+        fcntl.flock(holder, fcntl.LOCK_UN)
+        os.close(holder)
 
 
 def test_write_payload_unique_groups_rejects_cross_group_conflict_before_write(
