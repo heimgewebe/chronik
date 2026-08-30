@@ -413,7 +413,11 @@ def _inventory_material(path: Path | str, info: os.stat_result) -> bytes:
     """Encode the existing canonical inventory record without a temporary dict/list."""
     identity = _file_identity(info)
     identity_bytes = b",".join(str(value).encode("ascii") for value in identity)
-    absolute_path = str(path.absolute()) if isinstance(path, Path) else os.path.abspath(path)
+    absolute_path = (
+        str(path.absolute())
+        if isinstance(path, Path)
+        else path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    )
     path_bytes = json.dumps(
         absolute_path,
         ensure_ascii=False,

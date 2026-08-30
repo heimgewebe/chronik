@@ -84,6 +84,23 @@ def test_directory_inventory_fingerprint_preserves_existing_digest_contract(tmp_
     assert directory["count"] == 2
 
 
+def test_directory_inventory_fingerprint_preserves_dotdot_path_spelling(tmp_path):
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    alias = tmp_path / "alias"
+    alias.mkdir()
+    receipt = receipts / "stable.receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    receipt.chmod(0o600)
+    aliased_receipts = alias / ".." / "receipts"
+    legacy_paths = list(aliased_receipts.glob("*.receipt.json"))
+
+    assert ".." in str(legacy_paths[0])
+    assert coding_memory._directory_inventory_fingerprint(
+        aliased_receipts, suffix=".receipt.json", private=True
+    ) == coding_memory._inventory_fingerprint(legacy_paths, private=True)
+
+
 def test_directory_inventory_fingerprint_keeps_private_file_guard(tmp_path):
     receipts = tmp_path / "receipts"
     receipts.mkdir()
