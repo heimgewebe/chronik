@@ -446,6 +446,43 @@ def test_scan_domain_excludes_transient_append_rolled_back_after_fsync_failure(
     )
 
 
+def test_committed_stream_releases_locks_before_yielding_records(
+    mock_data_dir, monkeypatch
+):
+    first = b'{"id":1}\n'
+    second = b'{"id":2}\n'
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_bytes(first + second)
+    monkeypatch.setattr(storage, "LOCK_TIMEOUT", 0.2)
+
+    stream = storage.scan_domain_bytes("agent.ledger")
+    assert next(stream) == (0, len(first), first[:-1])
+
+    outcome = queue.Queue()
+
+    def append_after_reader_yield():
+        try:
+            storage.write_payload("agent.ledger", ['{"id":3}'])
+        except BaseException as exc:
+            outcome.put(exc)
+        else:
+            outcome.put(None)
+
+    writer = threading.Thread(target=append_after_reader_yield)
+    writer.start()
+    writer.join(timeout=1)
+    try:
+        assert not writer.is_alive()
+        assert outcome.get_nowait() is None
+        assert list(stream) == [(len(first), len(first) + len(second), second[:-1])]
+    finally:
+        stream.close()
+        if writer.is_alive():
+            writer.join(timeout=1)
+
+    assert target.read_bytes() == first + second + b'{"id":3}\n'
+
+
 def test_hash_domain_snapshot_excludes_transient_append_rolled_back_after_fsync_failure(
     mock_data_dir, monkeypatch
 ):

@@ -439,11 +439,11 @@ def _open_committed_read(
     target_path: Path,
 ) -> Iterator[Tuple[BinaryIO, int]]:
     """Capture a verified committed size without requiring directory writes."""
-    with _readonly_sidecar_lock(target_path):
-        with _safe_open_read(target_path) as fh:
+    with _safe_open_read(target_path) as fh:
+        with _readonly_sidecar_lock(target_path):
             with _fd_lock(fh.fileno(), target_path, exclusive=False):
                 committed_size = _target_stat_for_fd(target_path, fh.fileno()).st_size
-            yield fh, committed_size
+        yield fh, committed_size
 
 
 def _fsync_file(fd: int) -> None:
