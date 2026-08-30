@@ -53,6 +53,69 @@ def configure(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Path]:
     return data, receipts, outbox
 
 
+def test_directory_inventory_fingerprint_preserves_existing_digest_contract(tmp_path):
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    paths = [
+        receipts / "a.receipt.json",
+        receipts / 'z-ä-"\\.receipt.json',
+    ]
+    for index, path in enumerate(paths):
+        path.write_text(json.dumps({"index": index}), encoding="utf-8")
+        path.chmod(0o600)
+    (receipts / "ignored.txt").write_text("ignored", encoding="utf-8")
+
+    for path in paths:
+        info = path.lstat()
+        assert coding_memory._inventory_material(path, info) == coding_memory.canonical_bytes(
+            {
+                "path": str(path.absolute()),
+                "identity": list(coding_memory._file_identity(info)),
+            }
+        )
+
+    legacy = coding_memory._inventory_fingerprint(paths, private=True)
+    directory = coding_memory._directory_inventory_fingerprint(
+        receipts, suffix=".receipt.json", private=True
+    )
+
+    assert directory == legacy
+    assert directory is not None
+    assert directory["count"] == 2
+
+
+def test_directory_inventory_fingerprint_preserves_dotdot_path_spelling(tmp_path):
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    alias = tmp_path / "alias"
+    alias.mkdir()
+    receipt = receipts / "stable.receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    receipt.chmod(0o600)
+    aliased_receipts = alias / ".." / "receipts"
+    legacy_paths = list(aliased_receipts.glob("*.receipt.json"))
+
+    assert ".." in str(legacy_paths[0])
+    assert coding_memory._directory_inventory_fingerprint(
+        aliased_receipts, suffix=".receipt.json", private=True
+    ) == coding_memory._inventory_fingerprint(legacy_paths, private=True)
+
+
+def test_directory_inventory_fingerprint_keeps_private_file_guard(tmp_path):
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    unsafe = receipts / "unsafe.receipt.json"
+    unsafe.write_text("{}", encoding="utf-8")
+    unsafe.chmod(0o644)
+
+    assert (
+        coding_memory._directory_inventory_fingerprint(
+            receipts, suffix=".receipt.json", private=True
+        )
+        is None
+    )
+
+
 def test_batch_import_is_idempotent_and_receipt_bound(tmp_path, monkeypatch):
     data, receipts, outbox = configure(tmp_path, monkeypatch)
     source = write_outbox(outbox, [event("agent.run.started", "a"), event("agent.run.completed", "b")])

@@ -409,6 +409,24 @@ def _steady_checkpoint_path(receipt_dir: Path) -> Path:
     return receipt_dir / GRABOWSKI_STEADY_CHECKPOINT_FILENAME
 
 
+def _inventory_material(path: Path | str, info: os.stat_result) -> bytes:
+    """Encode the existing canonical inventory record without a temporary dict/list."""
+    identity = _file_identity(info)
+    identity_bytes = b",".join(str(value).encode("ascii") for value in identity)
+    absolute_path = (
+        str(path.absolute())
+        if isinstance(path, Path)
+        else path if os.path.isabs(path) else os.path.join(os.getcwd(), path)
+    )
+    path_bytes = json.dumps(
+        absolute_path,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return b'{"identity":[' + identity_bytes + b'],"path":' + path_bytes + b'}'
+
+
 def _inventory_fingerprint(
     paths: Iterable[Path], *, private: bool
 ) -> dict[str, Any] | None:
@@ -425,15 +443,43 @@ def _inventory_fingerprint(
             info.st_uid != os.geteuid() or info.st_mode & 0o077 or info.st_nlink != 1
         ):
             return None
-        material = canonical_bytes(
-            {
-                "path": str(path.absolute()),
-                "identity": list(_file_identity(info)),
-            }
-        )
+        material = _inventory_material(path, info)
         digest.update(len(material).to_bytes(8, "big", signed=False))
         digest.update(material)
         count += 1
+    return {"count": count, "sha256": digest.hexdigest()}
+
+
+def _directory_inventory_fingerprint(
+    directory: Path, *, suffix: str, private: bool
+) -> dict[str, Any] | None:
+    """Fingerprint one flat file inventory with the same digest contract via scandir."""
+    if not directory.is_dir():
+        return {"count": 0, "sha256": hashlib.sha256().hexdigest()}
+    try:
+        with os.scandir(directory) as iterator:
+            entries = sorted(
+                (entry for entry in iterator if entry.name.endswith(suffix)),
+                key=lambda entry: entry.name,
+            )
+        digest = hashlib.sha256()
+        count = 0
+        for entry in entries:
+            info = entry.stat(follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            if private and (
+                info.st_uid != os.geteuid()
+                or info.st_mode & 0o077
+                or info.st_nlink != 1
+            ):
+                return None
+            material = _inventory_material(entry.path, info)
+            digest.update(len(material).to_bytes(8, "big", signed=False))
+            digest.update(material)
+            count += 1
+    except OSError:
+        return None
     return {"count": count, "sha256": digest.hexdigest()}
 
 
@@ -536,10 +582,9 @@ def _steady_fast_identity(
     )
     if source_inventory is None:
         return None
-    receipt_paths = (
-        list(receipt_dir.glob("*.receipt.json")) if receipt_dir.is_dir() else []
+    receipt_inventory = _directory_inventory_fingerprint(
+        receipt_dir, suffix=".receipt.json", private=True
     )
-    receipt_inventory = _inventory_fingerprint(receipt_paths, private=True)
     source_index_identity = _private_file_identity(source_index_path)
     delta_index_identity = _private_file_identity(delta_index_path)
     delta_overlay_identity = _private_file_identity(delta_overlay_path)
@@ -566,11 +611,8 @@ def _steady_fast_identity(
         manifests=manifests,
         bundle_files=bundle_files,
     )
-    final_receipt_paths = (
-        list(receipt_dir.glob("*.receipt.json")) if receipt_dir.is_dir() else []
-    )
-    final_receipt_inventory = _inventory_fingerprint(
-        final_receipt_paths, private=True
+    final_receipt_inventory = _directory_inventory_fingerprint(
+        receipt_dir, suffix=".receipt.json", private=True
     )
     if (
         final_source_inventory != source_inventory
@@ -3315,12 +3357,9 @@ def import_grabowski_outbox(
                 manifests=manifests,
                 bundle_files=bundle_files,
             )
-            receipt_paths = (
-                list(receipt_dir.glob("*.receipt.json"))
-                if receipt_dir.is_dir()
-                else []
+            receipt_inventory = _directory_inventory_fingerprint(
+                receipt_dir, suffix=".receipt.json", private=True
             )
-            receipt_inventory = _inventory_fingerprint(receipt_paths, private=True)
             source_index_identity = _private_file_identity(source_index_path)
             delta_index_identity = _private_file_identity(delta_index_path)
             delta_overlay_identity = _private_file_identity(delta_overlay_path)
