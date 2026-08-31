@@ -1551,6 +1551,8 @@ def _source_index_source_record(prepared: dict[str, Any], *, loose: bool) -> dic
 def _source_index_bundle_record(
     prepared_sources: list[dict[str, Any]], metadata: dict[str, Any]
 ) -> dict[str, Any]:
+    manifest_path = str(Path(metadata["manifest_path"]).resolve())
+    bundle_path = str(Path(metadata["bundle_path"]).resolve())
     public_metadata = {
         key: metadata[key]
         for key in (
@@ -1564,10 +1566,12 @@ def _source_index_bundle_record(
             "sources",
         )
     }
+    public_metadata["manifest_path"] = manifest_path
+    public_metadata["bundle_path"] = bundle_path
     return {
-        "manifest_path": str(Path(metadata["manifest_path"]).resolve()),
+        "manifest_path": manifest_path,
         "manifest_identity": metadata["manifest_identity"],
-        "bundle_path": str(Path(metadata["bundle_path"]).resolve()),
+        "bundle_path": bundle_path,
         "bundle_identity": metadata["bundle_identity"],
         "metadata": public_metadata,
         "sources": [

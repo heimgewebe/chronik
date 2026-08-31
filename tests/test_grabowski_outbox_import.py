@@ -817,6 +817,24 @@ def test_summary_compaction_delta_normalizes_relative_bundle_paths(
     assert Path(bundle["manifest_path"]).is_absolute()
     assert Path(bundle["bundle_path"]).is_absolute()
 
+    full = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=False,
+    )
+    assert full["errors"] == []
+    source_index = json.loads(
+        (receipts / coding_memory.GRABOWSKI_SOURCE_INDEX_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(source_index["bundles"]) == 1
+    source_bundle = source_index["bundles"][0]
+    assert Path(source_bundle["manifest_path"]).is_absolute()
+    assert Path(source_bundle["bundle_path"]).is_absolute()
+    assert source_bundle["metadata"]["manifest_path"] == source_bundle["manifest_path"]
+    assert source_bundle["metadata"]["bundle_path"] == source_bundle["bundle_path"]
+
 
 def test_summary_compaction_delta_rejects_corrupt_new_bundle(
     tmp_path, monkeypatch
