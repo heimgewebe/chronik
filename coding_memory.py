@@ -1565,9 +1565,9 @@ def _source_index_bundle_record(
         )
     }
     return {
-        "manifest_path": metadata["manifest_path"],
+        "manifest_path": str(Path(metadata["manifest_path"]).resolve()),
         "manifest_identity": metadata["manifest_identity"],
-        "bundle_path": metadata["bundle_path"],
+        "bundle_path": str(Path(metadata["bundle_path"]).resolve()),
         "bundle_identity": metadata["bundle_identity"],
         "metadata": public_metadata,
         "sources": [
@@ -1653,9 +1653,9 @@ def _delta_bundle_record_from_metadata(metadata: dict[str, Any]) -> dict[str, An
     if source_paths != sorted(set(source_paths)):
         raise ValueError("bundle metadata source paths are not unique")
     return {
-        "manifest_path": metadata["manifest_path"],
+        "manifest_path": str(Path(metadata["manifest_path"]).resolve()),
         "manifest_identity": metadata["manifest_identity"],
-        "bundle_path": metadata["bundle_path"],
+        "bundle_path": str(Path(metadata["bundle_path"]).resolve()),
         "bundle_identity": metadata["bundle_identity"],
         "source_paths": source_paths,
         "source_count": len(source_paths),

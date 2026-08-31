@@ -769,6 +769,55 @@ def test_summary_delta_fast_path_folds_exact_compaction_relocation(
     assert steady["events_skipped_existing"] == 2
 
 
+def test_summary_compaction_delta_normalizes_relative_bundle_paths(
+    tmp_path, monkeypatch
+):
+    data = tmp_path / "chronik-data"
+    receipts = tmp_path / "receipts"
+    data.mkdir()
+    monkeypatch.setattr(storage, "DATA_DIR", data)
+    monkeypatch.chdir(tmp_path)
+    outbox = Path("state")
+    write_named_outbox(
+        outbox,
+        "grabowski_task-one-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    first = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    assert first["errors"] == []
+    compacted = coding_memory.compact_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        grace_seconds=0,
+        max_sources=1,
+        apply=True,
+    )
+    assert compacted["errors"] == []
+    assert compacted["sources_removed"] == 1
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert result["errors"] == []
+    assert result["compaction_delta_fast_path"] is True
+    delta_index = json.loads(
+        (receipts / coding_memory.GRABOWSKI_DELTA_INDEX_FILENAME).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert len(delta_index["bundles"]) == 1
+    bundle = delta_index["bundles"][0]
+    assert Path(bundle["manifest_path"]).is_absolute()
+    assert Path(bundle["bundle_path"]).is_absolute()
+
+
 def test_summary_compaction_delta_rejects_corrupt_new_bundle(
     tmp_path, monkeypatch
 ):
