@@ -37,6 +37,8 @@ def test_benchmark_reports_persistent_index_reuse(tmp_path):
     assert tier["small_delta"]["steady_fast_path"] is False
     assert tier["small_delta"]["delta_fast_path"] is True
     assert tier["bundled_rebuild"]["steady_fast_path"] is False
+    assert tier["bundled_rebuild"]["delta_fast_path"] is True
+    assert tier["bundled_rebuild"]["compaction_delta_fast_path"] is True
     assert tier["bundled_repeat"]["steady_fast_path"] is True
     assert tier["first"]["target_scans"] == 0
     assert tier["first"]["target_records_scanned"] == 0
