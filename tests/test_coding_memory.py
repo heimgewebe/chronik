@@ -707,3 +707,11 @@ def test_v0_blocked_history_remains_valid_after_v1_addition(tmp_path, monkeypatc
     assert coding_memory.query_history(
         repo="heimgewebe/example", outcome="blocked"
     )["event_ids"] == [value["event_id"]]
+
+
+@pytest.mark.parametrize("schema_version", [[], {}])
+def test_non_string_schema_version_is_rejected_as_invalid_event(schema_version):
+    value = event()
+    value["schema_version"] = schema_version
+    with pytest.raises(ValueError, match="schema_version: expected string"):
+        coding_memory.validate_event(value)

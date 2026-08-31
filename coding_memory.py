@@ -157,6 +157,8 @@ def _validate_v1_semantics(event: dict[str, Any]) -> None:
 
 def validate_event(event: dict[str, Any]) -> datetime:
     schema_version = event.get("schema_version")
+    if not isinstance(schema_version, str):
+        raise ValueError("unsupported coding event schema_version: expected string")
     errors = sorted(
         _validator(schema_version).iter_errors(event),
         key=lambda error: list(error.absolute_path),
