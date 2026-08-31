@@ -3428,25 +3428,30 @@ def import_grabowski_outbox(
             and delta_overlay is not None
             and delta_overlay_mode == "steady"
         ):
-            compaction_delta_result = _try_checkpoint_compaction_delta_import(
-                checkpoint=prior_steady_checkpoint,
-                current_identity=delta_candidate_identity,
-                delta_index=delta_index,
-                delta_overlay=delta_overlay,
-                source_dir=source_dir,
-                bundle_dir=bundle_dir,
-                sources=sources,
-                manifests=manifests,
-                bundle_files=bundle_files,
-                receipt_dir=receipt_dir,
-                source_index_path=source_index_path,
-                delta_index_path=delta_index_path,
-                delta_overlay_path=delta_overlay_path,
-                import_started_ns=import_started_ns,
-                phase_ns=phase_ns,
-                counters=counters,
-                measured_phase=measured_phase,
-            )
+            compaction_delta_result = None
+            try:
+                with _grabowski_reader_compaction_lock(source_dir):
+                    compaction_delta_result = _try_checkpoint_compaction_delta_import(
+                        checkpoint=prior_steady_checkpoint,
+                        current_identity=delta_candidate_identity,
+                        delta_index=delta_index,
+                        delta_overlay=delta_overlay,
+                        source_dir=source_dir,
+                        bundle_dir=bundle_dir,
+                        sources=sources,
+                        manifests=manifests,
+                        bundle_files=bundle_files,
+                        receipt_dir=receipt_dir,
+                        source_index_path=source_index_path,
+                        delta_index_path=delta_index_path,
+                        delta_overlay_path=delta_overlay_path,
+                        import_started_ns=import_started_ns,
+                        phase_ns=phase_ns,
+                        counters=counters,
+                        measured_phase=measured_phase,
+                    )
+            except (OSError, ValueError):
+                counters["compaction_delta_lock_fallbacks"] += 1
             if compaction_delta_result is not None:
                 return compaction_delta_result
             delta_result = _try_checkpoint_delta_import(
@@ -3911,6 +3916,34 @@ def import_grabowski_outbox(
         "delta_fast_path": False,
     }
 
+
+
+@contextmanager
+def _grabowski_reader_compaction_lock(source_dir: Path):
+    """Share the compactor lock without requiring write access to the outbox."""
+    lock_path = source_dir / GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(lock_path, flags)
+    try:
+        file_stat = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_uid != os.geteuid()
+            or file_stat.st_nlink != 1
+            or file_stat.st_mode & 0o077
+        ):
+            raise ValueError(
+                "Grabowski writer-compaction lock must be a private owned file"
+            )
+        fcntl.flock(descriptor, fcntl.LOCK_SH)
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 @contextmanager

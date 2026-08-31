@@ -698,6 +698,19 @@ def test_summary_delta_fast_path_folds_exact_compaction_relocation(
     monkeypatch.setattr(
         coding_memory, "_import_prepared_grabowski_sources", unexpected_ledger_reconcile
     )
+    original_open = coding_memory.os.open
+    lock_path = source_dir / coding_memory.GRABOWSKI_WRITER_COMPACTION_LOCK_FILENAME
+    lock_open_observed = False
+
+    def observe_lock_open(path, flags, *args, **kwargs):
+        nonlocal lock_open_observed
+        if Path(path) == lock_path:
+            lock_open_observed = True
+            assert flags & os.O_ACCMODE == os.O_RDONLY
+            assert flags & os.O_CREAT == 0
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(coding_memory.os, "open", observe_lock_open)
     result = coding_memory.import_grabowski_outbox(
         outbox_root=outbox,
         receipt_dir=receipts,
@@ -706,6 +719,7 @@ def test_summary_delta_fast_path_folds_exact_compaction_relocation(
     monkeypatch.setattr(
         coding_memory, "_import_prepared_grabowski_sources", original_import
     )
+    assert lock_open_observed is True
 
     assert result["errors"] == []
     assert result["steady_fast_path"] is False
