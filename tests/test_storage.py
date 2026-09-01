@@ -186,6 +186,52 @@ def test_verify_payload_unique_groups_rejects_replaced_ledger_after_lock(
     assert not (mock_data_dir / ".chronik-identity-index-v1").exists()
 
 
+@pytest.mark.parametrize(
+    ("bad_row", "error_type", "message"),
+    [
+        ("not-json", storage.StorageError, "invalid ledger record"),
+        (
+            json.dumps({"payload": {"value": "missing-id"}}, sort_keys=True),
+            storage.StorageRequiredIdentityError,
+            "event_id",
+        ),
+    ],
+)
+def test_verify_payload_unique_groups_rejects_rows_skipped_by_legacy_index(
+    mock_data_dir, bad_row, error_type, message
+):
+    first = _unique_line("first", "same")
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_text(first + "\n" + bad_row + "\n", encoding="utf-8")
+    storage.write_payload_unique_groups(
+        "agent.ledger", [("append", [_unique_line("second", "other")])]
+    )
+
+    with pytest.raises(error_type, match=message):
+        storage.verify_payload_unique_groups(
+            "agent.ledger",
+            [("candidate", [("first", _fingerprint_for_unique_line(first))])],
+        )
+
+
+def test_verify_payload_unique_groups_allows_exact_duplicate_legacy_rows(mock_data_dir):
+    first = _unique_line("first", "same")
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_text(first + "\n" + first + "\n", encoding="utf-8")
+    storage.write_payload_unique_groups(
+        "agent.ledger", [("append", [_unique_line("second", "other")])]
+    )
+
+    result = storage.verify_payload_unique_groups(
+        "agent.ledger",
+        [("candidate", [("first", _fingerprint_for_unique_line(first))])],
+    )
+
+    assert result["identity_index_mode"] == "steady"
+    assert result["target_records_scanned"] == 3
+    assert result["groups"][0]["verified"] is True
+
+
 def test_write_payload_unique_groups_verifies_index_hits_against_ledger(
     mock_data_dir, monkeypatch
 ):

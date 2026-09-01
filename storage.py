@@ -971,6 +971,39 @@ def _parse_unique_payload(
     return identity if isinstance(identity, str) else None, canonical_payload
 
 
+def _parse_required_unique_payload(
+    line: str | bytes, identity_key: str
+) -> tuple[str, bytes]:
+    """Parse one authoritative ledger row without skipping corruption."""
+    try:
+        identity, canonical_payload = _parse_unique_payload(line, identity_key)
+    except (TypeError, ValueError) as exc:
+        raise StorageError("invalid ledger record") from exc
+    if not identity:
+        raise StorageRequiredIdentityError(identity_key)
+    return identity, canonical_payload
+
+
+def _strictly_validate_unique_ledger_records(
+    fh, *, identity_key: str, indexed_offset: int
+) -> int:
+    """Stream-validate rows when a legacy/tolerant index skipped records."""
+    scanned = 0
+    fh.seek(0)
+    while fh.tell() < indexed_offset:
+        raw = fh.readline()
+        if not raw or not raw.endswith(b"\n") or fh.tell() > indexed_offset:
+            raise StorageRecoveryError("ledger validation boundary is inconsistent")
+        if not raw.strip():
+            continue
+        scanned += 1
+        _parse_required_unique_payload(raw, identity_key)
+    if fh.tell() != indexed_offset:
+        raise StorageRecoveryError("ledger validation boundary is inconsistent")
+    fh.seek(0, os.SEEK_END)
+    return scanned
+
+
 def _payload_fingerprint(canonical_payload: bytes) -> bytes:
     """Return a fixed-width length-and-SHA-256 content identity."""
     return (
@@ -1065,15 +1098,25 @@ def verify_payload_unique_groups(
                     sync = index.synchronize(
                         fh,
                         identity_key=identity_key,
-                        parse_payload=_parse_unique_payload,
+                        parse_payload=_parse_required_unique_payload,
                         fingerprint_payload=_payload_fingerprint,
                     )
+                    strict_records_scanned = 0
+                    if (
+                        sync.mode != "rebuild"
+                        and sync.state.identity_count != sync.state.record_count
+                    ):
+                        strict_records_scanned = _strictly_validate_unique_ledger_records(
+                            fh,
+                            identity_key=identity_key,
+                            indexed_offset=sync.state.indexed_offset,
+                        )
                     existing = index.lookup(
                         fh,
                         state=sync.state,
                         identity_key=identity_key,
                         identities=candidate_ids,
-                        parse_payload=_parse_unique_payload,
+                        parse_payload=_parse_required_unique_payload,
                         fingerprint_payload=_payload_fingerprint,
                     )
             except StorageError:
@@ -1094,7 +1137,7 @@ def verify_payload_unique_groups(
 
     return {
         "target_scans": 0 if sync.mode == "steady" else 1,
-        "target_records_scanned": sync.records_scanned,
+        "target_records_scanned": sync.records_scanned + strict_records_scanned,
         "target_identity_index_entries": sync.entry_count,
         "identity_index_mode": sync.mode,
         "identity_index_entries_after": sync.entry_count,
