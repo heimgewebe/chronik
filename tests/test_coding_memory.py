@@ -645,3 +645,73 @@ def test_ledger_payload_index_treats_only_lf_as_record_boundary(
 
     with pytest.raises(storage.StorageError, match="invalid ledger JSON at record 1"):
         coding_memory._ledger_payloads_by_event_id()
+
+
+def v1_event(result="failed", event_id="sha256:"+"f"*64):
+    value = event(event_id=event_id, outcome=result)
+    value["schema_version"] = "agent-run-event.v1"
+    value["kind"] = f"agent.run.{result}"
+    value["data"]["result"] = result
+    if result == "blocked":
+        value["data"]["blocker_code"] = "authority-unavailable"
+    return value
+
+
+def test_v1_execution_failure_is_not_counted_as_blocked(tmp_path, monkeypatch):
+    setup(tmp_path, monkeypatch)
+    value = v1_event("failed")
+    coding_memory.import_events([value])
+    history = coding_memory.query_history(repo="heimgewebe/example", outcome="failed")
+    summary = coding_memory.operator_summary()
+    assert history["event_ids"] == [value["event_id"]]
+    assert summary["counts_by_kind"] == {"agent.run.failed": 1}
+    assert summary["blocked_by_code"] == {}
+
+
+def test_v1_supports_execution_failure_terminal_kinds(tmp_path, monkeypatch):
+    setup(tmp_path, monkeypatch)
+    values = [
+        v1_event("cancelled", "sha256:"+"1"*64),
+        v1_event("timed_out", "sha256:"+"2"*64),
+        v1_event("signalled", "sha256:"+"3"*64),
+    ]
+    coding_memory.import_events(values)
+    for result, value in zip(("cancelled", "timed_out", "signalled"), values):
+        assert coding_memory.query_history(
+            repo="heimgewebe/example", outcome=result
+        )["event_ids"] == [value["event_id"]]
+    assert set(coding_memory.GRABOWSKI_TERMINAL_KINDS) >= {
+        "agent.run.cancelled", "agent.run.timed_out", "agent.run.signalled"
+    }
+
+
+def test_v1_blocked_requires_code_and_nonblocked_rejects_code():
+    blocked = v1_event("blocked")
+    coding_memory.validate_event(blocked)
+    missing = v1_event("blocked", "sha256:"+"4"*64)
+    missing["data"].pop("blocker_code")
+    with pytest.raises(ValueError, match="requires blocker_code"):
+        coding_memory.validate_event(missing)
+    failed = v1_event("failed", "sha256:"+"5"*64)
+    failed["data"]["blocker_code"] = "not-a-real-blocker"
+    with pytest.raises(ValueError, match="must not carry blocker_code"):
+        coding_memory.validate_event(failed)
+
+
+def test_v0_blocked_history_remains_valid_after_v1_addition(tmp_path, monkeypatch):
+    setup(tmp_path, monkeypatch)
+    value = event(outcome="blocked")
+    value["kind"] = "agent.run.blocked"
+    value["data"].update({"result": "blocked", "blocker_code": "legacy-task-failed"})
+    coding_memory.import_events([value])
+    assert coding_memory.query_history(
+        repo="heimgewebe/example", outcome="blocked"
+    )["event_ids"] == [value["event_id"]]
+
+
+@pytest.mark.parametrize("schema_version", [[], {}])
+def test_non_string_schema_version_is_rejected_as_invalid_event(schema_version):
+    value = event()
+    value["schema_version"] = schema_version
+    with pytest.raises(ValueError, match="schema_version: expected string"):
+        coding_memory.validate_event(value)
