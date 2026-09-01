@@ -26,15 +26,32 @@ SCHEMA_PATH = Path(__file__).resolve().parent / "docs" / "chronik" / "agent-run-
 DOES_NOT_ESTABLISH = ["current_git_state", "current_ci_state", "current_runtime_state", "safe_retry"]
 GRABOWSKI_SOURCE_REPO = "heimgewebe/grabowski"
 GRABOWSKI_COMPONENT = "grabowski"
-HIGH_VALUE_KINDS = frozenset({"agent.run.started", "agent.run.completed", "agent.run.blocked"})
+V1_KIND_RESULT = {
+    "agent.run.started": "started",
+    "agent.run.completed": "completed",
+    "agent.run.failed": "failed",
+    "agent.run.cancelled": "cancelled",
+    "agent.run.timed_out": "timed_out",
+    "agent.run.signalled": "signalled",
+    "agent.run.blocked": "blocked",
+}
+V1_EXECUTION_FAILURE_RESULTS = frozenset({"failed", "cancelled", "timed_out", "signalled"})
+HIGH_VALUE_KINDS = frozenset(V1_KIND_RESULT)
 OPERATIONS = frozenset({"implement", "review", "merge", "deploy", "runtime_verify", "recovery", "other"})
 TASK_CLASSES = frozenset({"coding", "review", "merge", "deploy", "runtime_verify", "recovery", "maintenance", "diagnostic", "other"})
-OUTCOMES = frozenset({"started", "completed", "blocked", "failed", "reverted", "outcome_unknown"})
+OUTCOMES = frozenset({"started", "completed", "blocked", "failed", "cancelled", "timed_out", "signalled", "reverted", "outcome_unknown"})
 MAX_INTEGRITY_DIAGNOSTICS = 20
 HISTORY_VALIDATION_CHECKPOINT_FILENAME = ".history-validation-prefix.v1.json"
 HISTORY_VALIDATION_CHECKPOINT_SCHEMA = "chronik-history-validation-prefix.v1"
-HISTORY_VALIDATION_CONTRACT = "agent-run-event-v0+utc-timestamp-v1"
-GRABOWSKI_TERMINAL_KINDS = frozenset({"agent.run.completed", "agent.run.blocked"})
+HISTORY_VALIDATION_CONTRACT = "agent-run-event-v0+v1+utc-timestamp-v1"
+GRABOWSKI_TERMINAL_KINDS = frozenset({
+    "agent.run.completed",
+    "agent.run.failed",
+    "agent.run.cancelled",
+    "agent.run.timed_out",
+    "agent.run.signalled",
+    "agent.run.blocked",
+})
 GRABOWSKI_BUNDLE_DIRNAME = "bundles"
 GRABOWSKI_BUNDLE_ENTRY_SCHEMA = "chronik-grabowski-outbox-bundle-source.v1"
 GRABOWSKI_BUNDLE_MANIFEST_SCHEMA = "chronik-grabowski-outbox-bundle-manifest.v1"
@@ -95,18 +112,63 @@ def configure_data_dir(path: Path, *, create: bool) -> Path:
 
 
 @lru_cache(maxsize=1)
-def _validator() -> Draft7Validator:
+def _v1_schema() -> dict[str, Any]:
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    schema["$id"] = "https://heimgewebe.local/chronik/agent-run-event-v1.schema.json"
+    schema["title"] = "Chronik Agent Run Event v1"
+    schema["properties"]["schema_version"] = {"const": "agent-run-event.v1"}
+    schema["properties"]["kind"]["enum"] = sorted(V1_KIND_RESULT)
+    schema["properties"]["data"]["properties"]["result"]["enum"] = sorted(
+        set(V1_KIND_RESULT.values())
+    )
+    schema["properties"]["data"]["properties"]["outcome"]["enum"] = sorted(OUTCOMES)
+    return schema
+
+
+@lru_cache(maxsize=2)
+def _validator(schema_version: str = "agent-run-event.v0") -> Draft7Validator:
+    if schema_version == "agent-run-event.v0":
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+    elif schema_version == "agent-run-event.v1":
+        schema = _v1_schema()
+    else:
+        raise ValueError(f"unsupported coding event schema_version: {schema_version}")
     Draft7Validator.check_schema(schema)
     return Draft7Validator(schema)
 
 
+def _validate_v1_semantics(event: dict[str, Any]) -> None:
+    kind = event.get("kind")
+    expected_result = V1_KIND_RESULT.get(kind)
+    if expected_result is None:
+        raise ValueError(f"unsupported v1 coding event kind: {kind}")
+    data = event.get("data")
+    if not isinstance(data, dict) or data.get("result") != expected_result:
+        raise ValueError(
+            f"v1 coding event kind/result mismatch: {kind} requires {expected_result}"
+        )
+    blocker_code = data.get("blocker_code")
+    if expected_result == "blocked":
+        if not isinstance(blocker_code, str) or not blocker_code:
+            raise ValueError("v1 blocked coding event requires blocker_code")
+    elif blocker_code is not None:
+        raise ValueError("v1 non-blocked coding event must not carry blocker_code")
+
+
 def validate_event(event: dict[str, Any]) -> datetime:
-    errors = sorted(_validator().iter_errors(event), key=lambda error: list(error.absolute_path))
+    schema_version = event.get("schema_version")
+    if not isinstance(schema_version, str):
+        raise ValueError("unsupported coding event schema_version: expected string")
+    errors = sorted(
+        _validator(schema_version).iter_errors(event),
+        key=lambda error: list(error.absolute_path),
+    )
     if errors:
         error = errors[0]
         path = "/".join(str(part) for part in error.absolute_path) or "<root>"
         raise ValueError(f"invalid coding event at {path}: {error.message}")
+    if schema_version == "agent-run-event.v1":
+        _validate_v1_semantics(event)
     return _parse_timestamp(event["ts"], field="ts")
 
 
@@ -4311,7 +4373,9 @@ def _compact_grabowski_outbox_unlocked(
 
 @lru_cache(maxsize=1)
 def _history_validation_schema_sha256() -> str:
-    return sha256_bytes(SCHEMA_PATH.read_bytes())
+    return sha256_bytes(
+        SCHEMA_PATH.read_bytes() + b"\0" + canonical_bytes(_v1_schema())
+    )
 
 
 def _history_validation_checkpoint_path() -> Path:
@@ -4785,7 +4849,7 @@ def freeze_history(output: Path, **filters: Any) -> dict[str, Any]:
         "ledger_snapshot_sha256": ledger_snapshot["sha256"],
         "ledger_snapshot_complete_bytes": ledger_snapshot["complete_bytes"],
         "generated_at": utc_now(),
-        "redaction_contract": "agent-run-event.v0 allow-list",
+        "redaction_contract": "agent-run-event.v0+v1 allow-list",
         "historical_only": True,
         "does_not_establish": DOES_NOT_ESTABLISH,
     }
