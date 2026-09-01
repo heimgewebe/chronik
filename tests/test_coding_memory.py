@@ -615,6 +615,82 @@ def test_cli_regular_json_loader_keeps_existing_list_semantics(tmp_path):
     assert cli.load(empty_path) == []
 
 
+def test_compaction_verifies_bounded_candidates_without_full_ledger_payload_map(
+    tmp_path, monkeypatch
+):
+    outbox_root = tmp_path / "outbox"
+    source_dir = outbox_root / "grabowski" / "chronik-outbox"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "candidate.jsonl"
+    raw = b"{}\n"
+    source.write_bytes(raw)
+    candidate = event()
+    prepared = {
+        "source": source,
+        "raw": raw,
+        "source_bytes": len(raw),
+        "events": [candidate],
+        "event_fingerprints": [
+            (candidate["event_id"], coding_memory._payload_fingerprint(candidate))
+        ],
+        "source_mtime_ns": 0,
+        "previous_receipt": {},
+    }
+
+    monkeypatch.setattr(
+        coding_memory, "_prepare_grabowski_outbox_source", lambda *_args, **_kwargs: prepared
+    )
+    monkeypatch.setattr(
+        coding_memory, "_receipt_matches_prepared_source", lambda *_args, **_kwargs: True
+    )
+
+    def forbidden_full_payload_map():
+        raise AssertionError("compaction must not retain the full ledger payload map")
+
+    monkeypatch.setattr(
+        coding_memory, "_ledger_payloads_by_event_id", forbidden_full_payload_map
+    )
+    observed_groups = []
+
+    def verify_groups(domain, groups, *, identity_key):
+        materialized = [(group_id, list(items)) for group_id, items in groups]
+        observed_groups.extend(materialized)
+        assert domain == coding_memory.DOMAIN
+        assert identity_key == "event_id"
+        return {
+            "target_records_scanned": 0,
+            "groups": [
+                {
+                    "group_id": materialized[0][0],
+                    "requested": 1,
+                    "verified": True,
+                    "missing": 0,
+                    "conflicting": 0,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(storage, "verify_payload_unique_groups", verify_groups)
+    result = coding_memory.compact_grabowski_outbox(
+        outbox_root=outbox_root,
+        receipt_dir=tmp_path / "receipts",
+        grace_seconds=0,
+        max_sources=1,
+        max_bytes=1024,
+        apply=False,
+        now=coding_memory.datetime(2026, 9, 1, tzinfo=coding_memory.timezone.utc),
+    )
+
+    assert result["eligible_sources"] == 1
+    assert result["eligible_events"] == 1
+    assert result["ledger_records_scanned"] == 0
+    assert result["skipped_by_reason"] == {}
+    assert observed_groups == [
+        (str(source.resolve()), prepared["event_fingerprints"])
+    ]
+    assert len(observed_groups[0][1][0][1]) == 40
+
+
 def test_ledger_payload_index_streams_committed_records_without_snapshot(
     tmp_path, monkeypatch
 ):

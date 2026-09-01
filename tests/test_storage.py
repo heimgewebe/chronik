@@ -114,6 +114,124 @@ def test_payload_fingerprint_is_fixed_width_and_length_bound():
     assert small[8:] != large[8:]
 
 
+def _fingerprint_for_unique_line(line: str) -> bytes:
+    _, canonical = storage._parse_unique_payload(line, "event_id")
+    return storage._payload_fingerprint(canonical)
+
+
+def test_verify_payload_unique_groups_reports_verified_missing_and_conflicting(
+    mock_data_dir,
+):
+    first = _unique_line("first", "same")
+    second = _unique_line("second", "same")
+    storage.write_payload_unique_groups(
+        "agent.ledger", [("seed", [first, second])]
+    )
+    before = (mock_data_dir / "agent.ledger.jsonl").read_bytes()
+
+    result = storage.verify_payload_unique_groups(
+        "agent.ledger",
+        [
+            ("verified", [("first", _fingerprint_for_unique_line(first))]),
+            ("missing", [("absent", _fingerprint_for_unique_line(_unique_line("absent", "x")))]),
+            ("conflicting", [("second", _fingerprint_for_unique_line(_unique_line("second", "different")))]),
+        ],
+    )
+
+    assert result["identity_index_mode"] == "steady"
+    assert result["target_records_scanned"] == 0
+    assert result["groups"] == [
+        {"group_id": "verified", "requested": 1, "verified": True, "missing": 0, "conflicting": 0},
+        {"group_id": "missing", "requested": 1, "verified": False, "missing": 1, "conflicting": 0},
+        {"group_id": "conflicting", "requested": 1, "verified": False, "missing": 0, "conflicting": 1},
+    ]
+    assert (mock_data_dir / "agent.ledger.jsonl").read_bytes() == before
+
+
+def test_verify_payload_unique_groups_missing_ledger_is_read_only(mock_data_dir):
+    fingerprint = _fingerprint_for_unique_line(_unique_line("absent", "value"))
+    result = storage.verify_payload_unique_groups(
+        "agent.ledger", [("candidate", [("absent", fingerprint)])]
+    )
+
+    assert result["identity_index_mode"] == "absent"
+    assert result["target_records_scanned"] == 0
+    assert result["groups"] == [
+        {"group_id": "candidate", "requested": 1, "verified": False, "missing": 1, "conflicting": 0}
+    ]
+    assert not (mock_data_dir / "agent.ledger.jsonl").exists()
+    assert not (mock_data_dir / ".chronik-identity-index-v1").exists()
+
+
+def test_verify_payload_unique_groups_rejects_replaced_ledger_after_lock(
+    mock_data_dir, monkeypatch
+):
+    line = _unique_line("first", "same")
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_text(line + "\n", encoding="utf-8")
+    fingerprint = _fingerprint_for_unique_line(line)
+
+    @contextmanager
+    def replacing_fd_lock(_fd, path, *, exclusive):
+        assert exclusive is False
+        path.unlink()
+        path.write_text(_unique_line("replacement", "different") + "\n", encoding="utf-8")
+        yield
+
+    monkeypatch.setattr(storage, "_fd_lock", replacing_fd_lock)
+    with pytest.raises(storage.StorageRecoveryError, match="target identity changed"):
+        storage.verify_payload_unique_groups(
+            "agent.ledger", [("candidate", [("first", fingerprint)])]
+        )
+    assert not (mock_data_dir / ".chronik-identity-index-v1").exists()
+
+
+@pytest.mark.parametrize(
+    ("bad_row", "error_type", "message"),
+    [
+        ("not-json", storage.StorageError, "invalid ledger record"),
+        (
+            json.dumps({"payload": {"value": "missing-id"}}, sort_keys=True),
+            storage.StorageRequiredIdentityError,
+            "event_id",
+        ),
+    ],
+)
+def test_verify_payload_unique_groups_rejects_rows_skipped_by_legacy_index(
+    mock_data_dir, bad_row, error_type, message
+):
+    first = _unique_line("first", "same")
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_text(first + "\n" + bad_row + "\n", encoding="utf-8")
+    storage.write_payload_unique_groups(
+        "agent.ledger", [("append", [_unique_line("second", "other")])]
+    )
+
+    with pytest.raises(error_type, match=message):
+        storage.verify_payload_unique_groups(
+            "agent.ledger",
+            [("candidate", [("first", _fingerprint_for_unique_line(first))])],
+        )
+
+
+def test_verify_payload_unique_groups_allows_exact_duplicate_legacy_rows(mock_data_dir):
+    first = _unique_line("first", "same")
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_text(first + "\n" + first + "\n", encoding="utf-8")
+    storage.write_payload_unique_groups(
+        "agent.ledger", [("append", [_unique_line("second", "other")])]
+    )
+
+    result = storage.verify_payload_unique_groups(
+        "agent.ledger",
+        [("candidate", [("first", _fingerprint_for_unique_line(first))])],
+    )
+
+    assert result["identity_index_mode"] == "steady"
+    assert result["target_records_scanned"] == 3
+    assert result["groups"][0]["verified"] is True
+
+
 def test_write_payload_unique_groups_verifies_index_hits_against_ledger(
     mock_data_dir, monkeypatch
 ):

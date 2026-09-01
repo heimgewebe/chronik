@@ -46,6 +46,7 @@ __all__ = [
     "write_payload",
     "write_payload_unique",
     "write_payload_unique_groups",
+    "verify_payload_unique_groups",
     "read_tail",
     "read_last_line",
     "read_domain_snapshot",
@@ -970,6 +971,39 @@ def _parse_unique_payload(
     return identity if isinstance(identity, str) else None, canonical_payload
 
 
+def _parse_required_unique_payload(
+    line: str | bytes, identity_key: str
+) -> tuple[str, bytes]:
+    """Parse one authoritative ledger row without skipping corruption."""
+    try:
+        identity, canonical_payload = _parse_unique_payload(line, identity_key)
+    except (TypeError, ValueError) as exc:
+        raise StorageError("invalid ledger record") from exc
+    if not identity:
+        raise StorageRequiredIdentityError(identity_key)
+    return identity, canonical_payload
+
+
+def _strictly_validate_unique_ledger_records(
+    fh, *, identity_key: str, indexed_offset: int
+) -> int:
+    """Stream-validate rows when a legacy/tolerant index skipped records."""
+    scanned = 0
+    fh.seek(0)
+    while fh.tell() < indexed_offset:
+        raw = fh.readline()
+        if not raw or not raw.endswith(b"\n") or fh.tell() > indexed_offset:
+            raise StorageRecoveryError("ledger validation boundary is inconsistent")
+        if not raw.strip():
+            continue
+        scanned += 1
+        _parse_required_unique_payload(raw, identity_key)
+    if fh.tell() != indexed_offset:
+        raise StorageRecoveryError("ledger validation boundary is inconsistent")
+    fh.seek(0, os.SEEK_END)
+    return scanned
+
+
 def _payload_fingerprint(canonical_payload: bytes) -> bytes:
     """Return a fixed-width length-and-SHA-256 content identity."""
     return (
@@ -984,6 +1018,131 @@ def _raise_identity_index_error(exc: IdentityIndexError) -> NoReturn:
     if isinstance(exc, IdentityIndexDriftError) and message.startswith("conflicting "):
         raise StorageError(message) from exc
     raise StorageRecoveryError(f"identity index unavailable: {message}") from exc
+
+
+def verify_payload_unique_groups(
+    domain: str,
+    groups: Iterable[tuple[str, Iterable[tuple[str, bytes]]]],
+    *,
+    identity_key: str = "event_id",
+) -> dict[str, object]:
+    """Verify bounded identity/fingerprint groups against ledger authority.
+
+    The persistent identity index remains only an acceleration structure. Every
+    returned index hit is re-read from its exact ledger byte range before it can
+    verify a caller-provided fingerprint. The ledger itself is never appended or
+    created by this verification path; an existing index may be synchronized as
+    derived state when the ledger already exists.
+    """
+    materialized: list[tuple[str, list[tuple[str, bytes]]]] = []
+    seen_group_ids: set[str] = set()
+    candidate_ids: list[str] = []
+    for group_id, identities in groups:
+        if not isinstance(group_id, str) or not group_id:
+            raise StorageError("group_id must be a non-empty string")
+        if group_id in seen_group_ids:
+            raise StorageError(f"duplicate group_id: {group_id}")
+        seen_group_ids.add(group_id)
+        verified: list[tuple[str, bytes]] = []
+        for identity, fingerprint in identities:
+            if not isinstance(identity, str) or not identity:
+                raise StorageRequiredIdentityError(identity_key)
+            if not isinstance(fingerprint, bytes) or len(fingerprint) != 40:
+                raise StorageError("invalid verification-only payload fingerprint")
+            verified.append((identity, fingerprint))
+            candidate_ids.append(identity)
+        materialized.append((group_id, verified))
+
+    def group_results(existing: dict[str, bytes]) -> list[dict[str, object]]:
+        results: list[dict[str, object]] = []
+        for group_id, identities in materialized:
+            missing = 0
+            conflicting = 0
+            for identity, fingerprint in identities:
+                previous = existing.get(identity)
+                if previous is None:
+                    missing += 1
+                elif previous != fingerprint:
+                    conflicting += 1
+            results.append(
+                {
+                    "group_id": group_id,
+                    "requested": len(identities),
+                    "verified": missing == 0 and conflicting == 0,
+                    "missing": missing,
+                    "conflicting": conflicting,
+                }
+            )
+        return results
+
+    if not candidate_ids:
+        return {
+            "target_scans": 0,
+            "target_records_scanned": 0,
+            "target_identity_index_entries": 0,
+            "identity_index_mode": "unused",
+            "identity_index_entries_after": 0,
+            "groups": group_results({}),
+        }
+
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+
+    try:
+        with _locked_open(target_path, "rb") as fh:
+            _target_stat_for_fd(target_path, fh.fileno())
+            try:
+                with open_identity_index(target_path, timeout=LOCK_TIMEOUT) as index:
+                    sync = index.synchronize(
+                        fh,
+                        identity_key=identity_key,
+                        parse_payload=_parse_required_unique_payload,
+                        fingerprint_payload=_payload_fingerprint,
+                    )
+                    strict_records_scanned = 0
+                    if (
+                        sync.mode != "rebuild"
+                        and sync.state.identity_count != sync.state.record_count
+                    ):
+                        strict_records_scanned = _strictly_validate_unique_ledger_records(
+                            fh,
+                            identity_key=identity_key,
+                            indexed_offset=sync.state.indexed_offset,
+                        )
+                    existing = index.lookup(
+                        fh,
+                        state=sync.state,
+                        identity_key=identity_key,
+                        identities=candidate_ids,
+                        parse_payload=_parse_required_unique_payload,
+                        fingerprint_payload=_payload_fingerprint,
+                    )
+            except StorageError:
+                raise
+            except IdentityIndexError as exc:
+                _raise_identity_index_error(exc)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            return {
+                "target_scans": 0,
+                "target_records_scanned": 0,
+                "target_identity_index_entries": 0,
+                "identity_index_mode": "absent",
+                "identity_index_entries_after": 0,
+                "groups": group_results({}),
+            }
+        raise StorageError("read error") from exc
+
+    return {
+        "target_scans": 0 if sync.mode == "steady" else 1,
+        "target_records_scanned": sync.records_scanned + strict_records_scanned,
+        "target_identity_index_entries": sync.entry_count,
+        "identity_index_mode": sync.mode,
+        "identity_index_entries_after": sync.entry_count,
+        "groups": group_results(existing),
+    }
 
 
 _ParsedUniqueRow = tuple[str, str | None, bytes]
