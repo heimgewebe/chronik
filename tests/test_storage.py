@@ -163,6 +163,29 @@ def test_verify_payload_unique_groups_missing_ledger_is_read_only(mock_data_dir)
     assert not (mock_data_dir / ".chronik-identity-index-v1").exists()
 
 
+def test_verify_payload_unique_groups_rejects_replaced_ledger_after_lock(
+    mock_data_dir, monkeypatch
+):
+    line = _unique_line("first", "same")
+    target = mock_data_dir / "agent.ledger.jsonl"
+    target.write_text(line + "\n", encoding="utf-8")
+    fingerprint = _fingerprint_for_unique_line(line)
+
+    @contextmanager
+    def replacing_fd_lock(_fd, path, *, exclusive):
+        assert exclusive is False
+        path.unlink()
+        path.write_text(_unique_line("replacement", "different") + "\n", encoding="utf-8")
+        yield
+
+    monkeypatch.setattr(storage, "_fd_lock", replacing_fd_lock)
+    with pytest.raises(storage.StorageRecoveryError, match="target identity changed"):
+        storage.verify_payload_unique_groups(
+            "agent.ledger", [("candidate", [("first", fingerprint)])]
+        )
+    assert not (mock_data_dir / ".chronik-identity-index-v1").exists()
+
+
 def test_write_payload_unique_groups_verifies_index_hits_against_ledger(
     mock_data_dir, monkeypatch
 ):

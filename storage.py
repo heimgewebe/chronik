@@ -1059,6 +1059,7 @@ def verify_payload_unique_groups(
 
     try:
         with _locked_open(target_path, "rb") as fh:
+            _target_stat_for_fd(target_path, fh.fileno())
             try:
                 with open_identity_index(target_path, timeout=LOCK_TIMEOUT) as index:
                     sync = index.synchronize(
