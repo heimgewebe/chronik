@@ -4116,9 +4116,9 @@ def _compact_grabowski_outbox_unlocked(
     deferred_sources = len(all_sources) - len(sources)
     skipped: Counter[str] = Counter()
     errors: list[dict[str, str]] = []
+    candidates: list[dict[str, Any]] = []
     eligible: list[dict[str, Any]] = []
     eligible_bytes = 0
-    ledger_payloads, ledger_records_scanned = _ledger_payloads_by_event_id()
     observed_ns = int(observed_at.timestamp() * 1_000_000_000)
     grace_ns = grace_seconds * 1_000_000_000
     for source in sources:
@@ -4145,10 +4145,35 @@ def _compact_grabowski_outbox_unlocked(
         ):
             skipped["receipt_invalid_or_missing"] += 1
             continue
-        if any(
-            ledger_payloads.get(event["event_id"]) != canonical_bytes(event)
-            for event in prepared["events"]
-        ):
+        candidates.append(prepared)
+
+    verification = storage.verify_payload_unique_groups(
+        DOMAIN,
+        (
+            (str(prepared["source"].resolve()), prepared["event_fingerprints"])
+            for prepared in candidates
+        ),
+        identity_key="event_id",
+    )
+    raw_group_results = verification.get("groups")
+    if not isinstance(raw_group_results, list):
+        raise storage.StorageError("invalid ledger verification result")
+    verification_by_source: dict[str, dict[str, object]] = {}
+    for item in raw_group_results:
+        if not isinstance(item, dict):
+            raise storage.StorageError("invalid ledger verification group result")
+        group_id = item.get("group_id")
+        if not isinstance(group_id, str) or group_id in verification_by_source:
+            raise storage.StorageError("invalid ledger verification group identity")
+        verification_by_source[group_id] = item
+    if len(verification_by_source) != len(candidates):
+        raise storage.StorageError("incomplete ledger verification result")
+    ledger_records_scanned = int(verification.get("target_records_scanned", 0))
+
+    for prepared in candidates:
+        source_key = str(prepared["source"].resolve())
+        group_result = verification_by_source.get(source_key)
+        if group_result is None or group_result.get("verified") is not True:
             skipped["ledger_unconfirmed"] += 1
             continue
         prepared_bytes = _prepared_source_bytes(prepared)
