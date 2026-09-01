@@ -84,6 +84,14 @@ class _FlushSnapshot:
     file_state: _FileState
 
 
+@dataclass(frozen=True)
+class _OutboxScan:
+    source_bytes: int
+    event_count: int
+    sha256: str
+    progress: ReceiptProgress | None
+
+
 def load_json(path: Path) -> Any:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
@@ -270,30 +278,6 @@ def _receipt_header(path: Path, source_size: int) -> ReceiptProgress | None:
     )
 
 
-def _receipt_progress(path: Path, snapshot: OutboxSnapshot) -> ReceiptProgress | None:
-    progress = _receipt_header(path, len(snapshot.raw))
-    if progress is None:
-        return None
-
-    prefix = snapshot.raw[: progress.source_bytes]
-    if progress.source_bytes > 0 and not prefix.endswith(b"\n"):
-        raise OutboxError(f"{path}: receipt ends inside a JSONL record")
-    if hashlib.sha256(prefix).hexdigest() != progress.source_sha256:
-        raise OutboxError(f"{path}: receipt prefix hash does not match the outbox")
-    if len(_parse_events(path, prefix)) != progress.event_count:
-        raise OutboxError(f"{path}: receipt event count does not match its prefix")
-    return progress
-
-
-def _receipt_covers_snapshot(progress: ReceiptProgress | None, snapshot: OutboxSnapshot) -> bool:
-    return (
-        progress is not None
-        and progress.source_bytes == len(snapshot.raw)
-        and progress.event_count == len(snapshot.events)
-        and progress.source_sha256 == snapshot.sha256
-    )
-
-
 def _fsync_directory(path: Path) -> None:
     directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     try:
@@ -368,19 +352,15 @@ def status(state_root: Path = DEFAULT_STATE_ROOT) -> list[OutboxFileStatus]:
     for path in iter_outbox_files(state_root):
         try:
             with outbox_lock(path):
-                snapshot = _snapshot_unlocked(path)
-                try:
-                    progress = _receipt_progress(path, snapshot)
-                except OutboxError:
-                    progress = None
+                scan = _scan_outbox_unlocked(path)
         except FileNotFoundError:
             continue
         entries.append(
             OutboxFileStatus(
                 path=path,
-                events=len(snapshot.events),
-                bytes=len(snapshot.raw),
-                flushed=_receipt_covers_snapshot(progress, snapshot),
+                events=scan.event_count,
+                bytes=scan.source_bytes,
+                flushed=_receipt_covers_scan(scan),
             )
         )
     return entries
@@ -452,6 +432,95 @@ def _parse_jsonl_line(path: Path, line_number: int, raw_line: bytes) -> Any | No
         return json.loads(line)
     except json.JSONDecodeError as exc:
         raise OutboxError(f"{path}:{line_number}: invalid jsonl") from exc
+
+
+def _scan_outbox_unlocked(path: Path) -> _OutboxScan:
+    """Validate one fixed outbox extent without retaining its bytes or events."""
+    try:
+        handle = path.open("rb")
+    except FileNotFoundError:
+        raise
+    except OSError as exc:
+        raise OutboxError(f"{path}: source cannot be read") from exc
+
+    with handle:
+        initial_state = _file_state(os.fstat(handle.fileno()))
+        try:
+            progress = _receipt_header(path, initial_state.size)
+        except OutboxError:
+            progress = None
+
+        validator = _event_validator()
+        source_hasher = hashlib.sha256()
+        cursor = 0
+        event_count = 0
+        line_number = 0
+        progress_verified = progress is None
+
+        if progress is not None and progress.source_bytes == 0:
+            if progress.source_sha256 == source_hasher.hexdigest() and progress.event_count == 0:
+                progress_verified = True
+            else:
+                progress = None
+                progress_verified = True
+
+        for raw_line in _bounded_lines(path, handle, initial_state.size):
+            line_start = cursor
+            cursor += len(raw_line)
+            line_number += 1
+            source_hasher.update(raw_line)
+
+            if (
+                progress is not None
+                and not progress_verified
+                and line_start < progress.source_bytes < cursor
+            ):
+                progress = None
+                progress_verified = True
+
+            event = _parse_jsonl_line(path, line_number, raw_line)
+            if event is not None:
+                validator.validate(event)
+                event_count += 1
+
+            if progress is not None and not progress_verified and cursor == progress.source_bytes:
+                if (
+                    (progress.source_bytes > 0 and not raw_line.endswith(b"\n"))
+                    or source_hasher.hexdigest() != progress.source_sha256
+                    or event_count != progress.event_count
+                ):
+                    progress = None
+                progress_verified = True
+
+        final_state = _file_state(os.fstat(handle.fileno()))
+        try:
+            path_state = _file_state(path.stat())
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            raise OutboxError(f"{path}: source cannot be verified after scan") from exc
+        if final_state != initial_state or path_state != initial_state:
+            raise OutboxError(f"{path}: source changed while it was being scanned")
+
+    if progress is not None and not progress_verified:
+        progress = None
+
+    return _OutboxScan(
+        source_bytes=initial_state.size,
+        event_count=event_count,
+        sha256=source_hasher.hexdigest(),
+        progress=progress,
+    )
+
+
+def _receipt_covers_scan(scan: _OutboxScan) -> bool:
+    progress = scan.progress
+    return (
+        progress is not None
+        and progress.source_bytes == scan.source_bytes
+        and progress.event_count == scan.event_count
+        and progress.source_sha256 == scan.sha256
+    )
 
 
 def _preflight_flush_unlocked(path: Path, body_limit: int) -> _FlushSnapshot:
@@ -781,12 +850,8 @@ def compact(state_root: Path = DEFAULT_STATE_ROOT) -> list[Path]:
     for path in iter_outbox_files(state_root):
         try:
             with outbox_lock(path):
-                snapshot = _snapshot_unlocked(path)
-                try:
-                    progress = _receipt_progress(path, snapshot)
-                except OutboxError:
-                    continue
-                if not _receipt_covers_snapshot(progress, snapshot):
+                scan = _scan_outbox_unlocked(path)
+                if not _receipt_covers_scan(scan):
                     continue
                 path.unlink()
                 _fsync_directory(path.parent)

@@ -116,6 +116,50 @@ def test_status_reports_pending_file(tmp_path):
     assert entries[0].flushed is False
 
 
+def test_status_and_compact_stream_without_materialized_snapshot(monkeypatch, tmp_path):
+    event = load_event()
+    event_count = 2048
+    raw_line = encoded_event(event)
+    path = chronik_outbox.outbox_path(event, tmp_path)
+    path.parent.mkdir(parents=True)
+    source_hasher = hashlib.sha256()
+    with path.open("wb") as handle:
+        for _ in range(event_count):
+            handle.write(raw_line)
+            source_hasher.update(raw_line)
+
+    source_bytes = path.stat().st_size
+    chronik_outbox._write_receipt_progress(
+        path,
+        chronik_outbox.ReceiptProgress(
+            source_bytes=source_bytes,
+            event_count=event_count,
+            source_sha256=source_hasher.hexdigest(),
+        ),
+        202,
+    )
+
+    def reject_materialized_snapshot(*args, **kwargs):
+        raise AssertionError("status/compact used the materializing snapshot path")
+
+    def reject_read_bytes(self):
+        raise AssertionError(f"status/compact called Path.read_bytes for {self}")
+
+    monkeypatch.setattr(chronik_outbox, "_snapshot_unlocked", reject_materialized_snapshot)
+    monkeypatch.setattr(chronik_outbox, "_parse_events", reject_materialized_snapshot)
+    monkeypatch.setattr(Path, "read_bytes", reject_read_bytes)
+
+    entries = chronik_outbox.status(tmp_path)
+
+    assert len(entries) == 1
+    assert entries[0].path == path
+    assert entries[0].events == event_count
+    assert entries[0].bytes == source_bytes
+    assert entries[0].flushed is True
+    assert chronik_outbox.compact(tmp_path) == [path]
+    assert not path.exists()
+
+
 def test_flush_file_posts_agent_ledger_domain_and_writes_bound_receipt(tmp_path):
     event = load_event()
     path = chronik_outbox.append_event(event, tmp_path)
