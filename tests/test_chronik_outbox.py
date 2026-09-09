@@ -619,6 +619,31 @@ def test_malformed_receipt_never_authorizes_flush_or_compaction(tmp_path):
     assert path.exists()
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("source_bytes", True),
+        ("event_count", False),
+        ("source_sha256", 7),
+    ],
+)
+def test_receipt_snapshot_fields_reject_wrong_types(tmp_path, field, value):
+    path = chronik_outbox.append_event(load_event(), tmp_path)
+    raw = path.read_bytes()
+    progress = chronik_outbox.ReceiptProgress(
+        source_bytes=len(raw),
+        event_count=1,
+        source_sha256=hashlib.sha256(raw).hexdigest(),
+    )
+    receipt_path = chronik_outbox._write_receipt_progress(path, progress, 202)
+    document = json.loads(receipt_path.read_text(encoding="utf-8"))
+    document[field] = value
+    receipt_path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+
+    with pytest.raises(chronik_outbox.OutboxError, match="invalid snapshot fields"):
+        chronik_outbox._receipt_header(path, len(raw))
+
+
 def test_flush_failure_keeps_pending_file_and_no_receipt(tmp_path):
     event = load_event()
     path = chronik_outbox.append_event(event, tmp_path)

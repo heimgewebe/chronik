@@ -13,7 +13,7 @@ import sys
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import jsonschema
 
@@ -149,7 +149,7 @@ def build_run_view(records: Iterable[dict[str, Any]]) -> list[AgentRunLaneRow]:
     ]
 
 
-def format_table(rows: list[AgentRunViewRow | AgentRunLaneRow]) -> str:
+def format_table(rows: Sequence[AgentRunViewRow | AgentRunLaneRow]) -> str:
     headers = ["repo", "branch", "result", "blocker_code", "evidence_ref", "ts"]
     if rows and hasattr(rows[0], "run_id"):
         headers = ["repo", "run_id", "branch", "result", "blocker_code", "evidence_ref", "ts"]
