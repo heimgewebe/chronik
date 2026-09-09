@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterable
 
 from jsonschema import Draft7Validator
 
+import coding_memory_state as persisted_state
 import storage
 from canonical_ingest import build_envelope
 
@@ -100,6 +101,12 @@ def _parse_timestamp(value: str, *, field: str) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _internal_int(value: object, *, field: str) -> int:
+    if type(value) is not int:
+        raise storage.StorageError(f"internal result {field} must be an integer")
+    return value
+
+
 def configure_data_dir(path: Path, *, create: bool) -> Path:
     candidate = path.expanduser()
     if create:
@@ -139,6 +146,8 @@ def _validator(schema_version: str = "agent-run-event.v0") -> Draft7Validator:
 
 def _validate_v1_semantics(event: dict[str, Any]) -> None:
     kind = event.get("kind")
+    if not isinstance(kind, str):
+        raise ValueError("v1 coding event kind must be a string")
     expected_result = V1_KIND_RESULT.get(kind)
     if expected_result is None:
         raise ValueError(f"unsupported v1 coding event kind: {kind}")
@@ -491,7 +500,7 @@ def _inventory_material(path: Path | str, info: os.stat_result) -> bytes:
 
 def _inventory_fingerprint(
     paths: Iterable[Path], *, private: bool
-) -> dict[str, Any] | None:
+) -> persisted_state.InventoryFingerprint | None:
     digest = hashlib.sha256()
     count = 0
     for path in sorted(paths, key=lambda item: str(item)):
@@ -514,7 +523,7 @@ def _inventory_fingerprint(
 
 def _directory_inventory_snapshot(
     directory: Path, *, suffix: str, private: bool
-) -> tuple[dict[str, Any], dict[str, tuple[int, ...]]] | None:
+) -> tuple[persisted_state.InventoryFingerprint, dict[str, tuple[int, ...]]] | None:
     """Fingerprint one flat inventory and retain exact file identities."""
     if not directory.is_dir():
         return ({"count": 0, "sha256": hashlib.sha256().hexdigest()}, {})
@@ -549,7 +558,7 @@ def _directory_inventory_snapshot(
 
 def _directory_inventory_fingerprint(
     directory: Path, *, suffix: str, private: bool
-) -> dict[str, Any] | None:
+) -> persisted_state.InventoryFingerprint | None:
     """Fingerprint one flat file inventory with the same digest contract via scandir."""
     snapshot = _directory_inventory_snapshot(
         directory, suffix=suffix, private=private
@@ -562,7 +571,7 @@ def _attest_delta_receipt_inventory(
     *,
     before: dict[str, tuple[int, ...]],
     prepared_sources: list[dict[str, Any]],
-) -> dict[str, Any] | None:
+) -> persisted_state.InventoryFingerprint | None:
     """Bind a delta receipt update while rejecting unrelated receipt drift."""
     snapshot = _directory_inventory_snapshot(
         receipt_dir, suffix=".receipt.json", private=True
@@ -596,14 +605,23 @@ def _attest_delta_receipt_inventory(
         if (
             expected_identity is None
             or current_identity is None
-            or tuple(current_identity[field] for field in _FILE_IDENTITY_FIELDS)
+            or (
+                current_identity["device"],
+                current_identity["inode"],
+                current_identity["mode"],
+                current_identity["links"],
+                current_identity["uid"],
+                current_identity["size"],
+                current_identity["mtime_ns"],
+                current_identity["ctime_ns"],
+            )
             != expected_identity
         ):
             return None
     return fingerprint
 
 
-def _directory_identity(path: Path) -> dict[str, int] | None:
+def _directory_identity(path: Path) -> persisted_state.FileIdentity | None:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -640,7 +658,7 @@ def _stable_source_inventory_identity(
     sources: list[Path],
     manifests: list[Path],
     bundle_files: list[Path],
-) -> dict[str, Any] | None:
+) -> persisted_state.SourceInventoryIdentity | None:
     source_dir_before = _directory_identity(source_dir)
     bundle_dir_before = _directory_identity(bundle_dir)
     if source_dir_before is None or bundle_dir_before is None:
@@ -665,7 +683,7 @@ def _stable_source_inventory_identity(
     }
 
 
-def _private_file_identity(path: Path) -> dict[str, Any] | None:
+def _private_file_identity(path: Path) -> persisted_state.FileIdentity | None:
     try:
         info = path.lstat()
     except OSError:
@@ -677,7 +695,17 @@ def _private_file_identity(path: Path) -> dict[str, Any] | None:
         or info.st_nlink != 1
     ):
         return None
-    return dict(zip(_FILE_IDENTITY_FIELDS, _file_identity(info)))
+    identity = _file_identity(info)
+    return {
+        "device": identity[0],
+        "inode": identity[1],
+        "mode": identity[2],
+        "links": identity[3],
+        "uid": identity[4],
+        "size": identity[5],
+        "mtime_ns": identity[6],
+        "ctime_ns": identity[7],
+    }
 
 
 def _steady_fast_identity(
@@ -691,8 +719,8 @@ def _steady_fast_identity(
     source_index_path: Path,
     delta_index_path: Path,
     delta_overlay_path: Path,
-    initial_source_inventory: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
+    initial_source_inventory: persisted_state.SourceInventoryIdentity | None = None,
+) -> persisted_state.SteadyCheckpointIdentityWithReceipts | None:
     source_inventory = initial_source_inventory or _stable_source_inventory_identity(
         source_dir=source_dir,
         bundle_dir=bundle_dir,
@@ -753,7 +781,7 @@ def _steady_fast_identity(
         or final_target_identity != target_identity
     ):
         return None
-    return {
+    result: persisted_state.SteadyCheckpointIdentityWithReceipts = {
         "source_inventory": final_source_inventory,
         "receipt_inventory": final_receipt_inventory,
         "source_index_identity": final_source_index_identity,
@@ -761,11 +789,12 @@ def _steady_fast_identity(
         "delta_overlay_identity": final_delta_overlay_identity,
         "target_identity": final_target_identity,
     }
+    return result
 
 
 def _delta_candidate_identity(
     *,
-    checkpoint: dict[str, Any],
+    checkpoint: persisted_state.SteadyCheckpointDocument,
     source_dir: Path,
     bundle_dir: Path,
     sources: list[Path],
@@ -775,8 +804,8 @@ def _delta_candidate_identity(
     source_index_path: Path,
     delta_index_path: Path,
     delta_overlay_path: Path,
-    source_inventory: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
+    source_inventory: persisted_state.SourceInventoryIdentity | None = None,
+) -> persisted_state.DeltaCandidateIdentity | None:
     del receipt_dir
     prior = checkpoint.get("identity")
     if (
@@ -812,7 +841,7 @@ def _delta_candidate_identity(
 
 def _load_steady_checkpoint(
     path: Path, *, source_dir: Path
-) -> dict[str, Any] | None:
+) -> persisted_state.SteadyCheckpointDocument | None:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -830,47 +859,27 @@ def _load_steady_checkpoint(
         raw, _ = _read_immutable_artifact_snapshot(path, label="steady import checkpoint")
         if not raw.endswith(b"\n"):
             return None
-        document = json.loads(raw)
-        if not isinstance(document, dict):
-            return None
-        expected = {
-            "schema_version",
-            "source_dir",
-            "selection_contract",
-            "identity",
-            "summary",
-            "recorded_at",
-            "historical_only",
-            "does_not_establish",
-            "checkpoint_sha256",
-        }
-        if set(document) != expected:
-            return None
-        claimed = document.get("checkpoint_sha256")
+        document = persisted_state.parse_steady_checkpoint_document(json.loads(raw))
+        claimed = document["checkpoint_sha256"]
         unsigned = dict(document)
         unsigned.pop("checkpoint_sha256")
         if (
-            document.get("schema_version") != GRABOWSKI_STEADY_CHECKPOINT_SCHEMA
-            or document.get("source_dir") != str(source_dir.resolve())
-            or document.get("selection_contract") != sorted(HIGH_VALUE_KINDS)
-            or document.get("historical_only") is not True
-            or document.get("does_not_establish") != DOES_NOT_ESTABLISH
-            or not isinstance(claimed, str)
+            document["schema_version"] != GRABOWSKI_STEADY_CHECKPOINT_SCHEMA
+            or document["source_dir"] != str(source_dir.resolve())
+            or document["selection_contract"] != sorted(HIGH_VALUE_KINDS)
+            or document["historical_only"] is not True
+            or document["does_not_establish"] != DOES_NOT_ESTABLISH
             or claimed != sha256_bytes(canonical_bytes(unsigned))
-            or not isinstance(document.get("identity"), dict)
-            or not isinstance(document.get("summary"), dict)
         ):
             return None
-        recorded_at = document.get("recorded_at")
-        if not isinstance(recorded_at, str):
-            return None
-        _parse_timestamp(recorded_at, field="steady_checkpoint.recorded_at")
+        _parse_timestamp(
+            document["recorded_at"], field="steady_checkpoint.recorded_at"
+        )
         return document
     except (OSError, ValueError, json.JSONDecodeError):
         return None
 
-
-def _steady_summary_from_result(result: dict[str, Any]) -> dict[str, Any]:
+def _steady_summary_from_result(result: dict[str, Any]) -> persisted_state.SteadySummary:
     source_count = int(result["sources_after_deduplication"])
     event_count = int(result["events_imported"]) + int(result["events_skipped_existing"])
     return {
@@ -919,9 +928,9 @@ def _publish_steady_checkpoint(
     path: Path,
     *,
     source_dir: Path,
-    identity: dict[str, Any],
-    summary: dict[str, Any],
-    previous: dict[str, Any] | None,
+    identity: persisted_state.SteadyCheckpointIdentity,
+    summary: persisted_state.SteadySummary,
+    previous: persisted_state.SteadyCheckpointDocument | None,
 ) -> bool:
     semantic = {
         "schema_version": GRABOWSKI_STEADY_CHECKPOINT_SCHEMA,
@@ -945,7 +954,7 @@ def _publish_steady_checkpoint(
 
 
 def _steady_fast_result(
-    checkpoint: dict[str, Any],
+    checkpoint: persisted_state.SteadyCheckpointDocument,
     *,
     source_dir: Path,
     receipt_dir: Path,
@@ -954,9 +963,9 @@ def _steady_fast_result(
     phase_ns: Counter[str],
     counters: Counter[str],
 ) -> dict[str, Any]:
-    summary = dict(checkpoint["summary"])
+    summary = checkpoint["summary"]
     counters["steady_fast_path_hits"] += 1
-    counters["sources_reused"] = int(summary["sources_reused"])
+    counters["sources_reused"] = summary["sources_reused"]
     elapsed_ns = time.perf_counter_ns() - import_started_ns
     telemetry = {
         "schema_version": "chronik-grabowski-import-telemetry.v1",
@@ -1000,7 +1009,7 @@ def _load_delta_overlay(
     *,
     source_dir: Path,
     base_index_sha256: str,
-) -> tuple[dict[str, Any] | None, int, str]:
+) -> tuple[persisted_state.LoadedDeltaOverlayDocument | None, int, str]:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -1018,40 +1027,23 @@ def _load_delta_overlay(
         raw, _ = _read_immutable_artifact_snapshot(path, label="delta source overlay")
         if not raw.endswith(b"\n"):
             raise ValueError("incomplete delta source overlay")
-        document = json.loads(raw)
-        expected = {
-            "schema_version",
-            "source_dir",
-            "base_index_sha256",
-            "records",
-            "record_count",
-            "recorded_at",
-            "historical_only",
-            "does_not_establish",
-            "overlay_sha256",
-        }
-        if not isinstance(document, dict) or set(document) != expected:
-            raise ValueError("invalid delta-overlay fields")
-        claimed = document.get("overlay_sha256")
+        document = persisted_state.parse_delta_overlay_document(json.loads(raw))
+        claimed = document["overlay_sha256"]
         unsigned = dict(document)
         unsigned.pop("overlay_sha256")
         if (
-            document.get("schema_version") != GRABOWSKI_DELTA_OVERLAY_SCHEMA
-            or document.get("source_dir") != str(source_dir.resolve())
-            or document.get("base_index_sha256") != base_index_sha256
-            or document.get("historical_only") is not True
-            or document.get("does_not_establish") != DOES_NOT_ESTABLISH
-            or not isinstance(claimed, str)
+            document["schema_version"] != GRABOWSKI_DELTA_OVERLAY_SCHEMA
+            or document["source_dir"] != str(source_dir.resolve())
+            or document["base_index_sha256"] != base_index_sha256
+            or document["historical_only"] is not True
+            or document["does_not_establish"] != DOES_NOT_ESTABLISH
             or claimed != sha256_bytes(canonical_bytes(unsigned))
         ):
             raise ValueError("delta-overlay contract or digest mismatch")
-        recorded_at = document.get("recorded_at")
-        if not isinstance(recorded_at, str):
-            raise ValueError("invalid delta-overlay timestamp")
-        _parse_timestamp(recorded_at, field="delta_source_overlay.recorded_at")
-        raw_records = document.get("records")
-        if not isinstance(raw_records, list):
-            raise ValueError("invalid delta-overlay records")
+        _parse_timestamp(
+            document["recorded_at"], field="delta_source_overlay.recorded_at"
+        )
+        raw_records = document["records"]
         if len(raw_records) > GRABOWSKI_DELTA_OVERLAY_MAX_RECORDS:
             raise ValueError("delta-overlay compaction threshold exceeded")
         resolved_source_dir = source_dir.resolve()
@@ -1062,20 +1054,22 @@ def _load_delta_overlay(
             for item in raw_records
         ]
         paths = [item["source_path"] for item in records]
-        if paths != sorted(set(paths)) or document.get("record_count") != len(records):
+        if paths != sorted(set(paths)) or document["record_count"] != len(records):
             raise ValueError("delta-overlay records are not unique and sorted")
-        document["_records"] = records
-        return document, len(raw), "steady"
+        loaded: persisted_state.LoadedDeltaOverlayDocument = {
+            **document,
+            "_records": records,
+        }
+        return loaded, len(raw), "steady"
     except (OSError, ValueError, json.JSONDecodeError):
         return None, int(info.st_size), "rebuild_invalid"
-
 
 def _publish_delta_overlay(
     path: Path,
     *,
     source_dir: Path,
     base_index_sha256: str,
-    records: list[dict[str, Any]],
+    records: list[persisted_state.DeltaSourceRecord],
 ) -> tuple[bool, int]:
     normalized = sorted(records, key=lambda item: item["source_path"])
     if len(normalized) > GRABOWSKI_DELTA_OVERLAY_MAX_RECORDS:
@@ -1100,65 +1094,40 @@ def _publish_delta_overlay(
 
 
 def _validate_delta_source_record(
-    value: object, *, resolved_source_dir: Path
-) -> dict[str, Any]:
-    expected = {
-        "source_path",
-        "source_sha256",
-        "source_bytes",
-        "event_count",
-        "source_identity",
-    }
-    if not isinstance(value, dict) or set(value) != expected:
-        raise ValueError("invalid delta-index source fields")
-    source_path = value.get("source_path")
-    if not isinstance(source_path, str):
-        raise ValueError("invalid delta-index source path")
-    source = Path(source_path)
+    record: persisted_state.DeltaSourceRecord, *, resolved_source_dir: Path
+) -> persisted_state.ValidatedDeltaSourceRecord:
+    source = Path(record["source_path"])
     if (
         not source.is_absolute()
         or source.parent != resolved_source_dir
         or not source.name.endswith(".jsonl")
     ):
         raise ValueError("delta-index source escapes the source directory")
-    source_sha256 = value.get("source_sha256")
-    if not isinstance(source_sha256, str) or len(source_sha256) != 64:
+    source_sha256 = record["source_sha256"]
+    if len(source_sha256) != 64:
         raise ValueError("invalid delta-index source digest")
     try:
         bytes.fromhex(source_sha256)
     except ValueError as exc:
         raise ValueError("invalid delta-index source digest") from exc
-    source_bytes = value.get("source_bytes")
-    event_count = value.get("event_count")
-    if type(source_bytes) is not int or source_bytes < 1:
+    if record["source_bytes"] < 1:
         raise ValueError("invalid delta-index source byte count")
-    if type(event_count) is not int or event_count < 1:
+    if record["event_count"] < 1:
         raise ValueError("invalid delta-index source event count")
-    validated = dict(value)
-    validated["_identity"] = _file_identity_from_document(value.get("source_identity"))
+    validated: persisted_state.ValidatedDeltaSourceRecord = {
+        **record,
+        "_identity": _file_identity_from_document(record["source_identity"]),
+    }
     return validated
 
-
 def _validate_delta_bundle_record(
-    value: object, *, resolved_source_dir: Path, resolved_bundle_dir: Path
-) -> dict[str, Any]:
-    expected = {
-        "manifest_path",
-        "manifest_identity",
-        "bundle_path",
-        "bundle_identity",
-        "source_paths",
-        "source_count",
-        "event_count",
-    }
-    if not isinstance(value, dict) or set(value) != expected:
-        raise ValueError("invalid delta-index bundle fields")
-    manifest_path = value.get("manifest_path")
-    bundle_path = value.get("bundle_path")
-    if not isinstance(manifest_path, str) or not isinstance(bundle_path, str):
-        raise ValueError("invalid delta-index bundle paths")
-    manifest = Path(manifest_path)
-    bundle = Path(bundle_path)
+    record: persisted_state.DeltaBundleRecord,
+    *,
+    resolved_source_dir: Path,
+    resolved_bundle_dir: Path,
+) -> persisted_state.ValidatedDeltaBundleRecord:
+    manifest = Path(record["manifest_path"])
+    bundle = Path(record["bundle_path"])
     if (
         not manifest.is_absolute()
         or manifest.parent != resolved_bundle_dir
@@ -1168,37 +1137,29 @@ def _validate_delta_bundle_record(
         or not bundle.name.endswith(".bundle.jsonl")
     ):
         raise ValueError("delta-index bundle escapes the bundle directory")
-    source_paths = value.get("source_paths")
-    if not isinstance(source_paths, list) or not source_paths:
+    source_paths = record["source_paths"]
+    if not source_paths:
         raise ValueError("delta-index bundle has no source paths")
     for source_path in source_paths:
-        if not isinstance(source_path, str):
-            raise ValueError("invalid delta-index archived source path")
         source = Path(source_path)
         if not source.is_absolute() or source.parent != resolved_source_dir:
             raise ValueError("delta-index archived source escapes source directory")
-    source_count = value.get("source_count")
-    event_count = value.get("event_count")
-    if (
-        type(source_count) is not int
-        or source_count != len(source_paths)
-        or type(event_count) is not int
-        or event_count < source_count
-    ):
+    source_count = record["source_count"]
+    event_count = record["event_count"]
+    if source_count != len(source_paths) or event_count < source_count:
         raise ValueError("invalid delta-index bundle counts")
-    validated = dict(value)
-    validated["_manifest_identity"] = _file_identity_from_document(
-        value.get("manifest_identity")
-    )
-    validated["_bundle_identity"] = _file_identity_from_document(
-        value.get("bundle_identity")
-    )
+    validated: persisted_state.ValidatedDeltaBundleRecord = {
+        **record,
+        "_manifest_identity": _file_identity_from_document(
+            record["manifest_identity"]
+        ),
+        "_bundle_identity": _file_identity_from_document(record["bundle_identity"]),
+    }
     return validated
-
 
 def _load_delta_index(
     path: Path, *, source_dir: Path, bundle_dir: Path
-) -> tuple[dict[str, Any] | None, int, str]:
+) -> tuple[persisted_state.LoadedDeltaIndexDocument | None, int, str]:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -1216,43 +1177,22 @@ def _load_delta_index(
         raw, _ = _read_immutable_artifact_snapshot(path, label="delta source index")
         if not raw.endswith(b"\n"):
             raise ValueError("incomplete delta source index")
-        document = json.loads(raw)
-        expected = {
-            "schema_version",
-            "source_dir",
-            "selection_contract",
-            "loose_sources",
-            "bundles",
-            "source_count",
-            "event_count",
-            "recorded_at",
-            "historical_only",
-            "does_not_establish",
-            "index_sha256",
-        }
-        if not isinstance(document, dict) or set(document) != expected:
-            raise ValueError("invalid delta-index fields")
-        claimed = document.get("index_sha256")
+        document = persisted_state.parse_delta_index_document(json.loads(raw))
+        claimed = document["index_sha256"]
         unsigned = dict(document)
         unsigned.pop("index_sha256")
         if (
-            document.get("schema_version") != GRABOWSKI_DELTA_INDEX_SCHEMA
-            or document.get("source_dir") != str(source_dir.resolve())
-            or document.get("selection_contract") != sorted(HIGH_VALUE_KINDS)
-            or document.get("historical_only") is not True
-            or document.get("does_not_establish") != DOES_NOT_ESTABLISH
-            or not isinstance(claimed, str)
+            document["schema_version"] != GRABOWSKI_DELTA_INDEX_SCHEMA
+            or document["source_dir"] != str(source_dir.resolve())
+            or document["selection_contract"] != sorted(HIGH_VALUE_KINDS)
+            or document["historical_only"] is not True
+            or document["does_not_establish"] != DOES_NOT_ESTABLISH
             or claimed != sha256_bytes(canonical_bytes(unsigned))
         ):
             raise ValueError("delta-index contract or digest mismatch")
-        recorded_at = document.get("recorded_at")
-        if not isinstance(recorded_at, str):
-            raise ValueError("invalid delta-index timestamp")
-        _parse_timestamp(recorded_at, field="delta_source_index.recorded_at")
-        raw_loose = document.get("loose_sources")
-        raw_bundles = document.get("bundles")
-        if not isinstance(raw_loose, list) or not isinstance(raw_bundles, list):
-            raise ValueError("invalid delta-index inventories")
+        _parse_timestamp(document["recorded_at"], field="delta_source_index.recorded_at")
+        raw_loose = document["loose_sources"]
+        raw_bundles = document["bundles"]
         resolved_source_dir = source_dir.resolve()
         resolved_bundle_dir = bundle_dir.resolve()
         loose = [
@@ -1275,23 +1215,27 @@ def _load_delta_index(
             set(manifest_paths)
         ):
             raise ValueError("delta-index inventories are not unique and sorted")
-        source_count = len(loose) + sum(int(item["source_count"]) for item in bundles)
-        event_count = sum(int(item["event_count"]) for item in loose) + sum(
-            int(item["event_count"]) for item in bundles
+        source_count = len(loose) + sum(item["source_count"] for item in bundles)
+        event_count = sum(item["event_count"] for item in loose) + sum(
+            item["event_count"] for item in bundles
         )
         if (
-            document.get("source_count") != source_count
-            or document.get("event_count") != event_count
+            document["source_count"] != source_count
+            or document["event_count"] != event_count
         ):
             raise ValueError("delta-index aggregate counts mismatch")
-        document["_loose_sources"] = loose
-        document["_bundles"] = bundles
-        return document, len(raw), "steady"
+        loaded: persisted_state.LoadedDeltaIndexDocument = {
+            **document,
+            "_loose_sources": loose,
+            "_bundles": bundles,
+        }
+        return loaded, len(raw), "steady"
     except (OSError, ValueError, json.JSONDecodeError):
         return None, int(info.st_size), "rebuild_invalid"
 
-
-def _delta_source_record_from_source_record(record: dict[str, Any]) -> dict[str, Any]:
+def _delta_source_record_from_source_record(
+    record: dict[str, Any]
+) -> persisted_state.DeltaSourceRecord:
     fingerprints = record.get("event_fingerprints")
     if not isinstance(fingerprints, list) or not fingerprints:
         raise ValueError("source record lacks event fingerprints")
@@ -1304,7 +1248,9 @@ def _delta_source_record_from_source_record(record: dict[str, Any]) -> dict[str,
     }
 
 
-def _delta_bundle_record_from_source_record(record: dict[str, Any]) -> dict[str, Any]:
+def _delta_bundle_record_from_source_record(
+    record: dict[str, Any]
+) -> persisted_state.DeltaBundleRecord:
     sources = record.get("sources")
     if not isinstance(sources, list) or not sources:
         raise ValueError("bundle source record has no sources")
@@ -1325,8 +1271,8 @@ def _publish_delta_index(
     path: Path,
     *,
     source_dir: Path,
-    loose_sources: list[dict[str, Any]],
-    bundles: list[dict[str, Any]],
+    loose_sources: list[persisted_state.DeltaSourceRecord],
+    bundles: list[persisted_state.DeltaBundleRecord],
 ) -> tuple[bool, int]:
     normalized_loose = sorted(loose_sources, key=lambda item: item["source_path"])
     normalized_bundles = sorted(bundles, key=lambda item: item["manifest_path"])
@@ -1690,7 +1636,8 @@ def _file_matches_source_index(path: Path, expected: tuple[int, ...]) -> bool:
 
 
 def _checkpoint_allows_source_only_delta(
-    checkpoint: dict[str, Any], current_identity: dict[str, Any]
+    checkpoint: persisted_state.SteadyCheckpointDocument,
+    current_identity: persisted_state.DeltaCandidateIdentity,
 ) -> bool:
     """Return whether source-only drift can enter the read-only delta preflight."""
     prior_identity = checkpoint.get("identity")
@@ -1711,7 +1658,9 @@ def _checkpoint_allows_source_only_delta(
     )
 
 
-def _delta_bundle_record_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+def _delta_bundle_record_from_metadata(
+    metadata: dict[str, Any]
+) -> persisted_state.DeltaBundleRecord:
     sources = metadata.get("sources")
     if not isinstance(sources, list) or not sources:
         raise ValueError("bundle metadata has no sources")
@@ -1731,10 +1680,10 @@ def _delta_bundle_record_from_metadata(metadata: dict[str, Any]) -> dict[str, An
 
 def _try_checkpoint_compaction_delta_import(
     *,
-    checkpoint: dict[str, Any],
-    current_identity: dict[str, Any],
-    delta_index: dict[str, Any],
-    delta_overlay: dict[str, Any],
+    checkpoint: persisted_state.SteadyCheckpointDocument,
+    current_identity: persisted_state.DeltaCandidateIdentity,
+    delta_index: persisted_state.LoadedDeltaIndexDocument,
+    delta_overlay: persisted_state.LoadedDeltaOverlayDocument,
     source_dir: Path,
     bundle_dir: Path,
     sources: list[Path],
@@ -1759,29 +1708,14 @@ def _try_checkpoint_compaction_delta_import(
     """
     if not _checkpoint_allows_source_only_delta(checkpoint, current_identity):
         return None
-    summary = checkpoint.get("summary")
-    prior_identity = checkpoint.get("identity")
-    if not isinstance(summary, dict) or not isinstance(prior_identity, dict):
-        return None
-
-    raw_loose = delta_index.get("loose_sources")
-    raw_bundles = delta_index.get("bundles")
-    cached_loose_items = delta_index.get("_loose_sources")
-    cached_bundle_items = delta_index.get("_bundles")
-    raw_overlay_records = delta_overlay.get("records")
-    cached_overlay_records = delta_overlay.get("_records")
-    if not all(
-        isinstance(value, list)
-        for value in (
-            raw_loose,
-            raw_bundles,
-            cached_loose_items,
-            cached_bundle_items,
-            raw_overlay_records,
-            cached_overlay_records,
-        )
-    ):
-        return None
+    summary = checkpoint["summary"]
+    prior_identity = checkpoint["identity"]
+    raw_loose = delta_index["loose_sources"]
+    raw_bundles = delta_index["bundles"]
+    cached_loose_items = delta_index["_loose_sources"]
+    cached_bundle_items = delta_index["_bundles"]
+    raw_overlay_records = delta_overlay["records"]
+    cached_overlay_records = delta_overlay["_records"]
 
     raw_loose_by_path = {item["source_path"]: item for item in raw_loose}
     raw_loose_by_path.update(
@@ -1835,7 +1769,7 @@ def _try_checkpoint_compaction_delta_import(
             all_bundle_source_paths.update(item["source_paths"])
 
         relocated: dict[str, dict[str, Any]] = {}
-        new_bundle_records: list[dict[str, Any]] = []
+        new_bundle_records: list[persisted_state.DeltaBundleRecord] = []
         new_bundle_paths: set[str] = set()
         relocated_event_count = 0
         for manifest_resolved in sorted(new_manifest_paths):
@@ -1849,10 +1783,13 @@ def _try_checkpoint_compaction_delta_import(
                 bundle_record = _delta_bundle_record_from_metadata(metadata)
             except (OSError, ValueError, storage.StorageError):
                 return None
-            bundle_path = str(Path(metadata["bundle_path"]).resolve())
-            if bundle_path not in current_bundle_files or bundle_path in new_bundle_paths:
+            new_bundle_path = str(Path(metadata["bundle_path"]).resolve())
+            if (
+                new_bundle_path not in current_bundle_files
+                or new_bundle_path in new_bundle_paths
+            ):
                 return None
-            new_bundle_paths.add(bundle_path)
+            new_bundle_paths.add(new_bundle_path)
             new_bundle_records.append(bundle_record)
             counters["source_artifacts_metadata_checked"] += 2
             counters["source_bytes_read"] += int(metadata["bundle_bytes"])
@@ -1883,21 +1820,19 @@ def _try_checkpoint_compaction_delta_import(
             return None
 
         try:
-            prior_source_count = int(summary["sources_after_deduplication"])
-            prior_event_count = int(summary["events_imported"]) + int(
-                summary["events_skipped_existing"]
-            )
+            prior_source_count = summary["sources_after_deduplication"]
+            prior_event_count = summary["events_imported"] + summary["events_skipped_existing"]
             prior_bundle_source_count = sum(
-                int(item["source_count"]) for item in cached_bundle_items
+                item["source_count"] for item in cached_bundle_items
             )
             prior_bundle_event_count = sum(
-                int(item["event_count"]) for item in cached_bundle_items
+                item["event_count"] for item in cached_bundle_items
             )
             cached_loose_event_count = sum(
-                int(item["event_count"]) for item in cached_loose.values()
+                item["event_count"] for item in cached_loose.values()
             )
             removed_event_count = sum(
-                int(cached_loose[path]["event_count"]) for path in removed_loose
+                cached_loose[path]["event_count"] for path in removed_loose
             )
             if (
                 len(cached_loose) + prior_bundle_source_count != prior_source_count
@@ -1905,9 +1840,9 @@ def _try_checkpoint_compaction_delta_import(
                 or relocated_event_count != removed_event_count
                 or len(current_loose) + prior_bundle_source_count + len(relocated)
                 != prior_source_count
-                or int(summary["files_seen"]) != len(cached_loose)
-                or int(summary["bundle_manifests_seen"]) != len(cached_bundle_items)
-                or int(summary["bundled_sources_seen"]) != prior_bundle_source_count
+                or summary["files_seen"] != len(cached_loose)
+                or summary["bundle_manifests_seen"] != len(cached_bundle_items)
+                or summary["bundled_sources_seen"] != prior_bundle_source_count
             ):
                 return None
         except (KeyError, TypeError, ValueError):
@@ -1917,8 +1852,10 @@ def _try_checkpoint_compaction_delta_import(
         source_index_identity = _private_file_identity(source_index_path)
         delta_index_identity = _private_file_identity(delta_index_path)
         delta_overlay_identity = _private_file_identity(delta_overlay_path)
-        prior_receipt_inventory = prior_identity.get("receipt_inventory")
-        if isinstance(prior_receipt_inventory, dict):
+        prior_receipt_inventory = persisted_state.steady_receipt_inventory(
+            prior_identity
+        )
+        if prior_receipt_inventory is not None:
             receipt_inventory = _directory_inventory_fingerprint(
                 receipt_dir, suffix=".receipt.json", private=True
             )
@@ -1980,28 +1917,35 @@ def _try_checkpoint_compaction_delta_import(
     except storage.StorageError:
         return None
     if (
-        final_source_index_identity != prior_identity.get("source_index_identity")
+        final_source_index_identity is None
+        or final_source_index_identity != prior_identity["source_index_identity"]
         or final_delta_index_identity is None
         or final_delta_overlay_identity is None
-        or final_target_identity != prior_identity.get("target_identity")
+        or final_target_identity is None
+        or final_target_identity != prior_identity["target_identity"]
     ):
         return None
 
-    checkpoint_identity: dict[str, Any] = {
-        "source_inventory": current_identity["source_inventory"],
-        "source_index_identity": final_source_index_identity,
-        "delta_index_identity": final_delta_index_identity,
-        "delta_overlay_identity": final_delta_overlay_identity,
-        "target_identity": final_target_identity,
-    }
-    receipt_inventory = prior_identity.get("receipt_inventory")
-    receipt_inventory_deferred = prior_identity.get("receipt_inventory_deferred") is True
-    if isinstance(receipt_inventory, dict) and not receipt_inventory_deferred:
-        checkpoint_identity["receipt_inventory"] = receipt_inventory
+    if prior_receipt_inventory is not None:
+        checkpoint_identity: persisted_state.SteadyCheckpointIdentity = {
+            "source_inventory": current_identity["source_inventory"],
+            "receipt_inventory": prior_receipt_inventory,
+            "source_index_identity": final_source_index_identity,
+            "delta_index_identity": final_delta_index_identity,
+            "delta_overlay_identity": final_delta_overlay_identity,
+            "target_identity": final_target_identity,
+        }
         receipts_reused = prior_source_count
         receipts_deferred = 0
     else:
-        checkpoint_identity["receipt_inventory_deferred"] = True
+        checkpoint_identity = {
+            "source_inventory": current_identity["source_inventory"],
+            "receipt_inventory_deferred": True,
+            "source_index_identity": final_source_index_identity,
+            "delta_index_identity": final_delta_index_identity,
+            "delta_overlay_identity": final_delta_overlay_identity,
+            "target_identity": final_target_identity,
+        }
         receipts_reused = 0
         receipts_deferred = prior_source_count
 
@@ -2095,10 +2039,10 @@ def _try_checkpoint_compaction_delta_import(
 
 def _try_checkpoint_delta_import(
     *,
-    checkpoint: dict[str, Any],
-    current_identity: dict[str, Any],
-    delta_index: dict[str, Any],
-    delta_overlay: dict[str, Any],
+    checkpoint: persisted_state.SteadyCheckpointDocument,
+    current_identity: persisted_state.DeltaCandidateIdentity,
+    delta_index: persisted_state.LoadedDeltaIndexDocument,
+    delta_overlay: persisted_state.LoadedDeltaOverlayDocument,
     source_dir: Path,
     bundle_dir: Path,
     sources: list[Path],
@@ -2125,27 +2069,13 @@ def _try_checkpoint_delta_import(
     """
     if not _checkpoint_allows_source_only_delta(checkpoint, current_identity):
         return None
-    summary = checkpoint.get("summary")
-    if not isinstance(summary, dict):
-        return None
-    raw_loose = delta_index.get("loose_sources")
-    raw_bundles = delta_index.get("bundles")
-    cached_loose_items = delta_index.get("_loose_sources")
-    cached_bundle_items = delta_index.get("_bundles")
-    raw_overlay_records = delta_overlay.get("records")
-    cached_overlay_records = delta_overlay.get("_records")
-    if not all(
-        isinstance(value, list)
-        for value in (
-            raw_loose,
-            raw_bundles,
-            cached_loose_items,
-            cached_bundle_items,
-            raw_overlay_records,
-            cached_overlay_records,
-        )
-    ):
-        return None
+    summary = checkpoint["summary"]
+    raw_loose = delta_index["loose_sources"]
+    raw_bundles = delta_index["bundles"]
+    cached_loose_items = delta_index["_loose_sources"]
+    cached_bundle_items = delta_index["_bundles"]
+    raw_overlay_records = delta_overlay["records"]
+    cached_overlay_records = delta_overlay["_records"]
 
     cached_loose = {item["source_path"]: item for item in cached_loose_items}
     cached_loose.update(
@@ -2183,21 +2113,19 @@ def _try_checkpoint_delta_import(
         return None
 
     try:
-        prior_source_count = int(summary["sources_after_deduplication"])
-        prior_event_count = int(summary["events_imported"]) + int(
-            summary["events_skipped_existing"]
-        )
+        prior_source_count = summary["sources_after_deduplication"]
+        prior_event_count = summary["events_imported"] + summary["events_skipped_existing"]
         combined_source_count = len(cached_loose) + sum(
-            int(item["source_count"]) for item in cached_bundle_items
+            item["source_count"] for item in cached_bundle_items
         )
         combined_event_count = sum(
-            int(item["event_count"]) for item in cached_loose.values()
-        ) + sum(int(item["event_count"]) for item in cached_bundle_items)
+            item["event_count"] for item in cached_loose.values()
+        ) + sum(item["event_count"] for item in cached_bundle_items)
         if (
-            int(summary["files_seen"]) != len(cached_loose)
-            or int(summary["bundle_manifests_seen"]) != len(cached_bundle_items)
-            or int(summary["bundled_sources_seen"])
-            != sum(int(item["source_count"]) for item in cached_bundle_items)
+            summary["files_seen"] != len(cached_loose)
+            or summary["bundle_manifests_seen"] != len(cached_bundle_items)
+            or summary["bundled_sources_seen"]
+            != sum(item["source_count"] for item in cached_bundle_items)
             or combined_source_count != prior_source_count
             or combined_event_count != prior_event_count
         ):
@@ -2227,7 +2155,7 @@ def _try_checkpoint_delta_import(
                 added_count += 1
             else:
                 changed_count += 1
-                changed_old_event_count += int(cached["event_count"])
+                changed_old_event_count += cached["event_count"]
             delta_prepared.append(prepared)
             counters["source_bytes_read"] += _prepared_source_bytes(prepared)
             counters["source_bytes_hashed"] += _prepared_source_bytes(prepared)
@@ -2260,7 +2188,7 @@ def _try_checkpoint_delta_import(
     # paths changed.
     receipt_snapshot_before: dict[str, tuple[int, ...]] | None = None
     with measured_phase("delta_anchor_recheck"):
-        source_inventory = current_identity.get("source_inventory")
+        source_inventory = current_identity["source_inventory"]
         source_index_identity = _private_file_identity(source_index_path)
         delta_index_identity = _private_file_identity(delta_index_path)
         delta_overlay_identity = _private_file_identity(delta_overlay_path)
@@ -2279,11 +2207,10 @@ def _try_checkpoint_delta_import(
             receipt_snapshot_before = receipt_snapshot[1]
             counters["receipt_inventory_attestation_scans"] += 1
         if (
-            source_inventory is None
-            or source_index_identity != prior_identity.get("source_index_identity")
-            or delta_index_identity != prior_identity.get("delta_index_identity")
-            or delta_overlay_identity != prior_identity.get("delta_overlay_identity")
-            or target_identity != prior_identity.get("target_identity")
+            source_index_identity != prior_identity["source_index_identity"]
+            or delta_index_identity != prior_identity["delta_index_identity"]
+            or delta_overlay_identity != prior_identity["delta_overlay_identity"]
+            or target_identity != prior_identity["target_identity"]
         ):
             return None
 
@@ -2310,7 +2237,7 @@ def _try_checkpoint_delta_import(
             receipt_writes_succeeded = False
             errors.append({"source_path": "<batch>", "error": str(exc)})
 
-    attested_receipt_inventory: dict[str, Any] | None = None
+    attested_receipt_inventory: persisted_state.InventoryFingerprint | None = None
     if (
         ledger_reconciled
         and receipt_writes_succeeded
@@ -2326,8 +2253,8 @@ def _try_checkpoint_delta_import(
 
     delta_overlay_written = False
     if ledger_reconciled and receipt_writes_succeeded:
-        updated_overlay = {
-            item["source_path"]: dict(item) for item in raw_overlay_records
+        updated_overlay: dict[str, persisted_state.DeltaSourceRecord] = {
+            item["source_path"]: item for item in raw_overlay_records
         }
         for prepared in delta_prepared:
             source_record = _source_index_source_record(prepared, loose=True)
@@ -2352,15 +2279,15 @@ def _try_checkpoint_delta_import(
                     }
                 )
 
-    bundle_source_count = sum(
-        int(item["source_count"]) for item in cached_bundle_items
-    )
+    bundle_source_count = sum(item["source_count"] for item in cached_bundle_items)
     current_source_count = prior_source_count + added_count
     bypassed_source_count = prior_source_count - changed_count
     bypassed_event_count = prior_event_count - changed_old_event_count
-    target_scans = int(grouped.get("target_scans", 0)) if grouped is not None else None
+    target_scans = _internal_int(grouped.get("target_scans", 0), field="target_scans") if grouped is not None else None
     target_records_scanned = (
-        int(grouped.get("target_records_scanned", 0))
+        _internal_int(
+            grouped.get("target_records_scanned", 0), field="target_records_scanned"
+        )
         if grouped is not None
         else None
     )
@@ -2375,16 +2302,15 @@ def _try_checkpoint_delta_import(
         else None
     )
     identity_index_entries_after = (
-        int(grouped.get("identity_index_entries_after", 0))
+        _internal_int(
+            grouped.get("identity_index_entries_after", 0),
+            field="identity_index_entries_after",
+        )
         if grouped is not None
         else None
     )
-    prior_source_index_identity = checkpoint["identity"].get("source_index_identity")
-    source_index_file_bytes = (
-        int(prior_source_index_identity.get("size", 0))
-        if isinstance(prior_source_index_identity, dict)
-        else 0
-    )
+    prior_source_index_identity = checkpoint["identity"]["source_index_identity"]
+    source_index_file_bytes = prior_source_index_identity["size"]
     base_result = {
         "schema_version": "chronik-grabowski-outbox-batch.v2",
         "source_dir": str(source_dir),
@@ -2458,29 +2384,30 @@ def _try_checkpoint_delta_import(
                 final_target_identity = storage.read_unique_storage_checkpoint_identity(DOMAIN)
             except storage.StorageError:
                 final_target_identity = None
-            if all(
-                value is not None
-                for value in (
-                    source_inventory,
-                    final_source_index_identity,
-                    final_delta_index_identity,
-                    final_delta_overlay_identity,
-                    final_target_identity,
-                )
+            if (
+                final_source_index_identity is not None
+                and final_delta_index_identity is not None
+                and final_delta_overlay_identity is not None
+                and final_target_identity is not None
             ):
-                checkpoint_identity = {
-                    "source_inventory": source_inventory,
-                    "source_index_identity": final_source_index_identity,
-                    "delta_index_identity": final_delta_index_identity,
-                    "delta_overlay_identity": final_delta_overlay_identity,
-                    "target_identity": final_target_identity,
-                }
                 if attested_receipt_inventory is not None:
-                    checkpoint_identity["receipt_inventory"] = (
-                        attested_receipt_inventory
-                    )
+                    checkpoint_identity: persisted_state.SteadyCheckpointIdentity = {
+                        "source_inventory": source_inventory,
+                        "receipt_inventory": attested_receipt_inventory,
+                        "source_index_identity": final_source_index_identity,
+                        "delta_index_identity": final_delta_index_identity,
+                        "delta_overlay_identity": final_delta_overlay_identity,
+                        "target_identity": final_target_identity,
+                    }
                 else:
-                    checkpoint_identity["receipt_inventory_deferred"] = True
+                    checkpoint_identity = {
+                        "source_inventory": source_inventory,
+                        "receipt_inventory_deferred": True,
+                        "source_index_identity": final_source_index_identity,
+                        "delta_index_identity": final_delta_index_identity,
+                        "delta_overlay_identity": final_delta_overlay_identity,
+                        "target_identity": final_target_identity,
+                    }
                 if _publish_steady_checkpoint(
                     _steady_checkpoint_path(receipt_dir),
                     source_dir=source_dir,
@@ -3209,7 +3136,8 @@ def _write_grabowski_outbox_receipt(
     receipt_path = prepared["receipt_path"]
     previous_receipt = prepared.get("previous_receipt")
     if (
-        prepared["source_unchanged"]
+        isinstance(previous_receipt, dict)
+        and prepared["source_unchanged"]
         and written == 0
         and skipped == len(event_ids)
         and prepared.get("previous_receipt_path") == receipt_path
@@ -3316,8 +3244,10 @@ def _import_prepared_grabowski_sources(
         for item in raw_group_results
         if isinstance(item, dict)
     }
-    target_scans = int(grouped.get("target_scans", 0))
-    target_records_scanned = int(grouped.get("target_records_scanned", 0))
+    target_scans = _internal_int(grouped.get("target_scans", 0), field="target_scans")
+    target_records_scanned = _internal_int(
+            grouped.get("target_records_scanned", 0), field="target_records_scanned"
+        )
     results: list[dict[str, Any]] = []
     receipt_errors: list[tuple[str, Exception]] = []
     for index, prepared in enumerate(prepared_sources):
@@ -3405,7 +3335,7 @@ def import_grabowski_outbox(
     prior_steady_checkpoint = _load_steady_checkpoint(
         steady_checkpoint_path, source_dir=source_dir
     )
-    delta_candidate_identity: dict[str, Any] | None = None
+    delta_candidate_identity: persisted_state.DeltaCandidateIdentity | None = None
     if allow_steady_fast_path and prior_steady_checkpoint is not None:
         with measured_phase("steady_fast_path"):
             initial_source_inventory = _stable_source_inventory_identity(
@@ -3415,10 +3345,10 @@ def import_grabowski_outbox(
                 manifests=manifests,
                 bundle_files=bundle_files,
             )
-            prior_identity = prior_steady_checkpoint.get("identity")
-            if initial_source_inventory is not None and isinstance(prior_identity, dict):
-                if initial_source_inventory == prior_identity.get("source_inventory"):
-                    current_fast_identity = _steady_fast_identity(
+            prior_identity = prior_steady_checkpoint["identity"]
+            if initial_source_inventory is not None:
+                if initial_source_inventory == prior_identity["source_inventory"]:
+                    steady_fast_identity = _steady_fast_identity(
                         source_dir=source_dir,
                         bundle_dir=bundle_dir,
                         sources=sources,
@@ -3431,8 +3361,8 @@ def import_grabowski_outbox(
                         initial_source_inventory=initial_source_inventory,
                     )
                     if (
-                        current_fast_identity is not None
-                        and current_fast_identity == prior_identity
+                        steady_fast_identity is not None
+                        and steady_fast_identity == prior_identity
                     ):
                         return _steady_fast_result(
                             prior_steady_checkpoint,
@@ -3444,7 +3374,7 @@ def import_grabowski_outbox(
                             counters=counters,
                         )
                 else:
-                    current_fast_identity = _delta_candidate_identity(
+                    delta_fast_identity = _delta_candidate_identity(
                         checkpoint=prior_steady_checkpoint,
                         source_dir=source_dir,
                         bundle_dir=bundle_dir,
@@ -3458,17 +3388,21 @@ def import_grabowski_outbox(
                         source_inventory=initial_source_inventory,
                     )
                     if (
-                        current_fast_identity is not None
+                        delta_fast_identity is not None
                         and _checkpoint_allows_source_only_delta(
-                            prior_steady_checkpoint, current_fast_identity
+                            prior_steady_checkpoint, delta_fast_identity
                         )
                     ):
-                        delta_candidate_identity = current_fast_identity
+                        delta_candidate_identity = delta_fast_identity
             counters["steady_fast_path_fallbacks"] += 1
 
     target_path = storage.safe_target_path(DOMAIN)
     target_missing_or_empty = not target_path.exists() or target_path.stat().st_size == 0
-    if delta_candidate_identity is not None and not target_missing_or_empty:
+    if (
+        delta_candidate_identity is not None
+        and prior_steady_checkpoint is not None
+        and not target_missing_or_empty
+    ):
         with measured_phase("delta_index_load"):
             delta_index, delta_index_bytes, delta_index_mode = _load_delta_index(
                 delta_index_path,
@@ -3632,7 +3566,7 @@ def import_grabowski_outbox(
                     )
                 )
                 counters["source_artifacts_metadata_checked"] += 1
-                if bundle_cache_hit:
+                if bundle_cache_hit and isinstance(cached, dict):
                     bundled = [
                         _cached_prepared_source(
                             item,
@@ -3742,9 +3676,10 @@ def import_grabowski_outbox(
                 )
                 ledger_reconciled = True
                 receipt_writes_succeeded = not receipt_errors
-                target_scans = int(grouped.get("target_scans", 0))
-                target_records_scanned = int(
-                    grouped.get("target_records_scanned", 0)
+                target_scans = _internal_int(grouped.get("target_scans", 0), field="target_scans")
+                target_records_scanned = _internal_int(
+                    grouped.get("target_records_scanned", 0),
+                    field="target_records_scanned",
                 )
                 identity_index_mode = str(
                     grouped.get("identity_index_mode", "unknown")
@@ -3752,8 +3687,9 @@ def import_grabowski_outbox(
                 identity_index_full_rebuild = bool(
                     grouped.get("identity_index_full_rebuild", False)
                 )
-                identity_index_entries_after = int(
-                    grouped.get("identity_index_entries_after", 0)
+                identity_index_entries_after = _internal_int(
+                    grouped.get("identity_index_entries_after", 0),
+                    field="identity_index_entries_after",
                 )
                 errors.extend(
                     {
@@ -3945,7 +3881,7 @@ def import_grabowski_outbox(
                 and delta_overlay_identity is not None
                 and target_identity is not None
             ):
-                checkpoint_identity = {
+                checkpoint_identity: persisted_state.SteadyCheckpointIdentityWithReceipts = {
                     "source_inventory": source_inventory,
                     "receipt_inventory": receipt_inventory,
                     "source_index_identity": source_index_identity,
@@ -4168,7 +4104,9 @@ def _compact_grabowski_outbox_unlocked(
         verification_by_source[group_id] = item
     if len(verification_by_source) != len(candidates):
         raise storage.StorageError("incomplete ledger verification result")
-    ledger_records_scanned = int(verification.get("target_records_scanned", 0))
+    ledger_records_scanned = _internal_int(
+        verification.get("target_records_scanned", 0), field="target_records_scanned"
+    )
 
     for prepared in candidates:
         source_key = str(prepared["source"].resolve())
@@ -4546,7 +4484,10 @@ def _scan_record_snapshot(
             if not isinstance(payload, dict):
                 raise ValueError("payload must be an object")
             if next_offset <= trusted_validated_bytes:
-                event_at = _parse_timestamp(payload.get("ts"), field="ts")
+                raw_ts = payload.get("ts")
+                if not isinstance(raw_ts, str):
+                    raise ValueError("payload ts must be a string")
+                event_at = _parse_timestamp(raw_ts, field="ts")
             else:
                 event_at = validate_event(payload)
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:

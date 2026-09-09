@@ -1099,6 +1099,53 @@ def test_corrupt_delta_index_falls_back_and_repairs_canonical_source_index(
     assert next_result["events_skipped_existing"] == 2
 
 
+def test_typed_delta_index_rejects_digest_consistent_boolean_count(
+    tmp_path, monkeypatch
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_named_outbox(
+        outbox,
+        "grabowski_task-first-a1.jsonl",
+        [event("agent.run.completed", "a")],
+    )
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    delta_index_path = receipts / coding_memory.GRABOWSKI_DELTA_INDEX_FILENAME
+    write_named_outbox(
+        outbox,
+        "grabowski_task-second-a1.jsonl",
+        [event("agent.run.completed", "b")],
+    )
+    document = json.loads(delta_index_path.read_text(encoding="utf-8"))
+    document["source_count"] = True
+    unsigned = dict(document)
+    unsigned.pop("index_sha256")
+    document["index_sha256"] = coding_memory.sha256_bytes(
+        coding_memory.canonical_bytes(unsigned)
+    )
+    delta_index_path.write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    delta_index_path.chmod(0o600)
+
+    result = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert result["errors"] == []
+    assert result["delta_fast_path"] is False
+    assert result["steady_fast_path"] is False
+    assert result["events_imported"] == 1
+    repaired = json.loads(delta_index_path.read_text(encoding="utf-8"))
+    assert repaired["source_count"] == 2
+    assert type(repaired["source_count"]) is int
+
+
 def test_summary_delta_fast_path_rechecks_authoritative_target_anchor(
     tmp_path, monkeypatch
 ):
@@ -1371,6 +1418,51 @@ def test_corrupt_steady_checkpoint_falls_back_to_full_import(tmp_path, monkeypat
     rebuilt = json.loads(checkpoint.read_text())
     claimed = rebuilt.pop("checkpoint_sha256")
     assert claimed == coding_memory.sha256_bytes(coding_memory.canonical_bytes(rebuilt))
+
+
+@pytest.mark.parametrize("corruption", ["artifact_count", "summary_sources_reused"])
+def test_digest_consistent_wrong_typed_steady_checkpoint_falls_back(
+    tmp_path, monkeypatch, corruption
+):
+    _, receipts, outbox = configure(tmp_path, monkeypatch)
+    write_outbox(outbox, [event("agent.run.completed", "a")])
+    coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+    checkpoint = receipts / coding_memory.GRABOWSKI_STEADY_CHECKPOINT_FILENAME
+    document = json.loads(checkpoint.read_text(encoding="utf-8"))
+    if corruption == "artifact_count":
+        assert document["identity"]["source_inventory"]["artifacts"]["count"] == 1
+        document["identity"]["source_inventory"]["artifacts"]["count"] = True
+    else:
+        assert document["summary"]["sources_reused"] == 1
+        document["summary"]["sources_reused"] = True
+    unsigned = dict(document)
+    unsigned.pop("checkpoint_sha256")
+    document["checkpoint_sha256"] = coding_memory.sha256_bytes(
+        coding_memory.canonical_bytes(unsigned)
+    )
+    checkpoint.write_text(
+        json.dumps(document, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    checkpoint.chmod(0o600)
+
+    recovered = coding_memory.import_grabowski_outbox(
+        outbox_root=outbox,
+        receipt_dir=receipts,
+        allow_steady_fast_path=True,
+    )
+
+    assert recovered["steady_fast_path"] is False
+    assert recovered["errors"] == []
+    rebuilt = json.loads(checkpoint.read_text(encoding="utf-8"))
+    if corruption == "artifact_count":
+        value = rebuilt["identity"]["source_inventory"]["artifacts"]["count"]
+    else:
+        value = rebuilt["summary"]["sources_reused"]
+    assert type(value) is int
 
 
 def test_metadata_drift_revalidates_source_even_when_size_and_mtime_match(

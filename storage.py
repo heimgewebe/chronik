@@ -13,7 +13,7 @@ import stat
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import BinaryIO, Final, Iterable, Iterator, NoReturn, Tuple
+from typing import BinaryIO, Final, Iterable, Iterator, NoReturn, Tuple, TypedDict
 
 from filelock import FileLock, Timeout
 
@@ -120,7 +120,7 @@ class StorageMissingIdentityError(StorageError):
 
 
 _STORAGE_SETTINGS = Settings()
-DATA_DIR: Final[Path] = _STORAGE_SETTINGS.data_dir
+DATA_DIR: Path = _STORAGE_SETTINGS.data_dir
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 # RFC-like FQDN validation: labels 1..63, a-z0-9 and '-' (no '_'), total ≤ 253
@@ -493,7 +493,25 @@ def _raise_append_error(exc: BaseException, target_path: Path) -> None:
     raise exc
 
 
-def _checkpoint_file_identity(info: os.stat_result) -> dict[str, int]:
+class StorageFileIdentity(TypedDict):
+    device: int
+    inode: int
+    mode: int
+    links: int
+    uid: int
+    size: int
+    mtime_ns: int
+    ctime_ns: int
+
+
+class UniqueStorageCheckpointIdentity(TypedDict):
+    schema_version: int
+    identity_key: str
+    ledger: StorageFileIdentity
+    identity_index: StorageFileIdentity
+
+
+def _checkpoint_file_identity(info: os.stat_result) -> StorageFileIdentity:
     return {
         "device": int(info.st_dev),
         "inode": int(info.st_ino),
@@ -508,7 +526,7 @@ def _checkpoint_file_identity(info: os.stat_result) -> dict[str, int]:
 
 def read_unique_storage_checkpoint_identity(
     domain: str, *, identity_key: str = "event_id"
-) -> dict[str, object] | None:
+) -> UniqueStorageCheckpointIdentity | None:
     """Return a cheap identity for a previously reconciled unique ledger/index pair.
 
     This deliberately does not synchronize, rebuild, create, or query identity rows.

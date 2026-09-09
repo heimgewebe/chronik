@@ -252,15 +252,14 @@ def _receipt_header(path: Path, source_size: int) -> ReceiptProgress | None:
     source_bytes = receipt.get("source_bytes")
     event_count = receipt.get("event_count")
     source_sha256 = receipt.get("source_sha256")
-    valid_scalars = (
-        isinstance(source_bytes, int)
-        and not isinstance(source_bytes, bool)
-        and isinstance(event_count, int)
-        and not isinstance(event_count, bool)
-        and isinstance(source_sha256, str)
-        and SHA256_HEX.fullmatch(source_sha256) is not None
-    )
-    if not valid_scalars:
+    if not isinstance(source_bytes, int) or isinstance(source_bytes, bool):
+        raise OutboxError(f"{path}: existing receipt has invalid snapshot fields")
+    if not isinstance(event_count, int) or isinstance(event_count, bool):
+        raise OutboxError(f"{path}: existing receipt has invalid snapshot fields")
+    if (
+        not isinstance(source_sha256, str)
+        or SHA256_HEX.fullmatch(source_sha256) is None
+    ):
         raise OutboxError(f"{path}: existing receipt has invalid snapshot fields")
     if (
         receipt.get("domain") != DOMAIN
