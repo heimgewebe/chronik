@@ -44,7 +44,7 @@ def _parse_strict_mode(strict: Optional[bool]) -> bool:
     if strict is not None:
         return strict
 
-    env_val = (_get_env("HAUSKI_INGEST_STRICT") or "").lower()
+    env_val = (_get_env("CHRONIK_INGEST_STRICT") or "").lower()
     return env_val in {"1", "true", "yes"}
 
 
@@ -62,7 +62,7 @@ def _validate_strict_payload(data: Any) -> None:
         if missing:
             raise IngestError(
                 f"strict mode: missing required fields {sorted(missing)}. "
-                f"Set strict=False or HAUSKI_INGEST_STRICT=0 to disable."
+                f"Set strict=False or CHRONIK_INGEST_STRICT=0 to disable."
             )
     elif isinstance(data, Sequence) and not isinstance(data, (str, bytes)):
         # Validate each item in batch
@@ -75,7 +75,7 @@ def _validate_strict_payload(data: Any) -> None:
             if missing:
                 raise IngestError(
                     f"strict mode: batch item {idx} missing required fields {sorted(missing)}. "
-                    f"Set strict=False or HAUSKI_INGEST_STRICT=0 to disable."
+                    f"Set strict=False or CHRONIK_INGEST_STRICT=0 to disable."
                 )
 
 
@@ -95,7 +95,7 @@ def ingest_event(
     Send one or more JSON events to Chronik.
 
     By default, accepts arbitrary JSON objects. Enable strict mode via the
-    strict parameter or HAUSKI_INGEST_STRICT environment variable to enforce
+    strict parameter or CHRONIK_INGEST_STRICT environment variable to enforce
     canonical event shape with required fields: kind, ts, source.
 
     Args:
@@ -109,7 +109,7 @@ def ingest_event(
         transport: optional httpx transport (e.g., httpx.MockTransport)
             for in-process testing
         strict: enforce canonical event fields (kind, ts, source) if True.
-            Defaults to HAUSKI_INGEST_STRICT env var, or False if unset.
+            Defaults to CHRONIK_INGEST_STRICT env var, or False if unset.
 
     Returns:
         "ok" on success
