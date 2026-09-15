@@ -191,11 +191,11 @@ Events haben definierte TTLs basierend auf Event-Typ (konfigurierbar in `config/
 * FastAPI generiert automatisch eine OpenAPI-Spezifikation unter `http://localhost:8788/docs`, sobald der Server läuft.
 * `/metrics` ist für Prometheus vorgesehen; im lokalen Development bleibt der Endpunkt bewusst ohne Authentifizierung erreichbar.
 
-## Client-Library (hausKI → chronik)
-Für hausKI-Module gibt es eine kleine Helper-Lib unter `tools/hauski_ingest.py`, die Events zuverlässig in die Chronik schreibt:
+## Client-Library für Chronik-Ingest
+Für Chronik-Clients gibt es eine kleine Helper-Lib unter `tools/ingest_client.py`, die Events zuverlässig in die Chronik schreibt:
 
 ```python
-from tools.hauski_ingest import ingest_event
+from tools.ingest_client import ingest_event
 ingest_event("example.com", {"event": "heartbeat", "status": "ok"})
 ```
 
@@ -207,7 +207,7 @@ ingest_event("example.com", {"event": "heartbeat", "status": "ok"})
 | `CHRONIK_TIMEOUT`    | `5`                     | HTTP-Timeout in Sekunden |
 | `CHRONIK_RETRIES`    | `3`                     | Anzahl Retries bei 429/5xx/Timeout |
 | `CHRONIK_BACKOFF`    | `0.5`                   | Start-Backoff (Sek.) für exponentielles Backoff |
-| `HAUSKI_INGEST_STRICT` | `0` (permissiv)       | Strict Mode: `1` erzwingt kanonische Event-Felder (`kind`, `ts`, `source`) |
+| `CHRONIK_INGEST_STRICT` | `0` (permissiv)       | Strict Mode: `1` erzwingt kanonische Event-Felder (`kind`, `ts`, `source`) |
 
 Die Library gibt bei Erfolg `"ok"` zurück oder wirft eine Exception (z. B. bei 4xx/5xx nach Retries).
 
@@ -216,7 +216,7 @@ Die Library gibt bei Erfolg `"ok"` zurück oder wirft eine Exception (z. B. bei 
 **Default (permissiv):** `ingest_event` akzeptiert beliebige JSON-Objekte. Dies ist nützlich für Debug-Daten, Telemetrie oder Raw-Payloads.
 
 ```python
-from tools.hauski_ingest import ingest_event
+from tools.ingest_client import ingest_event
 # Beliebige JSON-Struktur
 ingest_event("metrics.daily", {"value": 42, "timestamp": "2025-12-31T10:00:00Z"})
 ```
@@ -225,9 +225,9 @@ ingest_event("metrics.daily", {"value": 42, "timestamp": "2025-12-31T10:00:00Z"}
 
 ```python
 import os
-os.environ["HAUSKI_INGEST_STRICT"] = "1"
+os.environ["CHRONIK_INGEST_STRICT"] = "1"
 
-from tools.hauski_ingest import ingest_event
+from tools.ingest_client import ingest_event
 # Erfordert kind, ts, source
 ingest_event("example.com", {
     "kind": "deploy.success",
@@ -244,17 +244,17 @@ ingest_event("example.com", {"foo": "bar"}, strict=False)
 
 ### Mini-Test
 ```bash
-python -c 'import os; os.environ["CHRONIK_TOKEN"]="dev"; from tools.hauski_ingest import ingest_event; print(ingest_event("example.com", {"event":"test","status":"ok"}))'
+python -c 'import os; os.environ["CHRONIK_TOKEN"]="dev"; from tools.ingest_client import ingest_event; print(ingest_event("example.com", {"event":"test","status":"ok"}))'
 ```
 
 ### Testen ohne echte Netzwerk-Sockets
-`hauski_ingest` verwendet weiterhin `httpx`; FastAPIs `TestClient` kann dagegen intern `httpx2` verwenden. Private Transportobjekte wie `TestClient._transport` dürfen deshalb nicht zwischen den beiden Client-Stacks weitergereicht werden.
+`ingest_client` verwendet `httpx`; FastAPIs `TestClient` kann dagegen intern `httpx2` verwenden. Private Transportobjekte wie `TestClient._transport` dürfen deshalb nicht zwischen den beiden Client-Stacks weitergereicht werden.
 
 Für reine Clienttests genügt ein öffentlicher `httpx.MockTransport`:
 
 ```python
 import httpx
-from tools.hauski_ingest import ingest_event
+from tools.ingest_client import ingest_event
 
 
 def handler(request: httpx.Request) -> httpx.Response:

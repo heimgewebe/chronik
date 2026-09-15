@@ -12,7 +12,7 @@ default_token = os.environ.setdefault("CHRONIK_TOKEN", "test-secret")
 import httpx  # noqa: E402
 
 from app import app  # noqa: E402
-from tools.hauski_ingest import IngestError, ingest_event  # noqa: E402
+from tools.ingest_client import IngestError, ingest_event  # noqa: E402
 
 
 class _ChronikAppTransport(httpx.BaseTransport):
@@ -111,7 +111,7 @@ def test_ingest_event_handles_non_json_error(monkeypatch):
         def post(self, *args, **kwargs):
             return httpx.Response(status_code=400, content=b"oops")
 
-    monkeypatch.setattr("tools.hauski_ingest.httpx.Client", DummyClient)
+    monkeypatch.setattr("tools.ingest_client.httpx.Client", DummyClient)
 
     with pytest.raises(IngestError) as excinfo:
         ingest_event(
@@ -163,7 +163,7 @@ def test_ingest_event_strict_rejects_missing_fields(monkeypatch):
     """In strict mode, ingest_event should reject payloads missing required fields."""
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
-    monkeypatch.setenv("HAUSKI_INGEST_STRICT", "1")
+    monkeypatch.setenv("CHRONIK_INGEST_STRICT", "1")
 
     # Missing all required fields
     with pytest.raises(IngestError) as excinfo:
@@ -184,7 +184,7 @@ def test_ingest_event_strict_accepts_minimal_fields(monkeypatch):
     """In strict mode, ingest_event should accept payloads with minimal required fields."""
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
-    monkeypatch.setenv("HAUSKI_INGEST_STRICT", "1")
+    monkeypatch.setenv("CHRONIK_INGEST_STRICT", "1")
 
     # Has all required fields
     response = ingest_event(
@@ -203,10 +203,10 @@ def test_ingest_event_strict_accepts_minimal_fields(monkeypatch):
 
 
 def test_ingest_event_strict_parameter_overrides_env(monkeypatch):
-    """strict parameter should override HAUSKI_INGEST_STRICT environment variable."""
+    """strict parameter should override CHRONIK_INGEST_STRICT environment variable."""
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
-    monkeypatch.setenv("HAUSKI_INGEST_STRICT", "1")
+    monkeypatch.setenv("CHRONIK_INGEST_STRICT", "1")
 
     # strict=False should override env
     response = ingest_event(
@@ -244,7 +244,7 @@ def test_ingest_event_strict_batch_validation(monkeypatch):
 
 def test_ingest_json_alias(monkeypatch):
     """ingest_json should be an alias for ingest_event."""
-    from tools.hauski_ingest import ingest_json
+    from tools.ingest_client import ingest_json
 
     test_token = "".join(secrets.choice(string.ascii_letters) for _ in range(16))
     monkeypatch.setenv("CHRONIK_TOKEN", test_token)
