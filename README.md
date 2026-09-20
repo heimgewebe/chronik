@@ -2,7 +2,7 @@
 
 ## Operator ecosystem correction
 
-Chronik is the append-only event ledger and historical evidence axis in the new operator ecosystem. It stores, validates and renders events; it does not trigger tasks or make orchestration decisions. Plexer may deliver bounded operational events to `POST /v1/ingest?domain=agent.ledger`. Grabowski task-local ledger export remains opt-in/manual. Bureau, Leitstand, semantAH, heimlern and hausKI may consume Chronik data only through explicit consumer gates.
+Chronik is the append-only event ledger and historical evidence axis in the new operator ecosystem. It stores, validates and renders events; it does not trigger tasks or make orchestration decisions. Plexer may deliver bounded operational events to `POST /v1/ingest?domain=agent.ledger`. Grabowski task-local ledger export remains opt-in/manual. Bureau, Leitstand and semantAH may consume Chronik data only through explicit consumer gates.
 
 This correction supersedes older text that frames Chronik mainly as a small standalone ingest service or as only a hausKI client target.
 
