@@ -120,6 +120,113 @@ paths:
                 properties:
                   version:
                     type: string
+  /v1/chronik/search:
+    get:
+      summary: Search canonical Chronik agent ledger without writing it
+      operationId: searchChronikHistory
+      description: |
+        Exhaustive validated read of the committed agent.ledger snapshot.
+        Search filters are combined with logical AND. A host event may match
+        the producer source.repo even without subject.repo.
+        Results are historical evidence only, not live runtime truth.
+        Cursors are bound to filters and ledger SHA-256; restart after changes.
+      security:
+        - XAuth: []
+      parameters:
+        - name: event_id
+          in: query
+          schema: {type: string}
+        - name: repo
+          in: query
+          schema: {type: string}
+        - name: host
+          in: query
+          schema: {type: string}
+        - name: component
+          in: query
+          schema: {type: string}
+        - name: subject_component
+          in: query
+          schema: {type: string}
+        - name: kind
+          in: query
+          schema: {type: string}
+        - name: operation
+          in: query
+          schema: {type: string}
+        - name: task_class
+          in: query
+          schema: {type: string}
+        - name: outcome
+          in: query
+          schema: {type: string}
+        - name: pr_number
+          in: query
+          schema: {type: integer, minimum: 1}
+        - name: bureau_task_id
+          in: query
+          schema: {type: string}
+        - name: run_id
+          in: query
+          schema: {type: string}
+        - name: task_id
+          in: query
+          schema: {type: string}
+        - name: since
+          in: query
+          schema: {type: string, format: date-time}
+        - name: until
+          in: query
+          schema: {type: string, format: date-time}
+        - name: keyword
+          in: query
+          schema: {type: string}
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+        - name: cursor
+          in: query
+          schema: {type: string}
+      responses:
+        '200':
+          description: Matching history with canonical IDs, snapshot hash, pagination and completeness.
+        '400':
+          description: Invalid selector or cursor.
+        '401':
+          description: Authentication required.
+        '403':
+          description: Invalid authentication token.
+        '409':
+          description: Cursor bound to an earlier ledger snapshot; restart search.
+        '503':
+          description: Invalid ledger records or unavailable storage.
+  /v1/chronik/events/{event_id}:
+    get:
+      summary: Read one exact canonical Chronik event
+      operationId: getChronikEvent
+      description: |
+        Returns stored, schema-validated original payload and its
+        canonical event SHA-256 plus ledger-snapshot integrity binding.
+      security:
+        - XAuth: []
+      parameters:
+        - name: event_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        '200':
+          description: Matching canonical event and evidence references.
+        '400':
+          description: Malformed event identifier.
+        '401':
+          description: Authentication required.
+        '403':
+          description: Invalid authentication token.
+        '404':
+          description: No matching event in the committed ledger snapshot.
+        '503':
+          description: Invalid ledger records or unavailable storage.
   /v1/integrity:
     get:
       summary: Integrity view

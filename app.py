@@ -1030,3 +1030,69 @@ async def health(x_auth: str = Header(default="")) -> dict[str, str]:
 async def version(x_auth: str = Header(default="")) -> dict[str, Any]:
     _require_auth(x_auth)
     return {"version": VERSION}
+
+
+@app.get("/v1/chronik/search", dependencies=[Depends(_require_auth_dep)])
+async def chronik_agent_search_v1(
+    event_id: str | None = None,
+    repo: str | None = None,
+    host: str | None = None,
+    component: str | None = None,
+    subject_component: str | None = None,
+    kind: str | None = None,
+    operation: str | None = None,
+    task_class: str | None = None,
+    outcome: str | None = None,
+    pr_number: int | None = None,
+    bureau_task_id: str | None = None,
+    run_id: str | None = None,
+    task_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    keyword: str | None = None,
+    limit: int = 20,
+    cursor: str | None = None,
+):
+    """Authenticated, globally complete historical search; never asserts live truth."""
+    from chronik_search import search_events
+
+    selectors = {
+        "event_id": event_id, "repo": repo, "host": host,
+        "component": component, "subject_component": subject_component,
+        "kind": kind, "operation": operation, "task_class": task_class,
+        "outcome": outcome, "pr_number": pr_number,
+        "bureau_task_id": bureau_task_id, "run_id": run_id,
+        "task_id": task_id, "since": since, "until": until,
+        "keyword": keyword, "limit": limit, "cursor": cursor,
+    }
+    try:
+        return await _run_storage_io(
+            "events_scan", lambda: search_events(**selectors)
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status = 409 if "stale search cursor" in detail else (
+            503 if "invalid rows" in detail else 400
+        )
+        raise HTTPException(status_code=status, detail=detail) from exc
+    except StorageError as exc:
+        _raise_storage_http_exception(exc)
+
+
+@app.get("/v1/chronik/events/{event_id}", dependencies=[Depends(_require_auth_dep)])
+async def chronik_agent_get_event_v1(event_id: str):
+    """Exact canonical event, with stored payload and snapshot SHA-256."""
+    from chronik_search import get_event
+
+    try:
+        result = await _run_storage_io("events_scan", get_event, event_id)
+    except ValueError as exc:
+        detail = str(exc)
+        raise HTTPException(
+            status_code=503 if "invalid rows" in detail else 400, detail=detail
+        ) from exc
+    except StorageError as exc:
+        _raise_storage_http_exception(exc)
+    if result is None:
+        raise HTTPException(status_code=404, detail="event_id not found")
+    return result
