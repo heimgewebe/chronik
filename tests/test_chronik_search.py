@@ -7,6 +7,7 @@ from pathlib import Path
 
 import coding_memory
 import chronik_search
+import storage
 
 
 def event(suffix, timestamp, *, host=False, pr=None):
@@ -35,7 +36,10 @@ def event(suffix, timestamp, *, host=False, pr=None):
 
 class ChronikSearchTest(unittest.TestCase):
     def setUp(self):
+        self.original_data_dir = storage.DATA_DIR
         self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.addCleanup(setattr, storage, "DATA_DIR", self.original_data_dir)
         self.root = Path(self.temp.name)
         coding_memory.configure_data_dir(self.root, create=True)
         self.records = [
@@ -44,9 +48,6 @@ class ChronikSearchTest(unittest.TestCase):
             event("c", "2026-11-03T10:00:00Z", pr=1717),
         ]
         coding_memory.import_events(self.records)
-
-    def tearDown(self):
-        self.temp.cleanup()
 
     def test_host_event_find_by_source_repo_without_ledger_mutation(self):
         target = self.root / "agent.ledger.jsonl"
