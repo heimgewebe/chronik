@@ -2,7 +2,7 @@
 
 ## Operator ecosystem correction
 
-Chronik is the append-only event ledger and historical evidence axis in the new operator ecosystem. It stores, validates and renders events; it does not trigger tasks or make orchestration decisions. Plexer may deliver bounded operational events to `POST /v1/ingest?domain=agent.ledger`. Grabowski task-local ledger export remains opt-in/manual. Bureau, Leitstand and semantAH may consume Chronik data only through explicit consumer gates.
+Chronik is the append-only event ledger and historical evidence axis in the new operator ecosystem. It stores, validates and renders events; it does not trigger tasks or make orchestration decisions. Plexer may deliver bounded operational events to `POST /v1/ingest?domain=agent.ledger`. Grabowski task-local export is selective: failed, timed_out and outcome_unknown are automatically recorded since grabowski PR #1717; normal starts, successes and ordinary cancellations remain opt-in. Bureau, Leitstand and semantAH may consume Chronik data only through explicit consumer gates.
 
 This correction supersedes older text that frames Chronik mainly as a small standalone ingest service or as only a hausKI client target.
 
@@ -104,6 +104,10 @@ Siehe die OpenAPI-Spezifikation unter [`docs/openapi.yaml`](./docs/openapi.yaml)
 
 > **Ingest:** `POST /v1/ingest` ist der kanonische Schreibendpunkt.
 > Die Domain wird per `event.domain` oder `?domain=aussen` bestimmt.
+
+## Agentengedächtnis: historische Suche
+
+Die vollständige schreibgeschützte Suche und der exakte Ereignisabruf sind in [docs/chronik/agent-recall.md](docs/chronik/agent-recall.md) dokumentiert; die API nutzt die bestehenden Authentifizierungsmechanismen. Historische Belege ersetzen keine Live-Prüfung.
 
 ## Clients
 - **Rust (Stub):** `clients/rust/chronik_producer`
