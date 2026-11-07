@@ -372,3 +372,27 @@ def test_search_orders_absolute_instant_not_timezone_text(paths):
     result = k.search(repo="heimgewebe/chronik", limit=1)
     assert result["events"][0]["event"]["event_id"] == newer["event_id"]
     assert result["has_more"] is True
+
+def test_real_timer_entrypoint_imports_knowledge_without_monkeypatch(paths, tmp_path):
+    import subprocess
+    import sys
+    data, _ = paths
+    state = tmp_path / "whole-state"
+    root = state / "grabowski" / "chronik-outbox"
+    wanted = event("timer:actual-entrypoint")
+    k.capture(wanted, root)
+    tool = Path(__file__).parents[1] / "tools" / "coding_memory.py"
+    cmd = [sys.executable, str(tool), "--data-dir", str(data), "import-outbox",
+           "--outbox-root", str(state), "--receipt-dir", str(data / "receipts"),
+           "--output-mode", "summary"]
+    first = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    summary = json.loads(first.stdout)
+    assert summary["knowledge_imported"] == 1
+    assert summary["knowledge_verified"] == 1
+    assert summary["knowledge_error_count"] == 0
+    assert k.get(wanted["event_id"])["found"]
+    second = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    summary2 = json.loads(second.stdout)
+    assert summary2["knowledge_imported"] == 0
+    assert summary2["knowledge_verified"] == 1
+    assert k.coverage(root, data)["pending"] == []
