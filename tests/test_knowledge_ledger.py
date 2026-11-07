@@ -310,3 +310,65 @@ def test_existing_outbox_import_surfaces_knowledge_error(paths, tmp_path,
     assert output["knowledge_error_count"] == 1
     assert output["error_count"] == 1
     assert output["knowledge_pending"] is None
+
+def test_import_more_than_budget_makes_progress_across_cycles(paths):
+    data, outbox = paths
+    values = [event(f"backlog:{n:04d}") for n in range(205)]
+    for value in values:
+        k.capture(value, outbox)
+    first = k.import_pending(outbox, data, max_events=200)
+    assert first["imported"] == 200
+    assert first["pending"] == 5
+    second = k.import_pending(outbox, data, max_events=200)
+    assert second["imported"] == 5
+    assert second["pending"] == 0
+    assert second["verified"] == 205
+    assert second["ledger_snapshot"]["record_count"] == 205
+    third = k.import_pending(outbox, data, max_events=200)
+    assert third["imported"] == 0 and third["pending"] == 0
+
+
+@pytest.mark.parametrize("attribute,invalid", [
+    ("evidence_refs", [{}]),
+    ("knowledge_type", {"bad": True}),
+    ("epistemic_status", []),
+    ("relations", [{"type": ["supersedes"], "event_id": "sha256:" + "a"*64}]),
+])
+def test_malformed_unhashable_inputs_become_visible_per_event_gaps(paths, attribute, invalid):
+    data, outbox = paths
+    bad = event("unhashable:" + attribute)
+    bad[attribute] = invalid
+    root = outbox / "knowledge"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / (bad["event_id"][7:] + ".json")).write_text(json.dumps(bad) + "\n")
+    good = event("unhashable:valid")
+    k.capture(good, outbox)
+    imported = k.import_pending(outbox, data)
+    assert imported["errors"] and imported["verified"] == 1
+    assert k.get(good["event_id"])["found"]
+    covered = k.coverage(outbox, data)
+    assert covered["invalid"] and covered["verified"] == [good["event_id"]]
+
+
+def test_search_orders_absolute_instant_not_timezone_text(paths):
+    data, outbox = paths
+    older = k.build(
+        record_key="timezone:older", ts="2026-11-07T20:00:00+02:00",
+        source={"system": "heimgewebe/grabowski", "component": "analysis"},
+        subject={"repo": "heimgewebe/chronik"},
+        knowledge_type="observation", epistemic_status="observed",
+        statement="First observation with later clock text.",
+        evidence_refs=["grabowski-task:time-old"])
+    newer = k.build(
+        record_key="timezone:newer", ts="2026-11-07T19:00:00Z",
+        source={"system": "heimgewebe/grabowski", "component": "analysis"},
+        subject={"repo": "heimgewebe/chronik"},
+        knowledge_type="observation", epistemic_status="observed",
+        statement="Later observation with earlier clock text.",
+        evidence_refs=["grabowski-task:time-new"])
+    for item in (older, newer):
+        k.capture(item, outbox)
+    assert k.import_pending(outbox, data)["imported"] == 2
+    result = k.search(repo="heimgewebe/chronik", limit=1)
+    assert result["events"][0]["event"]["event_id"] == newer["event_id"]
+    assert result["has_more"] is True

@@ -110,15 +110,16 @@ def validate(event: dict[str, Any]) -> dict[str, Any]:
             _text(value, 200, "subject." + name)
             if not KEY.fullmatch(value):
                 raise ValueError("invalid subject reference")
-    if event["knowledge_type"] not in TYPES:
+    if not isinstance(event["knowledge_type"], str) or event["knowledge_type"] not in TYPES:
         raise ValueError("unsupported knowledge type")
-    if event["epistemic_status"] not in STATES:
+    if not isinstance(event["epistemic_status"], str) or event["epistemic_status"] not in STATES:
         raise ValueError("unsupported epistemic status")
     statement = _text(event["statement"], 900, "statement")
     if "\n" in statement or "\r" in statement:
         raise ValueError("statement must be a single minimized sentence")
     refs = event["evidence_refs"]
     if (not isinstance(refs, list) or not 1 <= len(refs) <= 8
+            or any(not isinstance(ref, str) for ref in refs)
             or len(set(refs)) != len(refs)):
         raise ValueError("each knowledge entry needs 1-8 distinct evidence refs")
     for ref in refs:
@@ -131,6 +132,7 @@ def validate(event: dict[str, Any]) -> dict[str, Any]:
     seen = set()
     for relation in relations:
         if (not isinstance(relation, dict) or set(relation) != {"type", "event_id"}
+                or not isinstance(relation["type"], str)
                 or relation["type"] not in RELATIONS
                 or not isinstance(relation["event_id"], str)
                 or not SHA.fullmatch(relation["event_id"])
@@ -284,7 +286,7 @@ def search(*, repo: str | None = None, host: str | None = None,
             event["statement"] + " " + " ".join(event["evidence_refs"])
         ).casefold())
     ]
-    matching.sort(key=lambda event: (event["ts"], event["event_id"]), reverse=True)
+    matching.sort(key=lambda event: (_timestamp(event["ts"]), event["event_id"]), reverse=True)
     successors = {
         relation["event_id"]: event["event_id"]
         for event in ledger.values()
@@ -323,25 +325,34 @@ def import_pending(outbox_root: Path, data_dir: Path,
     paths = sorted(queued.glob("*.json")) if queued.is_dir() else []
     ledger, _ = _read_ledger()
     imported = already_present = verified = 0
+    # Only new/uncertain ledger writes use the per-cycle import budget.
+    # Retained already-imported source records must not starve later entries.
+    new_attempts = 0
     verified_event_ids: list[str] = []
     errors: list[dict[str, str]] = []
     recovered_after_uncertain_write: list[str] = []
     for path in paths:
-        if verified + len(errors) >= max_events:
-            break
         event = None
         try:
             event = _read_outbox(path)
             old = ledger.get(event["event_id"])
             if old is not None and canonical(old) != canonical(event):
                 raise ValueError("canonical identity conflict")
-            if old is None:
-                count, skipped = storage.write_payload_unique(
-                    DOMAIN, [_line(event)], identity_key="event_id")
-                imported += count
-                already_present += skipped
-            else:
+            if old is not None:
+                # _read_ledger already proved this identity in one coherent
+                # committed snapshot; no per-entry full-ledger re-read needed.
                 already_present += 1
+                verified_event_ids.append(event["event_id"])
+                verified += 1
+                continue
+            if new_attempts >= max_events:
+                continue
+            new_attempts += 1
+            count, skipped = storage.write_payload_unique(
+                DOMAIN, [_line(event)], identity_key="event_id")
+            imported += count
+            already_present += skipped
+            # A successful append alone never proves canonical knowledge.
             readback = get(event["event_id"])
             if not readback["found"] or canonical(readback["event"]) != canonical(event):
                 raise ValueError("canonical readback mismatch")
