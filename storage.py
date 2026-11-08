@@ -733,6 +733,29 @@ def hash_domain_snapshot(
         raise StorageError("read error") from exc
 
 
+def ensure_domain_durable(domain: str) -> bool:
+    """Sync a visible ledger and its directory under the existing domain lock.
+
+    A readable record after a failed append/rollback is not proof of durable
+    storage. This is the recovery barrier before canonical readback may
+    acknowledge such an uncertain record. No ledger bytes or index are changed.
+    """
+    try:
+        target_path = safe_target_path(domain)
+    except DomainError as exc:
+        raise StorageError("invalid target path") from exc
+    try:
+        with _locked_open(target_path, "rb") as fh:
+            _target_stat_for_fd(target_path, fh.fileno())
+            _fsync_file(fh.fileno())
+            _fsync_parent_directory(target_path)
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        raise StorageRecoveryError("ledger durability could not be established") from exc
+    return True
+
+
 def read_domain_snapshot(domain: str, start_offset: int = 0) -> bytes:
     """Read one byte-exact, append-stable snapshot of complete JSONL records.
 

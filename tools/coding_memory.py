@@ -15,6 +15,7 @@ if root_path in sys.path:
 sys.path.insert(0, root_path)
 
 import coding_memory  # noqa: E402
+import knowledge_ledger  # noqa: E402
 
 
 OUTBOX_SUMMARY_KEYS = (
@@ -52,6 +53,10 @@ OUTBOX_SUMMARY_KEYS = (
     "steady_fast_path",
     "delta_fast_path",
     "elapsed_seconds",
+    "knowledge_verified",
+    "knowledge_imported",
+    "knowledge_pending",
+    "knowledge_error_count",
 )
 OUTBOX_SUMMARY_ERROR_LIMIT = 3
 OUTBOX_SUMMARY_SOURCE_LIMIT = 160
@@ -95,7 +100,7 @@ def outbox_summary(result: dict) -> dict:
         "schema_version": "chronik-grabowski-outbox-summary.v1",
         "result_schema_version": _bounded_label(result.get("schema_version")),
         **{key: _bounded_label(result.get(key)) for key in OUTBOX_SUMMARY_KEYS},
-        "error_count": len(errors),
+        "error_count": result.get("total_error_count", len(errors)),
         "error_samples": [
             {
                 "source_path": _bounded_text(
@@ -311,6 +316,35 @@ def main(argv=None):
                     receipt_dir=receipt_dir.expanduser(),
                     allow_steady_fast_path=args.output_mode == "summary",
                 )
+                # The same timer imports both independent ledgers. A knowledge
+                # failure must be visible, but must not undo agent.ledger.
+                try:
+                    knowledge = knowledge_ledger.import_pending(
+                        args.outbox_root / "grabowski" / "chronik-outbox",
+                        data_path,
+                    )
+                    result["knowledge_verified"] = knowledge["verified"]
+                    result["knowledge_imported"] = knowledge["imported"]
+                    result["knowledge_pending"] = knowledge["pending"]
+                    result["knowledge_error_count"] = len(knowledge["errors"])
+                    result["total_error_count"] = len(result["errors"]) + len(knowledge["errors"])
+                    for item in knowledge["errors"][:3]:
+                        result["errors"].append({
+                            "source_path": "knowledge.ledger",
+                            "error": item.get("error", "invalid_knowledge"),
+                        })
+                    # Error count must remain accurate even when samples are bounded.
+                    result["knowledge_errors"] = len(knowledge["errors"])
+                except (OSError, ValueError, coding_memory.storage.StorageError) as exc:
+                    result["knowledge_verified"] = 0
+                    result["knowledge_imported"] = 0
+                    result["knowledge_pending"] = None
+                    result["knowledge_error_count"] = 1
+                    result["total_error_count"] = len(result["errors"]) + 1
+                    result["errors"].append({
+                        "source_path": "knowledge.ledger",
+                        "error": type(exc).__name__,
+                    })
             elif args.command == "compact-outbox":
                 receipt_dir = args.receipt_dir or data_path / "import-receipts"
                 result = coding_memory.compact_grabowski_outbox(
