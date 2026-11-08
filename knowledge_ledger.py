@@ -318,19 +318,23 @@ def search(*, repo: str | None = None, host: str | None = None,
         ).casefold())
     ]
     matching.sort(key=lambda event: (_timestamp(event["ts"]), event["event_id"]), reverse=True)
-    successors = {
-        relation["event_id"]: event["event_id"]
-        for event in ledger.values()
-        for relation in event["relations"]
-        if relation["type"] == "supersedes"
-    }
+    successors: dict[str, list[str]] = {}
+    for event in ledger.values():
+        for relation in event["relations"]:
+            if relation["type"] == "supersedes":
+                successors.setdefault(relation["event_id"], []).append(event["event_id"])
+    for event_ids in successors.values():
+        event_ids.sort(
+            key=lambda event_id: (_timestamp(ledger[event_id]["ts"]), event_id),
+            reverse=True,
+        )
     return {
         "schema_version": "chronik-knowledge-search.v1",
         "historical_only": True, "matching_count": len(matching),
         "returned": min(len(matching), limit),
         "has_more": len(matching) > limit,
         "events": [
-            {"event": value, "superseded_by": successors.get(value["event_id"])}
+            {"event": value, "superseded_by": successors.get(value["event_id"], [])}
             for value in matching[:limit]
         ],
         "ledger_snapshot": snapshot,

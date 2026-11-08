@@ -248,11 +248,38 @@ def test_search_targeted_and_supersession_in_results(paths):
     result = k.search(repo="heimgewebe/chronik", keyword="Import receipt")
     assert result["matching_count"] == 2
     found = {x["event"]["event_id"]: x for x in result["events"]}
-    assert found[old["event_id"]]["superseded_by"] == new["event_id"]
-    assert found[new["event_id"]]["superseded_by"] is None
+    assert found[old["event_id"]]["superseded_by"] == [new["event_id"]]
+    assert found[new["event_id"]]["superseded_by"] == []
     assert result["ledger_snapshot"]["integrity_valid"]
     with pytest.raises(ValueError, match="selector"):
         k.search()
+
+
+def test_search_keeps_every_superseding_branch_even_when_filter_hides_them(paths):
+    data, outbox = paths
+    old = event("branch:old", knowledge_type="open_problem",
+                epistemic_status="observed")
+    first = event("branch:first", knowledge_type="repair",
+                  epistemic_status="implemented",
+                  relations=[{"type": "supersedes", "event_id": old["event_id"]}])
+    second = event("branch:second", knowledge_type="repair",
+                   epistemic_status="confirmed",
+                   relations=[{"type": "supersedes", "event_id": old["event_id"]}])
+    first["ts"] = "2026-11-07T20:00:00+02:00"
+    second["ts"] = "2026-11-07T19:00:00Z"
+    for item in (old, first, second):
+        assert k.capture(item, outbox)["queued"]
+    assert k.import_pending(outbox, data)["verified"] == 3
+    result = k.search(repo="heimgewebe/chronik",
+                      knowledge_type="open_problem", limit=1)
+    assert result["matching_count"] == result["returned"] == 1
+    assert result["events"][0]["event"]["event_id"] == old["event_id"]
+    assert result["events"][0]["superseded_by"] == [
+        second["event_id"], first["event_id"]
+    ]
+    assert set(k.get(old["event_id"])["superseded_by"]) == {
+        first["event_id"], second["event_id"]
+    }
 
 
 def test_read_rejects_outbox_symlink(paths):
