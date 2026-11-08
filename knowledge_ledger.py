@@ -108,7 +108,14 @@ def validate(event: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("pr_number must be positive integer")
         else:
             _text(value, 200, "subject." + name)
-            if not KEY.fullmatch(value):
+            if name == "component":
+                # Grabowski accepts trimmed, bounded Unicode component labels.
+                # Reject controls and leading/trailing whitespace without
+                # discarding legitimate spaces or localized names.
+                if (len(value) > 160 or value.strip() != value or
+                        any(ord(char) < 32 or ord(char) == 127 for char in value)):
+                    raise ValueError("invalid subject component")
+            elif not KEY.fullmatch(value):
                 raise ValueError("invalid subject reference")
     if not isinstance(event["knowledge_type"], str) or event["knowledge_type"] not in TYPES:
         raise ValueError("unsupported knowledge type")

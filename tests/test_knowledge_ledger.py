@@ -396,3 +396,34 @@ def test_real_timer_entrypoint_imports_knowledge_without_monkeypatch(paths, tmp_
     assert summary2["knowledge_imported"] == 0
     assert summary2["knowledge_verified"] == 1
     assert k.coverage(root, data)["pending"] == []
+
+
+def test_subject_component_unicode_spaces_roundtrip(paths):
+    data, outbox = paths
+    value = k.build(
+        record_key="component:unicode", ts="2026-11-08T06:40:00Z",
+        source={"system": "heimgewebe/grabowski", "component": "task-terminalization"},
+        subject={"repo": "heimgewebe/chronik", "component": "deploy worker – München"},
+        knowledge_type="operation", epistemic_status="observed",
+        statement="The task was observed; production is not verified.",
+        evidence_refs=["grabowski-task:0123456789abcdef01234567"],
+    )
+    assert k.capture(value, outbox)["new"]
+    receipt = k.import_pending(outbox, data)
+    assert receipt["verified"] == 1
+    assert k.get(value["event_id"])["event"]["subject"]["component"] == "deploy worker – München"
+
+
+@pytest.mark.parametrize("component", [" bad", "bad ", "bad" + chr(10) + "name", "bad" + chr(127) + "name", "a"*161])
+def test_invalid_component_never_enters_ledger(paths, component):
+    data, outbox = paths
+    with pytest.raises(ValueError, match="component"):
+        k.build(
+            record_key="component:invalid", ts="2026-11-08T06:40:00Z",
+            source={"system": "heimgewebe/grabowski", "component": "task-terminalization"},
+            subject={"repo": "heimgewebe/chronik", "component": component},
+            knowledge_type="operation", epistemic_status="observed",
+            statement="Invalid component must be rejected.",
+            evidence_refs=["grabowski-task:0123456789abcdef01234567"],
+        )
+    assert k.coverage(outbox, data)["verified"] == []
