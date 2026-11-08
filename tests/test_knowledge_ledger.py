@@ -466,7 +466,7 @@ def test_capture_existing_reestablishes_durability_after_uncertain_fsync(
     second = k.capture(value, outbox)
     assert second["queued"] and second["new"] is False
     assert second["ledger_verified"] is False
-    assert len(sync_calls) == 2  # same descriptor and parent directory
+    assert len(sync_calls) >= 2  # file plus every containing directory
     assert k.import_pending(outbox, data)["verified"] == 1
 
 
@@ -497,3 +497,63 @@ def test_fifo_outbox_entry_is_rejected_nonblocking_without_stalling_import(
     covered = k.coverage(outbox, data)
     assert covered["invalid"] == [fifo.name]
     assert covered["verified"] == [valid["event_id"]]
+
+
+def test_first_outbox_creation_persists_ancestor_entries_and_replay(paths, monkeypatch):
+    import os
+    data, outbox = paths
+    value = event("fsync:ancestor-first-capture")
+    assert not outbox.exists()
+
+    original_fsync = k.os.fsync
+    synced = []
+
+    def observe_fsync(fd):
+        synced.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return original_fsync(fd)
+
+    monkeypatch.setattr(k.os, "fsync", observe_fsync)
+    first = k.capture(value, outbox)
+    entry = outbox / "knowledge" / (value["event_id"][7:] + ".json")
+    assert first["queued"] and first["new"]
+    assert str(entry) in synced
+    assert str(outbox / "knowledge") in synced
+    assert str(outbox) in synced
+    assert str(outbox.parent) in synced  # newly created outbox/ persisted
+    assert k.import_pending(outbox, data)["verified"] == 1
+    assert k.get(value["event_id"])["found"]
+
+    # Fail while persisting the newly created directory entry, after the file
+    # is visible. A retry must NOT acknowledge it without re-synchronization.
+    second_outbox = outbox.parent / "crash-outbox"
+    second_value = event("fsync:ancestor-replay")
+    real_fsync = k.os.fsync
+    failed = False
+
+    def fail_ancestor_once(fd):
+        nonlocal failed
+        actual = os.readlink(f"/proc/self/fd/{fd}")
+        if actual == str(second_outbox.parent) and not failed:
+            failed = True
+            raise OSError("new directory parent fsync uncertain")
+        return original_fsync(fd)
+
+    monkeypatch.setattr(k.os, "fsync", fail_ancestor_once)
+    with pytest.raises(OSError, match="parent fsync uncertain"):
+        k.capture(second_value, second_outbox)
+    assert failed
+    entry2 = second_outbox / "knowledge" / (second_value["event_id"][7:] + ".json")
+    assert entry2.is_file()
+
+    replay_syncs = []
+    def observe_replay(fd):
+        replay_syncs.append(os.readlink(f"/proc/self/fd/{fd}"))
+        return original_fsync(fd)
+
+    monkeypatch.setattr(k.os, "fsync", observe_replay)
+    replay = k.capture(second_value, second_outbox)
+    assert replay["queued"] and replay["new"] is False
+    assert str(entry2) in replay_syncs
+    assert str(second_outbox) in replay_syncs
+    assert str(second_outbox.parent) in replay_syncs
+    assert k.import_pending(second_outbox, data)["verified"] == 1

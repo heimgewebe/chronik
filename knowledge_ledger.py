@@ -169,6 +169,25 @@ def build(*, record_key: str, ts: str, source: dict[str, str],
     return validate(event)
 
 
+def _fsync_directory_chain(directory: Path) -> None:
+    """Persist each directory entry up to the filesystem root.
+
+    A previous attempt may have created some ancestors and failed before their
+    entries reached durable storage. Existing directories alone do not prove
+    that a new outbox subtree survived a crash, including on a replay.
+    """
+    current = directory.resolve(strict=True)
+    while True:
+        descriptor = os.open(current, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if current.parent == current:
+            break
+        current = current.parent
+
+
 def _atomic_write(path: Path, raw: bytes) -> bool:
     path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
@@ -181,22 +200,14 @@ def _atomic_write(path: Path, raw: bytes) -> bool:
         # Reconfirm the identical bytes on the opened descriptor and sync
         # both file and parent before acknowledging replay as queued.
         _read_regular(path, expected=raw)
-        dirfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dirfd)
-        finally:
-            os.close(dirfd)
+        _fsync_directory_chain(path.parent)
         return False
     try:
         with os.fdopen(descriptor, "wb") as handle:
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
-        dirfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(dirfd)
-        finally:
-            os.close(dirfd)
+        _fsync_directory_chain(path.parent)
         return True
     except BaseException:
         # An incomplete or uncertain write remains visible for explicit recovery.
