@@ -358,6 +358,10 @@ def import_pending(outbox_root: Path, data_dir: Path,
     storage.DATA_DIR = data_dir.resolve(strict=True)
     queued = outbox_root / "knowledge"
     paths = sorted(queued.glob("*.json")) if queued.is_dir() else []
+    if paths:
+        # Previous importer attempts may have left readable but unsynced bytes.
+        # Re-establish durability before treating existing IDs as verified.
+        storage.ensure_domain_durable(DOMAIN)
     ledger, _ = _read_ledger()
     imported = already_present = verified = 0
     # Only new/uncertain ledger writes use the per-cycle import budget.
@@ -395,18 +399,20 @@ def import_pending(outbox_root: Path, data_dir: Path,
             verified_event_ids.append(event["event_id"])
             verified += 1
         except storage.StorageError as exc:
-            # A failed commit may already have appended the canonical ledger.
-            # Resolve the exact identity through readback before any later replay.
+            # Visible bytes after a failed write or rollback are not durable.
+            # The storage lock protects a file + parent fsync barrier; only then
+            # may exact canonical readback resolve an uncertain outcome.
             if event is not None:
                 try:
-                    observed = get(event["event_id"])
-                    if (observed["found"] and
-                            canonical(observed["event"]) == canonical(event)):
-                        ledger[event["event_id"]] = event
-                        verified_event_ids.append(event["event_id"])
-                        recovered_after_uncertain_write.append(event["event_id"])
-                        verified += 1
-                        continue
+                    if storage.ensure_domain_durable(DOMAIN):
+                        observed = get(event["event_id"])
+                        if (observed["found"] and
+                                canonical(observed["event"]) == canonical(event)):
+                            ledger[event["event_id"]] = event
+                            verified_event_ids.append(event["event_id"])
+                            recovered_after_uncertain_write.append(event["event_id"])
+                            verified += 1
+                            continue
                 except (OSError, ValueError, storage.StorageError):
                     pass
             errors.append({"event_id": path.stem, "error": type(exc).__name__})
@@ -429,9 +435,12 @@ def coverage(outbox_root: Path, data_dir: Path) -> dict[str, Any]:
     if not data_dir.is_dir():
         raise ValueError("Chronik data directory unavailable")
     storage.DATA_DIR = data_dir.resolve(strict=True)
-    ledger, snapshot = _read_ledger()
     root = outbox_root / "knowledge"
     paths = sorted(root.glob("*.json")) if root.is_dir() else []
+    if paths:
+        # Coverage must not certify a readable but unsynced failed append.
+        storage.ensure_domain_durable(DOMAIN)
+    ledger, snapshot = _read_ledger()
     verified, pending, invalid = [], [], []
     for path in paths:
         try:

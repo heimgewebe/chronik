@@ -584,3 +584,48 @@ def test_first_outbox_creation_persists_ancestor_entries_and_replay(paths, monke
     assert str(second_outbox) in replay_syncs
     assert str(second_outbox.parent) in replay_syncs
     assert k.import_pending(second_outbox, data)["verified"] == 1
+
+
+@pytest.mark.parametrize("failed_sync", ["file", "parent_directory"])
+def test_uncertain_append_and_rollback_cannot_be_verified_without_fsync(
+        paths, monkeypatch, failed_sync):
+    import os
+    data, outbox = paths
+    item = event("ledger:uncertain:" + failed_sync)
+    k.capture(item, outbox)
+
+    def append_then_lose_rollback(fh, target_path, lines):
+        for line in lines:
+            raw = (line + "\n").encode("utf-8")
+            assert os.write(fh.fileno(), raw) == len(raw)
+        raise storage.StorageRecoveryError(
+            "simulated append fsync and rollback failure; visible is not durable"
+        )
+
+    def durability_failure(*args):
+        raise storage.StorageRecoveryError("simulated durability sync failure")
+
+    with monkeypatch.context() as fault:
+        fault.setattr(storage, "_append_jsonl_transaction", append_then_lose_rollback)
+        target = (
+            "_fsync_file" if failed_sync == "file"
+            else "_fsync_parent_directory"
+        )
+        fault.setattr(storage, target, durability_failure)
+        result = k.import_pending(outbox, data)
+        assert result["verified"] == 0
+        assert result["pending"] == 1
+        assert result["errors"] == [
+            {"event_id": item["event_id"][7:], "error": "StorageRecoveryError"}
+        ]
+        with pytest.raises(storage.StorageRecoveryError, match="sync failure"):
+            k.coverage(outbox, data)
+
+    # A later cycle that can reestablish durability resolves the same exact
+    # identity without duplicating the ledger entry.
+    after = k.import_pending(outbox, data)
+    assert after["errors"] == [] and after["pending"] == 0
+    assert after["verified"] == 1 and after["imported"] == 0
+    assert k.get(item["event_id"])["found"]
+    assert k.coverage(outbox, data)["verified"] == [item["event_id"]]
+    assert k.get(item["event_id"])["ledger_snapshot"]["record_count"] == 1
