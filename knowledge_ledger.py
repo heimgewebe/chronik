@@ -177,9 +177,15 @@ def _atomic_write(path: Path, raw: bytes) -> bool:
     try:
         descriptor = os.open(path, flags, 0o600)
     except FileExistsError:
-        existing = _read_regular(path)
-        if existing != raw:
-            raise ValueError("existing identity has different payload")
+        # An earlier write may have reached the file but failed fsync.
+        # Reconfirm the identical bytes on the opened descriptor and sync
+        # both file and parent before acknowledging replay as queued.
+        _read_regular(path, expected=raw)
+        dirfd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(dirfd)
+        finally:
+            os.close(dirfd)
         return False
     try:
         with os.fdopen(descriptor, "wb") as handle:
@@ -205,8 +211,11 @@ def capture(event: dict[str, Any], outbox_root: Path) -> dict[str, Any]:
             "new": created, "path": str(path), "ledger_verified": False}
 
 
-def _read_regular(path: Path) -> bytes:
-    flags = os.O_RDONLY | os.O_CLOEXEC
+def _read_regular(path: Path, *, expected: bytes | None = None) -> bytes:
+    # A FIFO opened for reading blocks without a writer even before fstat().
+    # O_NONBLOCK makes the descriptor type-check safe without weakening the
+    # O_NOFOLLOW + regular-file + bounded-size requirements.
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     if not hasattr(os, "O_NOFOLLOW"):
         raise ValueError("secure outbox read requires O_NOFOLLOW")
     descriptor = os.open(path, flags | os.O_NOFOLLOW)
@@ -217,6 +226,10 @@ def _read_regular(path: Path) -> bytes:
         raw = handle.read(MAX_ENTRY_BYTES + 2)
         if len(raw) > MAX_ENTRY_BYTES + 1:
             raise ValueError("outbox entry exceeds size limit")
+        if expected is not None:
+            if raw != expected:
+                raise ValueError("existing identity has different payload")
+            os.fsync(handle.fileno())
         return raw
 
 

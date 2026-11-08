@@ -427,3 +427,73 @@ def test_invalid_component_never_enters_ledger(paths, component):
             evidence_refs=["grabowski-task:0123456789abcdef01234567"],
         )
     assert k.coverage(outbox, data)["verified"] == []
+
+@pytest.mark.parametrize("failed_sync_number", [1, 2])
+def test_capture_existing_reestablishes_durability_after_uncertain_fsync(
+        paths, monkeypatch, failed_sync_number):
+    data, outbox = paths
+    value = event(f"fsync:uncertain:{failed_sync_number}")
+    real_fsync = k.os.fsync
+    calls = 0
+
+    def interrupted_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == failed_sync_number:
+            raise OSError("simulated initial fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(k.os, "fsync", interrupted_fsync)
+    with pytest.raises(OSError, match="simulated initial"):
+        k.capture(value, outbox)
+    path = outbox / "knowledge" / (value["event_id"][7:] + ".json")
+    assert path.read_bytes() == k.canonical(value) + b"\n"
+
+    # The same visible bytes are NOT durable merely because they exist.
+    def still_unsynced(fd):
+        raise OSError("simulated retry fsync failure")
+
+    monkeypatch.setattr(k.os, "fsync", still_unsynced)
+    with pytest.raises(OSError, match="simulated retry"):
+        k.capture(value, outbox)
+
+    sync_calls = []
+    def successful_fsync(fd):
+        sync_calls.append(fd)
+        return real_fsync(fd)
+
+    monkeypatch.setattr(k.os, "fsync", successful_fsync)
+    second = k.capture(value, outbox)
+    assert second["queued"] and second["new"] is False
+    assert second["ledger_verified"] is False
+    assert len(sync_calls) == 2  # same descriptor and parent directory
+    assert k.import_pending(outbox, data)["verified"] == 1
+
+
+def test_fifo_outbox_entry_is_rejected_nonblocking_without_stalling_import(
+        paths, monkeypatch):
+    import os
+    data, outbox = paths
+    bad = event("fifo:no-writer")
+    fifo = outbox / "knowledge" / (bad["event_id"][7:] + ".json")
+    fifo.parent.mkdir(parents=True, exist_ok=True)
+    os.mkfifo(fifo)
+    valid = event("fifo:valid")
+    k.capture(valid, outbox)
+
+    real_open = k.os.open
+
+    def guarded_open(path, flags, *args, **kwargs):
+        # Fails promptly instead of hanging on the regression.
+        if os.fspath(path) == os.fspath(fifo) and not flags & os.O_NONBLOCK:
+            raise AssertionError("FIFO read would block without O_NONBLOCK")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(k.os, "open", guarded_open)
+    result = k.import_pending(outbox, data)
+    assert result["verified"] == 1 and result["imported"] == 1
+    assert result["errors"] == [{"event_id": fifo.stem, "error": "ValueError"}]
+    assert k.get(valid["event_id"])["found"]
+    covered = k.coverage(outbox, data)
+    assert covered["invalid"] == [fifo.name]
+    assert covered["verified"] == [valid["event_id"]]
