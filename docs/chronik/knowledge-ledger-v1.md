@@ -47,6 +47,7 @@ python tools/knowledge_ledger.py --outbox-root ~/.local/state/grabowski/chronik-
 python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data --outbox-root ~/.local/state/grabowski/chronik-outbox import-pending
 python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data get --event-id 'sha256:...'
 python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data search --repo heimgewebe/chronik
+python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data search --repo heimgewebe/chronik --since 2026-11-01T00:00:00Z --current-only
 python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data --outbox-root ~/.local/state/grabowski/chronik-outbox coverage
 ```
 
@@ -66,6 +67,15 @@ deterministically from `source` and `record_key`):
   "relations": []
 }
 ```
+
+Search selectors are AND-combined: `--repo`, `--host`, `--component`
+(exact `subject.component`), `--knowledge-type`, `--epistemic-status`,
+`--keyword`, and the inclusive, timezone-aware `--since`/`--until` window.
+`--current-only` hides events superseded by a newer event and reports their
+number as `hidden_superseded`; the history itself is unchanged.
+
+`get` exits with status 3 when the event is not in the committed ledger
+(`"found": false`), so callers cannot mistake absence for a verified import.
 
 Minimize and verify content *before* capture. Capture validates identity,
 bounds, refs and common credential-like patterns; it does not provide magical
