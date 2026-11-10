@@ -484,3 +484,250 @@ def test_large_allowed_payload_keeps_fixed_width_index_fingerprint(mock_data_dir
             ("event_id", "large"),
         ).fetchone()[0]
     assert len(fingerprint) == 40
+
+# Issue #307: deliberate, isolated st_dev-only recovery; the normal importer
+# must continue rejecting an unproven device identity change.
+def _simulate_device_only_drift(data_dir):
+    from dataclasses import replace
+    target = _target(data_dir)
+    with identity_index.open_identity_index(target, timeout=storage.LOCK_TIMEOUT) as index:
+        state = index._load_state("event_id")
+        assert state is not None
+        wrong = replace(state, ledger_dev=state.ledger_dev + 123)
+        index.connection.execute("BEGIN IMMEDIATE")
+        index._store_state(wrong)
+        index.commit()
+        return wrong.ledger_dev
+
+
+def _recovery_backup_root(data_dir):
+    root = data_dir / "device-recovery-backups"
+    root.mkdir(mode=0o700)
+    return root
+
+
+def _run_stdev_recovery(data_dir, old_device, backup_root):
+    from tools import identity_index_recovery
+    return identity_index_recovery.recover_device_only(
+        "agent.ledger",
+        backup_root=backup_root,
+        expected_old_device=old_device,
+    )
+
+
+def test_explicit_stdev_only_recovery_proves_backup_and_import_readback(mock_data_dir):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("one", "a"), _line("two", "b"))
+    target = _target(mock_data_dir)
+    before = target.read_bytes()
+    old = _simulate_device_only_drift(mock_data_dir)
+    with pytest.raises(storage.StorageRecoveryError, match="ledger identity changed"):
+        _write("agent.ledger", _line("three", "c"))
+    root = _recovery_backup_root(mock_data_dir)
+    result = _run_stdev_recovery(mock_data_dir, old, root)
+    assert result["status"] == "verified"
+    assert result["old_ledger_device"] == old
+    assert result["new_ledger_device"] == target.stat().st_dev
+    assert result["verified_identities"] == 2
+    assert target.read_bytes() == before
+    directory = Path(result["backup_directory"])
+    assert directory.parent == root
+    assert (directory / "ledger.jsonl").read_bytes() == before
+    with sqlite3.connect(directory / "identity-index.sqlite3") as db:
+        assert db.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert json.loads((directory / "verified-recovery.json").read_text()) == result
+    assert json.loads((directory / "preimage.json").read_text())["ledger_sha256"] == __import__("hashlib").sha256(before).hexdigest()
+    replay = _write("agent.ledger", _line("one", "a"))
+    assert replay["written"] == 0
+    assert replay["skipped"] == 1
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="no device drift"):
+        _run_stdev_recovery(mock_data_dir, target.stat().st_dev, root)
+
+
+@pytest.mark.parametrize("mutation", ["replace_inode", "change_prefix", "truncate", "incomplete_tail"])
+def test_stdev_recovery_rejects_nondevice_ledger_drift(mock_data_dir, mutation):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("first", "a"), _line("second", "b"))
+    target = _target(mock_data_dir)
+    old = _simulate_device_only_drift(mock_data_dir)
+    original = target.read_bytes()
+    if mutation == "replace_inode":
+        target.unlink()
+        target.write_bytes(original)
+        target.chmod(0o600)
+    elif mutation == "change_prefix":
+        target.write_bytes(original.replace(b'"value": "a"', b'"value": "z"'))
+    elif mutation == "truncate":
+        target.write_bytes(original[:30])
+    else:
+        with target.open("ab") as fh:
+            fh.write(b'{"payload":')
+            fh.flush()
+            os.fsync(fh.fileno())
+    root = _recovery_backup_root(mock_data_dir)
+    with pytest.raises((identity_index_recovery.RecoveryRejected, identity_index.IdentityIndexError)):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    assert not list(root.iterdir())
+
+
+@pytest.mark.parametrize("mutation", ["state_digest", "row_digest", "sqlite_garbage"])
+def test_stdev_recovery_rejects_corrupt_index_before_backup(mock_data_dir, mutation):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("first", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    index_path = _index_path(mock_data_dir)
+    if mutation == "sqlite_garbage":
+        index_path.write_bytes(b"broken SQLite")
+    else:
+        with sqlite3.connect(index_path) as conn:
+            if mutation == "state_digest":
+                conn.execute("UPDATE index_state SET state_digest = ? WHERE identity_key = 'event_id'", (b'x' * 32,))
+            else:
+                conn.execute("UPDATE identities SET row_digest = ? WHERE identity_key = 'event_id'", (b'x' * 32,))
+    root = _recovery_backup_root(mock_data_dir)
+    with pytest.raises((identity_index_recovery.RecoveryRejected, identity_index.IdentityIndexError)):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    assert not list(root.iterdir())
+
+
+def test_stdev_recovery_refuses_missing_backup_and_wrong_cas(mock_data_dir):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    root = mock_data_dir / "not-created-backup"
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="backup root"):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    root = _recovery_backup_root(mock_data_dir)
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="old device CAS"):
+        _run_stdev_recovery(mock_data_dir, old + 1, root)
+    assert not list(root.iterdir())
+
+
+def test_stdev_recovery_backup_failure_does_not_modify_index(mock_data_dir, monkeypatch):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    before = _target(mock_data_dir).read_bytes()
+    root = _recovery_backup_root(mock_data_dir)
+    def broken_backup(*args, **kwargs):
+        raise OSError("injected backup failure")
+    monkeypatch.setattr(identity_index_recovery, "_copy_exact", broken_backup)
+    with pytest.raises(OSError, match="injected backup failure"):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    assert _target(mock_data_dir).read_bytes() == before
+    with pytest.raises(storage.StorageRecoveryError, match="ledger identity changed"):
+        _write("agent.ledger", _line("seed", "a"))
+
+
+def test_stdev_recovery_transaction_failure_rolls_back(mock_data_dir, monkeypatch):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    root = _recovery_backup_root(mock_data_dir)
+    real_commit = identity_index.IdentityIndex.commit
+    def broken_commit(self):
+        raise sqlite3.DatabaseError("injected failed commit")
+    monkeypatch.setattr(identity_index.IdentityIndex, "commit", broken_commit)
+    with pytest.raises(sqlite3.DatabaseError, match="injected failed commit"):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    monkeypatch.setattr(identity_index.IdentityIndex, "commit", real_commit)
+    with pytest.raises(storage.StorageRecoveryError, match="ledger identity changed"):
+        _write("agent.ledger", _line("seed", "a"))
+
+
+def test_stdev_recovery_lock_failure_prevents_mutation(mock_data_dir, monkeypatch):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    root = _recovery_backup_root(mock_data_dir)
+    from contextlib import contextmanager
+    @contextmanager
+    def busy(*args, **kwargs):
+        raise storage.StorageBusyError("busy, try again")
+        yield
+    monkeypatch.setattr(storage, "_locked_open", busy)
+    with pytest.raises(storage.StorageBusyError, match="busy"):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    assert not list(root.iterdir())
+
+def test_stdev_recovery_rejects_real_competing_writer_lock(mock_data_dir, monkeypatch):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    root = _recovery_backup_root(mock_data_dir)
+    lock_path = storage.get_lock_path(_target(mock_data_dir))
+    script = (
+        "import fcntl, sys, time\n"
+        "with open(sys.argv[1], 'a+b') as fh:\n"
+        "    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)\n"
+        "    print('locked', flush=True)\n"
+        "    time.sleep(15)\n"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", script, str(lock_path)],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        assert child.stdout is not None
+        assert child.stdout.readline().strip() == "locked"
+        monkeypatch.setattr(storage, "LOCK_TIMEOUT", 1)
+        with pytest.raises(storage.StorageBusyError, match="busy"):
+            identity_index_recovery.recover_device_only(
+                "agent.ledger", backup_root=root, expected_old_device=old,
+            )
+        assert not list(root.iterdir())
+    finally:
+        child.terminate()
+        child.wait(timeout=5)
+
+
+def test_stdev_recovery_crash_before_commit_restores_old_state(mock_data_dir):
+    _write("agent.ledger", _line("seed", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    root = _recovery_backup_root(mock_data_dir)
+    script = (
+        "import os, sys\n"
+        "from pathlib import Path\n"
+        "import storage, identity_index\n"
+        "from tools import identity_index_recovery\n"
+        "storage.DATA_DIR = Path(sys.argv[1])\n"
+        "identity_index.IdentityIndex.commit = lambda self: os._exit(73)\n"
+        "identity_index_recovery.recover_device_only("
+        "'agent.ledger', backup_root=Path(sys.argv[2]),"
+        "expected_old_device=int(sys.argv[3]))\n"
+    )
+    crashed = subprocess.run(
+        [sys.executable, "-c", script, str(mock_data_dir), str(root), str(old)],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True, text=True, timeout=10,
+        check=False,
+    )
+    assert crashed.returncode == 73, crashed.stderr
+    with pytest.raises(storage.StorageRecoveryError, match="ledger identity changed"):
+        _write("agent.ledger", _line("seed", "a"))
+    recovered = _run_stdev_recovery(mock_data_dir, old, root)
+    assert recovered["status"] == "verified"
+    assert _write("agent.ledger", _line("seed", "a"))["skipped"] == 1
+
+@pytest.mark.parametrize("case", ["zero_bytes", "empty_sqlite_database"])
+def test_stdev_recovery_does_not_initialize_bad_preimage_before_backup(
+    mock_data_dir, case,
+):
+    """Codex review P2: a failed recovery must not CREATE the SQLite schema."""
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("first", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    db = _index_path(mock_data_dir)
+    if case == "zero_bytes":
+        db.write_bytes(b"")
+    else:
+        db.unlink()
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE unrelated (id INTEGER)")
+        db.chmod(0o600)
+    original = db.read_bytes()
+    root = _recovery_backup_root(mock_data_dir)
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="existing SQLite"):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    assert db.read_bytes() == original, "failed recovery modified source index"
+    assert not list(root.iterdir()), "failed recovery created a purported backup"
