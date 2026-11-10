@@ -36,6 +36,11 @@ def main(argv=None) -> int:
     search.add_argument("--knowledge-type")
     search.add_argument("--epistemic-status")
     search.add_argument("--keyword")
+    search.add_argument("--component", help="exact subject.component")
+    search.add_argument("--since", help="ISO-8601 lower bound for ts (inclusive)")
+    search.add_argument("--until", help="ISO-8601 upper bound for ts (inclusive)")
+    search.add_argument("--current-only", action="store_true",
+                        help="hide events superseded by a newer event")
     search.add_argument("--limit", type=int, default=20)
     lookup = commands.add_parser("get")
     lookup.add_argument("--event-id", required=True)
@@ -67,7 +72,9 @@ def main(argv=None) -> int:
                     repo=args.repo, host=args.host,
                     knowledge_type=args.knowledge_type,
                     epistemic_status=args.epistemic_status,
-                    keyword=args.keyword, limit=args.limit)
+                    keyword=args.keyword, component=args.component,
+                    since=args.since, until=args.until,
+                    current_only=args.current_only, limit=args.limit)
         else:
             result = knowledge.coverage(args.outbox_root, args.data_dir)
     except (OSError, ValueError, TypeError, KeyError, storage.StorageError) as exc:
@@ -75,6 +82,8 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 2
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+    if args.command == "get" and not result["found"]:
+        return 3  # distinguishable from success: absent is not verified
     return 0 if not result.get("errors") and not result.get("invalid") else 1
 
 

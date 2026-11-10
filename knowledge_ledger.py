@@ -293,13 +293,27 @@ def get(event_id: str) -> dict[str, Any]:
 
 def search(*, repo: str | None = None, host: str | None = None,
            knowledge_type: str | None = None, epistemic_status: str | None = None,
-           keyword: str | None = None, limit: int = 20) -> dict[str, Any]:
-    """Bounded historical recall; requires at least one selector."""
-    if not any((repo, host, knowledge_type, epistemic_status, keyword)):
+           keyword: str | None = None, component: str | None = None,
+           since: str | None = None, until: str | None = None,
+           current_only: bool = False, limit: int = 20) -> dict[str, Any]:
+    """Bounded historical recall; requires at least one selector.
+
+    ``current_only`` hides events that a newer event supersedes; it never
+    deletes history and the hidden count is reported.
+    """
+    if not any((repo, host, knowledge_type, epistemic_status, keyword,
+                component, since, until)):
         raise ValueError("knowledge search needs at least one selector")
+    since_at = _timestamp(since) if since is not None else None
+    until_at = _timestamp(until) if until is not None else None
+    if since_at is not None and until_at is not None and since_at > until_at:
+        raise ValueError("since must not be later than until")
+    if type(current_only) is not bool:
+        raise ValueError("current_only must be boolean")
     if type(limit) is not int or not 1 <= limit <= 20:
         raise ValueError("knowledge search limit must be between 1 and 20")
-    for name, value in (("repo", repo), ("host", host), ("keyword", keyword)):
+    for name, value in (("repo", repo), ("host", host), ("keyword", keyword),
+                        ("component", component)):
         if value is not None:
             _text(value, 200, name)
     if knowledge_type is not None and knowledge_type not in TYPES:
@@ -310,6 +324,9 @@ def search(*, repo: str | None = None, host: str | None = None,
     matching = [
         event for event in ledger.values()
         if (repo is None or event["subject"].get("repo") == repo)
+        and (component is None or event["subject"].get("component") == component)
+        and (since_at is None or _timestamp(event["ts"]) >= since_at)
+        and (until_at is None or _timestamp(event["ts"]) <= until_at)
         and (host is None or event["subject"].get("host") == host)
         and (knowledge_type is None or event["knowledge_type"] == knowledge_type)
         and (epistemic_status is None or event["epistemic_status"] == epistemic_status)
@@ -328,9 +345,15 @@ def search(*, repo: str | None = None, host: str | None = None,
             key=lambda event_id: (_timestamp(ledger[event_id]["ts"]), event_id),
             reverse=True,
         )
+    hidden_superseded = 0
+    if current_only:
+        before = len(matching)
+        matching = [e for e in matching if e["event_id"] not in successors]
+        hidden_superseded = before - len(matching)
     return {
         "schema_version": "chronik-knowledge-search.v1",
         "historical_only": True, "matching_count": len(matching),
+        "hidden_superseded": hidden_superseded,
         "returned": min(len(matching), limit),
         "has_more": len(matching) > limit,
         "events": [

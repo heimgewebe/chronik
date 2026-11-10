@@ -629,3 +629,55 @@ def test_uncertain_append_and_rollback_cannot_be_verified_without_fsync(
     assert k.get(item["event_id"])["found"]
     assert k.coverage(outbox, data)["verified"] == [item["event_id"]]
     assert k.get(item["event_id"])["ledger_snapshot"]["record_count"] == 1
+
+
+def test_search_time_window_component_and_current_only(paths):
+    data, outbox = paths
+    old = k.build(
+        record_key="window:old", ts="2026-11-01T10:00:00Z",
+        source={"system": "claude-code", "component": "review"},
+        subject={"repo": "heimgewebe/chronik", "component": "outbox"},
+        knowledge_type="open_problem", epistemic_status="observed",
+        statement="Window test old problem.",
+        evidence_refs=["github:heimgewebe/chronik#1"], relations=[])
+    new = k.build(
+        record_key="window:new", ts="2026-11-09T10:00:00Z",
+        source={"system": "claude-code", "component": "review"},
+        subject={"repo": "heimgewebe/chronik", "component": "search"},
+        knowledge_type="repair", epistemic_status="implemented",
+        statement="Window test repair.",
+        evidence_refs=["github:heimgewebe/chronik#2"],
+        relations=[{"type": "supersedes", "event_id": old["event_id"]}])
+    for value in (old, new):
+        k.capture(value, outbox)
+    assert k.import_pending(outbox, data)["verified"] == 2
+
+    recent = k.search(since="2026-11-05T00:00:00+01:00")
+    assert [x["event"]["event_id"] for x in recent["events"]] == [new["event_id"]]
+    early = k.search(repo="heimgewebe/chronik", until="2026-11-02T00:00:00Z")
+    assert [x["event"]["event_id"] for x in early["events"]] == [old["event_id"]]
+    by_component = k.search(component="outbox")
+    assert by_component["matching_count"] == 1
+    current = k.search(repo="heimgewebe/chronik", current_only=True)
+    assert [x["event"]["event_id"] for x in current["events"]] == [new["event_id"]]
+    assert current["hidden_superseded"] == 1
+    full = k.search(repo="heimgewebe/chronik")
+    assert full["matching_count"] == 2 and full["hidden_superseded"] == 0
+    with pytest.raises(ValueError, match="since"):
+        k.search(since="2026-11-09T00:00:00Z", until="2026-11-01T00:00:00Z")
+    with pytest.raises(ValueError, match="timezone"):
+        k.search(since="2026-11-09T00:00:00")
+
+
+def test_cli_get_missing_event_exits_nonzero(paths):
+    import subprocess
+    import sys
+    data, _ = paths
+    root = Path(__file__).parents[1]
+    missing = "sha256:" + "0" * 64
+    result = subprocess.run(
+        [sys.executable, str(root / "tools/knowledge_ledger.py"),
+         "--data-dir", str(data), "get", "--event-id", missing],
+        capture_output=True, text=True)
+    assert result.returncode == 3
+    assert json.loads(result.stdout)["found"] is False
