@@ -46,8 +46,11 @@ and old device. Do not edit SQLite manually or bypass integrity checks.
 
 Under the two writer locks the command:
 
-1. Requires private, regular, single-linked ledger and index files; checks
-   the SQLite schema, state digest and identity-count binding.
+1. Requires private, regular, single-linked ledger and index files; validates
+   the existing SQLite application ID, schema version, journal mode and
+   integrity using a **read-only** connection before any writable index open.
+   A zero-byte or uninitialized index is rejected without creating a schema.
+   The normal index reader then checks full schema, state digest and count binding.
 2. Checks \`PRAGMA integrity_check\`, the complete indexed JSONL chain,
    every record's final boundary, and *all* identity/fingerprint/range/row
    digests against actual ledger payloads. Duplicate identities must have
@@ -72,7 +75,8 @@ with normal import failing before and succeeding after recovery, successful
 backup and index readback, wrong CAS, changed inode, modified bytes, truncated
 ledger, incomplete last line, corrupted state, row digest and database,
 missing backup root, failed backup write, failed SQLite commit, and denied
-writer lock. It does **not** claim a physical mount renumbering or off-host
+writer lock, and checks that empty or truncated SQLite source remains byte-identical
+on rejection. It does **not** claim a physical mount renumbering or off-host
 restore on production.
 
 On a target system, use a freshly verified Restic snapshot and retain

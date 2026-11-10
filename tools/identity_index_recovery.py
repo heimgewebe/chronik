@@ -108,6 +108,38 @@ def _hash_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _validate_existing_index_readonly(path: Path, previous: os.stat_result) -> None:
+    """Refuse uninitialized or noncanonical indexes before any writable SQLite open.
+
+    IdentityIndex's regular constructor may create a schema for an empty SQLite
+    file. That is correct during import, but must never occur on the recovery
+    path before the preimage has been proven and backed up.
+    """
+    if previous.st_size < 100:
+        raise RecoveryRejected("existing SQLite identity index is uninitialized")
+    connection = None
+    try:
+        connection = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)
+        connection.execute("PRAGMA query_only=ON")
+        application_id = connection.execute("PRAGMA application_id").fetchone()[0]
+        user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+        journal_mode = connection.execute("PRAGMA journal_mode").fetchone()[0]
+        if (
+            application_id != identity_index.INDEX_APPLICATION_ID
+            or user_version != identity_index.INDEX_SCHEMA_VERSION
+            or str(journal_mode).lower() != "delete"
+        ):
+            raise RecoveryRejected("existing SQLite index has an invalid identity or mode")
+        if connection.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
+            raise RecoveryRejected("existing SQLite index has failed integrity_check")
+    except sqlite3.DatabaseError as exc:
+        raise RecoveryRejected("existing SQLite index is unreadable without mutation") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    _check_unchanged(path, previous)
+
+
 def _write_json(directory: Path, filename: str, data: dict) -> Path:
     path = directory / filename
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC | os.O_NOFOLLOW
@@ -218,6 +250,7 @@ def recover_device_only(
         _private_file(ledger_path)
         identity_index.IdentityIndex._require_complete_tail(fh, original_ledger.st_size)
         original_index = _private_file(index_path)
+        _validate_existing_index_readonly(index_path, original_index)
         with identity_index.open_identity_index(
             ledger_path, timeout=storage.LOCK_TIMEOUT
         ) as index:

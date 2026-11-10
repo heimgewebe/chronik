@@ -708,3 +708,26 @@ def test_stdev_recovery_crash_before_commit_restores_old_state(mock_data_dir):
     recovered = _run_stdev_recovery(mock_data_dir, old, root)
     assert recovered["status"] == "verified"
     assert _write("agent.ledger", _line("seed", "a"))["skipped"] == 1
+
+@pytest.mark.parametrize("case", ["zero_bytes", "empty_sqlite_database"])
+def test_stdev_recovery_does_not_initialize_bad_preimage_before_backup(
+    mock_data_dir, case,
+):
+    """Codex review P2: a failed recovery must not CREATE the SQLite schema."""
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("first", "a"))
+    old = _simulate_device_only_drift(mock_data_dir)
+    db = _index_path(mock_data_dir)
+    if case == "zero_bytes":
+        db.write_bytes(b"")
+    else:
+        db.unlink()
+        with sqlite3.connect(db) as conn:
+            conn.execute("CREATE TABLE unrelated (id INTEGER)")
+        db.chmod(0o600)
+    original = db.read_bytes()
+    root = _recovery_backup_root(mock_data_dir)
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="existing SQLite"):
+        _run_stdev_recovery(mock_data_dir, old, root)
+    assert db.read_bytes() == original, "failed recovery modified source index"
+    assert not list(root.iterdir()), "failed recovery created a purported backup"
