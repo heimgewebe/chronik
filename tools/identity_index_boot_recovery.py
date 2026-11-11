@@ -32,10 +32,27 @@ def _stored_device_readonly(index_path: Path) -> int | None:
     try:
         with sqlite3.connect(index_path.as_uri() + "?mode=ro", uri=True) as db:
             db.execute("PRAGMA query_only=ON")
-            row = db.execute(
-                "SELECT ledger_dev FROM index_state WHERE identity_key = ?",
-                ("event_id",),
-            ).fetchone()
+            try:
+                row = db.execute(
+                    "SELECT ledger_dev FROM index_state WHERE identity_key = ?",
+                    ("event_id",),
+                ).fetchone()
+            except sqlite3.OperationalError as exc:
+                if str(exc).strip().lower() != "no such table: index_state":
+                    raise
+                # SQLite created the file but the very first schema transaction
+                # never committed. Only an uninitialized, otherwise empty
+                # database may be initialized by the ordinary importer.
+                objects = db.execute(
+                    "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+                version = db.execute("PRAGMA user_version").fetchone()
+                application = db.execute("PRAGMA application_id").fetchone()
+                if objects or version != (0,) or application != (0,):
+                    raise identity_index_recovery.RecoveryRejected(
+                        "existing identity index has foreign or partial schema"
+                    ) from exc
+                return None
     except sqlite3.OperationalError as exc:
         if str(exc).strip().lower() == "attempt to write a readonly database":
             # A hot SQLite DELETE journal requires its normal writable rollback.

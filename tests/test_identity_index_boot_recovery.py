@@ -118,6 +118,61 @@ def test_missing_index_is_left_to_normal_importer(locations):
 
 
 @pytest.mark.parametrize("domain", boot.DOMAINS)
+@pytest.mark.parametrize("initial_index", ["zero_byte", "empty_sqlite"])
+def test_interrupted_before_schema_creation_is_normal_bootstrap(
+    locations, domain, initial_index
+):
+    data, backup = locations
+    _append(domain, "original")
+    ledger = data / f"{domain}.jsonl"
+    index = identity_index.index_path_for_target(ledger)
+    before_ledger = ledger.read_bytes()
+    if initial_index == "zero_byte":
+        index.write_bytes(b"")
+    else:
+        index.unlink()
+        with sqlite3.connect(index) as db:
+            assert db.execute("SELECT name FROM sqlite_master").fetchall() == []
+    index.chmod(0o600)
+    before_index = index.read_bytes()
+
+    assert boot.recover_before_import(data, backup) == {
+        "schema_version": 1, "status": "steady", "recoveries": [],
+    }
+    assert not backup.exists()
+    assert ledger.read_bytes() == before_ledger
+    assert index.read_bytes() == before_index
+
+    result = _append(domain, "after-initialization")
+    assert result["written"] == 1
+    assert result["identity_index_mode"] == "rebuild"
+    assert _read_device(data, domain) == ledger.stat().st_dev
+    assert ledger.read_bytes().startswith(before_ledger)
+
+
+@pytest.mark.parametrize("foreign_schema", ["foreign_table", "foreign_version", "foreign_application"])
+def test_missing_index_state_with_foreign_schema_remains_blocked(locations, foreign_schema):
+    data, backup = locations
+    _append("agent.ledger", "original")
+    ledger = data / "agent.ledger.jsonl"
+    index = identity_index.index_path_for_target(ledger)
+    index.unlink()
+    with sqlite3.connect(index) as db:
+        if foreign_schema == "foreign_table":
+            db.execute("CREATE TABLE unrelated (value TEXT)")
+        elif foreign_schema == "foreign_version":
+            db.execute("PRAGMA user_version=7")
+        else:
+            db.execute("PRAGMA application_id=7")
+    index.chmod(0o600)
+    before = (ledger.read_bytes(), index.read_bytes())
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="foreign or partial schema"):
+        boot.recover_before_import(data, backup)
+    assert (ledger.read_bytes(), index.read_bytes()) == before
+    assert not backup.exists()
+
+
+@pytest.mark.parametrize("domain", boot.DOMAINS)
 def test_valid_index_schema_without_state_is_left_to_importer(locations, domain):
     # A process can crash between committing the SQLite schema and writing
     # the initial index_state record. This is a recoverable normal bootstrap.
