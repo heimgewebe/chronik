@@ -5,9 +5,11 @@ ConditionPathIsDirectory=%h/.local/state/grabowski/chronik-outbox
 
 [Service]
 Type=oneshot
+TimeoutStartSec=180s
 LogRateLimitIntervalSec=30s
 LogRateLimitBurst=200
 WorkingDirectory=%h/.local/lib/chronik/current
+ExecStartPre=%h/repos/chronik/.venv/bin/python %h/.local/lib/chronik/current/tools/identity_index_boot_recovery.py --data-dir %h/.local/state/chronik/data --backup-root %h/.local/state/chronik/manual-recovery-copies --apply
 ExecStart=%h/repos/chronik/.venv/bin/python %h/.local/lib/chronik/current/tools/coding_memory.py --data-dir %h/.local/state/chronik/data import-outbox --outbox-root %h/.local/state --receipt-dir %h/.local/state/chronik/import-receipts --output-mode summary
 UMask=0077
 NoNewPrivileges=true
