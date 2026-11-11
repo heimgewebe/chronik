@@ -515,6 +515,67 @@ def _run_stdev_recovery(data_dir, old_device, backup_root):
     )
 
 
+def test_stdev_inspect_reports_candidate_without_index_or_ledger_mutation(mock_data_dir):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "value"))
+    ledger = _target(mock_data_dir)
+    index = _index_path(mock_data_dir)
+    old_device = _simulate_device_only_drift(mock_data_dir)
+    before = (ledger.read_bytes(), index.read_bytes())
+    result = identity_index_recovery.inspect_device_only("agent.ledger")
+    assert result == {
+        "status": "device_drift_candidate", "domain": "agent.ledger",
+        "identity_key": "event_id", "old_ledger_device": old_device,
+        "new_ledger_device": ledger.stat().st_dev,
+        "inspect_only": True, "full_integrity_verified": False,
+    }
+    assert (ledger.read_bytes(), index.read_bytes()) == before
+    assert not list(mock_data_dir.glob("chronik-device-recovery-*"))
+    root = _recovery_backup_root(mock_data_dir)
+    assert _run_stdev_recovery(mock_data_dir, old_device, root)["status"] == "verified"
+    assert identity_index_recovery.inspect_device_only("agent.ledger")["status"] == "no_device_drift"
+
+
+def test_stdev_inspect_cli_is_readonly_and_exposes_expected_device(mock_data_dir):
+    _write("agent.ledger", _line("seed", "value"))
+    old_device = _simulate_device_only_drift(mock_data_dir)
+    ledger = _target(mock_data_dir)
+    index = _index_path(mock_data_dir)
+    before = (ledger.read_bytes(), index.read_bytes())
+    script = Path(__file__).resolve().parents[1] / "tools" / "identity_index_recovery.py"
+    command = [sys.executable, str(script), "--data-dir", str(mock_data_dir),
+               "--domain", "agent.ledger", "--inspect"]
+    result = subprocess.run(command, check=False, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["old_ledger_device"] == old_device
+    denied = subprocess.run(command + ["--expected-old-device", str(old_device)],
+                            check=False, text=True, capture_output=True)
+    assert denied.returncode != 0
+    assert "does not accept mutation parameters" in denied.stderr
+    assert (ledger.read_bytes(), index.read_bytes()) == before
+
+
+def test_stdev_inspect_rejects_more_than_device_drift(mock_data_dir):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "value"))
+    _simulate_device_only_drift(mock_data_dir)
+    with _target(mock_data_dir).open("ab") as fh:
+        fh.write(_line("later", "value").encode())
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="more than device"):
+        identity_index_recovery.inspect_device_only("agent.ledger")
+
+
+def test_stdev_inspect_rejects_state_digest_corruption(mock_data_dir):
+    from tools import identity_index_recovery
+    _write("agent.ledger", _line("seed", "value"))
+    _simulate_device_only_drift(mock_data_dir)
+    with sqlite3.connect(_index_path(mock_data_dir)) as conn:
+        conn.execute("UPDATE index_state SET chain_digest = ? WHERE identity_key = ?",
+                     (b"x" * 32, "event_id"))
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="state digest"):
+        identity_index_recovery.inspect_device_only("agent.ledger")
+
+
 def test_explicit_stdev_only_recovery_proves_backup_and_import_readback(mock_data_dir):
     from tools import identity_index_recovery
     _write("agent.ledger", _line("one", "a"), _line("two", "b"))

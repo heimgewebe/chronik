@@ -226,6 +226,71 @@ def _copy_sources(fh: BinaryIO, ledger_path: Path, ledger_stat: os.stat_result,
         raise
 
 
+
+def inspect_device_only(domain: str, *, identity_key: str = "event_id") -> dict:
+    """Read-only device-drift candidate, not authorization or integrity proof.
+
+    The explicit --apply path continues to verify the entire ledger/index and
+    make durable preimage copies before its sole CAS transaction.
+    """
+    ledger_path = storage.safe_target_path(domain)
+    ledger = _private_file(ledger_path)
+    index_path = identity_index.index_path_for_target(ledger_path)
+    index_file = _private_file(index_path)
+    _validate_existing_index_readonly(index_path, index_file)
+    connection = None
+    try:
+        connection = sqlite3.connect(index_path.as_uri() + "?mode=ro", uri=True)
+        connection.execute("PRAGMA query_only=ON")
+        row = connection.execute(
+            """SELECT ledger_dev, ledger_ino, ledger_mtime_ns, ledger_ctime_ns,
+                      indexed_offset, chain_digest, record_count, identity_count,
+                      last_record_start, last_record_digest, state_digest
+               FROM index_state WHERE identity_key = ?""",
+            (identity_key,),
+        ).fetchone()
+    except sqlite3.DatabaseError as exc:
+        raise RecoveryRejected("identity index state cannot be inspected") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    if row is None:
+        raise RecoveryRejected("index does not contain the expected identity state")
+    try:
+        state = identity_index.IndexState(
+            identity_key=identity_key,
+            ledger_dev=int(row[0]), ledger_ino=int(row[1]),
+            ledger_mtime_ns=int(row[2]), ledger_ctime_ns=int(row[3]),
+            indexed_offset=int(row[4]), chain_digest=bytes(row[5]),
+            record_count=int(row[6]), identity_count=int(row[7]),
+            last_record_start=int(row[8]), last_record_digest=bytes(row[9]),
+        )
+        state_digest = bytes(row[10])
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RecoveryRejected("identity index state contains invalid values") from exc
+    if state_digest != identity_index._state_digest(state):
+        raise RecoveryRejected("identity index state digest mismatch")
+    if (
+        state.ledger_ino != ledger.st_ino
+        or state.ledger_mtime_ns != ledger.st_mtime_ns
+        or state.ledger_ctime_ns != ledger.st_ctime_ns
+        or state.indexed_offset != ledger.st_size
+    ):
+        raise RecoveryRejected("more than device identity changed")
+    _check_unchanged(ledger_path, ledger)
+    _check_unchanged(index_path, index_file)
+    return {
+        "status": ("device_drift_candidate" if state.ledger_dev != ledger.st_dev
+                   else "no_device_drift"),
+        "domain": domain,
+        "identity_key": identity_key,
+        "old_ledger_device": state.ledger_dev,
+        "new_ledger_device": ledger.st_dev,
+        "inspect_only": True,
+        "full_integrity_verified": False,
+    }
+
+
 def recover_device_only(
     domain: str, *, backup_root: Path, expected_old_device: int,
     identity_key: str = "event_id",
@@ -342,19 +407,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--domain", required=True)
-    parser.add_argument("--backup-root", type=Path, required=True)
-    parser.add_argument("--expected-old-device", type=int, required=True)
-    parser.add_argument("--apply", action="store_true", help="explicitly authorize index metadata CAS")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--apply", action="store_true", help="explicitly authorize index metadata CAS")
+    mode.add_argument("--inspect", action="store_true", help="read-only device-drift candidate; no recovery")
+    parser.add_argument("--backup-root", type=Path)
+    parser.add_argument("--expected-old-device", type=int)
     args = parser.parse_args()
-    if not args.apply:
-        parser.error("--apply is required; normal imports never invoke recovery")
+    if args.apply and (args.backup_root is None or args.expected_old_device is None):
+        parser.error("--apply requires --backup-root and --expected-old-device")
+    if args.inspect and (args.backup_root is not None or args.expected_old_device is not None):
+        parser.error("--inspect does not accept mutation parameters")
     storage.DATA_DIR = args.data_dir.resolve(strict=True)
     try:
-        receipt = recover_device_only(
-            args.domain,
-            backup_root=args.backup_root.resolve(strict=True),
-            expected_old_device=args.expected_old_device,
-        )
+        if args.inspect:
+            receipt = inspect_device_only(args.domain)
+        else:
+            receipt = recover_device_only(
+                args.domain,
+                backup_root=args.backup_root.resolve(strict=True),
+                expected_old_device=args.expected_old_device,
+            )
     except (RecoveryRejected, storage.StorageError, identity_index.IdentityIndexError,
             sqlite3.DatabaseError, OSError, ValueError) as exc:
         print(json.dumps({"status": "blocked", "reason": str(exc)}, sort_keys=True),

@@ -26,6 +26,18 @@ the canonical sidecar FileLock and **exclusive ledger-fd flock**. Other
 lock-compliant writers will wait or fail. Use the old device ID from the
 indexed state, not the new \`stat\` output.
 
+Before preparing a recovery, inspect the candidate device IDs without
+opening the index for writing or creating a backup:
+
+    python tools/identity_index_recovery.py --data-dir ~/.local/state/chronik/data --domain agent.ledger --inspect
+
+The status device_drift_candidate means only the state digest and comparable
+stat fields were checked; it is NOT a verified recovery or permission to retry
+an import. Use old_ledger_device as the explicit CAS preimage below only after
+checking independent backup/restore readiness. Other drift and malformed
+index metadata fail closed. The inspect mode rejects mutation arguments and
+does not change ledger or SQLite source bytes.
+
 Create a separate, private and owned \`0700\` directory for backups.
 Then, through an authorized Grabowski operator path:
 
@@ -38,7 +50,7 @@ python tools/identity_index_recovery.py \
   --apply
 \`\`\`
 
-\`--apply\` is always required. Only exact device-only drift is admitted.
+\`--apply\` is required for any recovery mutation. Only exact device-only drift is admitted.
 Use the same command for other affected ledgers with their actual domain
 and old device. Do not edit SQLite manually or bypass integrity checks.
 
