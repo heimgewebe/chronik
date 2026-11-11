@@ -40,7 +40,11 @@ def _stored_device_readonly(index_path: Path) -> int | None:
         raise identity_index_recovery.RecoveryRejected(
             "existing identity index state cannot be read without mutation"
         ) from exc
-    if row is None or not isinstance(row[0], str) or not row[0].isdigit():
+    if row is None:
+        # An interrupted first import can leave a valid SQLite schema
+        # without its first index_state row. Normal synchronize() rebuilds it.
+        return None
+    if not isinstance(row[0], str) or not row[0].isdigit():
         raise identity_index_recovery.RecoveryRejected(
             "existing identity index has no canonical device identity"
         )

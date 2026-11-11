@@ -115,6 +115,32 @@ def test_missing_index_is_left_to_normal_importer(locations):
     assert _append("agent.ledger", "new")["written"] == 1
 
 
+@pytest.mark.parametrize("domain", boot.DOMAINS)
+def test_valid_index_schema_without_state_is_left_to_importer(locations, domain):
+    # A process can crash between committing the SQLite schema and writing
+    # the initial index_state record. This is a recoverable normal bootstrap.
+    data, backup = locations
+    storage.write_payload(
+        domain, [json.dumps({"payload": {"event_id": "original", "value": "old"}})]
+    )
+    target = data / f"{domain}.jsonl"
+    with identity_index.open_identity_index(target, timeout=storage.LOCK_TIMEOUT) as index:
+        assert index._load_state("event_id") is None
+    index_path = identity_index.index_path_for_target(target)
+    before = (target.read_bytes(), index_path.read_bytes())
+
+    assert boot.recover_before_import(data, backup) == {
+        "schema_version": 1, "status": "steady", "recoveries": [],
+    }
+    assert not backup.exists()
+    assert (target.read_bytes(), index_path.read_bytes()) == before
+
+    imported = _append(domain, "new")
+    assert imported["written"] == 1
+    assert imported["identity_index_mode"] == "rebuild"
+    assert _read_device(data, domain) == target.stat().st_dev
+
+
 @pytest.mark.parametrize("mutation", ["replace_inode", "bad_state_digest", "missing_ledger_tail"])
 def test_drift_with_nondevice_damage_fails_closed(locations, mutation):
     data, backup = locations
