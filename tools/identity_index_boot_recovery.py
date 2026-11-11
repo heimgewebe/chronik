@@ -36,6 +36,14 @@ def _stored_device_readonly(index_path: Path) -> int | None:
                 "SELECT ledger_dev FROM index_state WHERE identity_key = ?",
                 ("event_id",),
             ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if str(exc).strip().lower() == "attempt to write a readonly database":
+            # A hot SQLite DELETE journal requires its normal writable rollback.
+            # The unchanged importer owns that crash-recovery path.
+            return None
+        raise identity_index_recovery.RecoveryRejected(
+            "existing identity index state cannot be read without mutation"
+        ) from exc
     except sqlite3.DatabaseError as exc:
         raise identity_index_recovery.RecoveryRejected(
             "existing identity index state cannot be read without mutation"

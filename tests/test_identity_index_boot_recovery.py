@@ -6,6 +6,8 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -139,6 +141,70 @@ def test_valid_index_schema_without_state_is_left_to_importer(locations, domain)
     assert imported["written"] == 1
     assert imported["identity_index_mode"] == "rebuild"
     assert _read_device(data, domain) == target.stat().st_dev
+
+
+@pytest.mark.parametrize("domain", boot.DOMAINS)
+def test_hot_sqlite_delete_journal_is_recovered_by_normal_importer(locations, domain):
+    data, backup = locations
+    _append(domain, "original")
+    target = data / f"{domain}.jsonl"
+    index = identity_index.index_path_for_target(target)
+    journal = Path(str(index) + "-journal")
+    before_ledger = target.read_bytes()
+    # Reproduce an actual interrupted SQLite DELETE-journal transaction:
+    # the child exits without COMMIT and leaves a hot rollback journal.
+    child_script = (
+        "import os,sqlite3,sys\n"
+        "from pathlib import Path\n"
+        "db=sqlite3.connect(sys.argv[1])\n"
+        "db.execute('PRAGMA cache_size=1')\n"
+        "db.execute('BEGIN IMMEDIATE')\n"
+        "db.execute(\"UPDATE index_state SET ledger_dev='999' WHERE identity_key='event_id'\")\n"
+        "db.execute('CREATE TABLE crash_bulk (payload BLOB)')\n"
+        "for _ in range(1000): db.execute('INSERT INTO crash_bulk VALUES(zeroblob(4096))')\n"
+        "assert Path(sys.argv[1]+'-journal').stat().st_size>0\n"
+        "os._exit(83)\n"
+    )
+    child = subprocess.run(
+        [sys.executable, "-c", child_script, str(index)],
+        capture_output=True, text=True, check=False,
+    )
+    assert child.returncode == 83, child.stderr
+    assert journal.is_file()
+    before_index = (index.read_bytes(), journal.read_bytes())
+
+    with sqlite3.connect(index.as_uri() + "?mode=ro", uri=True) as db:
+        with pytest.raises(sqlite3.OperationalError, match="readonly database"):
+            db.execute("SELECT ledger_dev FROM index_state").fetchone()
+
+    assert boot.recover_before_import(data, backup)["recoveries"] == []
+    assert (index.read_bytes(), journal.read_bytes()) == before_index
+    assert not backup.exists()
+    assert target.read_bytes() == before_ledger
+
+    # The unchanged importer performs SQLite's normal crash rollback before
+    # synchronizing: the incomplete '999' update must not be observed.
+    result = _append(domain, "after-crash")
+    assert result["written"] == 1
+    assert _read_device(data, domain) == target.stat().st_dev
+    assert not journal.exists()
+    assert target.read_bytes().startswith(before_ledger)
+
+
+def test_nonrecoverable_sqlite_corruption_remains_fail_closed(locations):
+    data, backup = locations
+    _append("agent.ledger", "original")
+    target = data / "agent.ledger.jsonl"
+    index = identity_index.index_path_for_target(target)
+    before_ledger = target.read_bytes()
+    index.write_bytes(b"not a sqlite database")
+    index.chmod(0o600)
+    before_index = index.read_bytes()
+    with pytest.raises(identity_index_recovery.RecoveryRejected, match="cannot be read"):
+        boot.recover_before_import(data, backup)
+    assert target.read_bytes() == before_ledger
+    assert index.read_bytes() == before_index
+    assert not backup.exists()
 
 
 @pytest.mark.parametrize("mutation", ["replace_inode", "bad_state_digest", "missing_ledger_tail"])
