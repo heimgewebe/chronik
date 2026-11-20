@@ -39,11 +39,25 @@ class InstalledKnowledgeRuntimeTests(unittest.TestCase):
 
     def test_missing_managed_python_fails_with_actionable_error(self):
         p = subprocess.run(
-            [sys.executable, str(self.script), "--help"],
+            [sys.executable, "-S", str(self.script), "--help"],
             capture_output=True, text=True,
         )
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("installed runtime unavailable", p.stderr)
+
+    def test_read_only_sandbox_without_managed_venv_uses_compatible_interpreter(self):
+        # The read-only sandbox exposes the installed source and a complete
+        # Python runtime but intentionally does not mount chronik/runtime-python.
+        root = self.script.parents[1]
+        # Supply the ordinary root-module import graph as installed by git archive.
+        for source in Path(__file__).parents[1].glob("*.py"):
+            (root / source.name).write_bytes(source.read_bytes())
+        p = subprocess.run(
+            [sys.executable, str(self.script), "--help"],
+            capture_output=True, text=True, timeout=20,
+        )
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("capture", p.stdout)
 
     def test_symlink_virtualenv_with_same_base_interpreter_is_not_skipped(self):
         # A venv often symlinks the same binary as base Python. Its sys.prefix
