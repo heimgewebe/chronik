@@ -45,6 +45,30 @@ class InstalledKnowledgeRuntimeTests(unittest.TestCase):
         self.assertNotEqual(p.returncode, 0)
         self.assertIn("installed runtime unavailable", p.stderr)
 
+    def test_symlink_virtualenv_with_same_base_interpreter_is_not_skipped(self):
+        # A venv often symlinks the same binary as base Python. Its sys.prefix
+        # and package search path are still distinct.
+        import venv
+
+        runtime_root = self.runtime.parent.parent
+        venv.EnvBuilder(system_site_packages=False, with_pip=False, symlinks=True).create(runtime_root)
+        bootstrap = SOURCE.read_text(encoding="utf-8").split("ROOT =", 1)[0]
+        self.script.write_text(
+            bootstrap
+            + "\nprint(json.dumps({'prefix': sys.prefix, 'base': sys.base_prefix}))\n",
+            encoding="utf-8",
+        )
+        base_run = subprocess.run(
+            [sys.executable, str(self.script)],
+            capture_output=True, text=True, timeout=20, check=True,
+        )
+        self.assertEqual(Path(json.loads(base_run.stdout)["prefix"]).resolve(), runtime_root.resolve())
+        managed_run = subprocess.run(
+            [str(self.runtime), str(self.script)],
+            capture_output=True, text=True, timeout=20, check=True,
+        )
+        self.assertEqual(Path(json.loads(managed_run.stdout)["prefix"]).resolve(), runtime_root.resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

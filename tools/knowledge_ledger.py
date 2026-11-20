@@ -20,7 +20,8 @@ def _use_installed_runtime() -> None:
     python = source.parents[3] / "runtime-python" / "bin" / "python3"
     if not python.is_file():
         raise SystemExit(f"chronik-knowledge: installed runtime unavailable: {python}")
-    if Path(sys.executable).resolve() != python.resolve():
+    if (Path(sys.executable).resolve() != python.resolve()
+            or Path(sys.prefix).resolve() != python.parent.parent.resolve()):
         os.execv(str(python), [str(python), str(source), *sys.argv[1:]])
 
 
