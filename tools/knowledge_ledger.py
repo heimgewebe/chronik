@@ -7,8 +7,27 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
+
+
+def _use_installed_runtime() -> None:
+    """Use the same managed Python as Chronik's import service, only for installed releases."""
+    source = Path(__file__).resolve()
+    if source.parent.name != "tools" or source.parents[2].name != "releases":
+        return
+    python = source.parents[3] / "runtime-python" / "bin" / "python3"
+    if not python.is_file():
+        raise SystemExit(f"chronik-knowledge: installed runtime unavailable: {python}")
+    if (Path(sys.executable).resolve() != python.resolve()
+            or Path(sys.prefix).resolve() != python.parent.parent.resolve()):
+        os.execv(str(python), [str(python), str(source), *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    _use_installed_runtime()
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
