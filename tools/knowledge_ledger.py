@@ -19,7 +19,18 @@ def _use_installed_runtime() -> None:
         return
     python = source.parents[3] / "runtime-python" / "bin" / "python3"
     if not python.is_file():
-        raise SystemExit(f"chronik-knowledge: installed runtime unavailable: {python}")
+        # Grabowski's read-only bubblewrap search deliberately exposes only the
+        # current packaged Python and ledger, not the host's managed venv.
+        # Reuse that already functional interpreter when its native dependency
+        # imports. Outside the sandbox, an incompatible interpreter still fails
+        # explicitly instead of silently accepting an unavailable runtime.
+        try:
+            import pydantic_core  # noqa: F401
+        except ImportError as exc:
+            raise SystemExit(
+                f"chronik-knowledge: installed runtime unavailable: {python}"
+            ) from exc
+        return
     if (Path(sys.executable).resolve() != python.resolve()
             or Path(sys.prefix).resolve() != python.parent.parent.resolve()):
         os.execv(str(python), [str(python), str(source), *sys.argv[1:]])
