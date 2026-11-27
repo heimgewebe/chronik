@@ -39,17 +39,27 @@ user-declared decision can be `decided` before implementation.
 
 ## Local write and read protocol
 
-The canonical operator starts `tools/knowledge_ledger.py` through the
-authorized Grabowski execution path. Example (paths relative to checkout):
+For production capture, use the installed Chronik CLI through the authorized
+Grabowski execution path. The stable `current` release selects the matching
+managed Python before importing dependencies. Use this entrypoint regardless
+of the working directory; do not invoke a script from the source checkout
+with an arbitrary system Python. Checkout-based development uses the
+repository's own test environment and isolated data/outbox directories.
 
 ```sh
-python tools/knowledge_ledger.py --outbox-root ~/.local/state/grabowski/chronik-outbox capture --record /path/to/minimized-record.json
-python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data --outbox-root ~/.local/state/grabowski/chronik-outbox import-pending
-python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data get --event-id 'sha256:...'
-python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data search --repo heimgewebe/chronik
-python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data search --repo heimgewebe/chronik --since 2026-11-01T00:00:00Z --current-only
-python tools/knowledge_ledger.py --data-dir ~/.local/state/chronik/data --outbox-root ~/.local/state/grabowski/chronik-outbox coverage
+python3 "$HOME/.local/lib/chronik/current/tools/knowledge_ledger.py" capture --record /path/to/minimized-record.json
+python3 "$HOME/.local/lib/chronik/current/tools/knowledge_ledger.py" get --event-id 'sha256:...'
+python3 "$HOME/.local/lib/chronik/current/tools/knowledge_ledger.py" search --repo heimgewebe/chronik
+python3 "$HOME/.local/lib/chronik/current/tools/knowledge_ledger.py" search --repo heimgewebe/chronik --since 2026-11-01T00:00:00Z --current-only
+python3 "$HOME/.local/lib/chronik/current/tools/knowledge_ledger.py" coverage
 ```
+
+The existing `chronik-outbox-import.timer` performs the production import.
+Use `get` with the returned event ID to distinguish committed ledger truth
+from a merely queued capture. For an explicitly authorized recovery import,
+use the same installed CLI with `import-pending`; do not install Python
+packages ad hoc or start a second import service. The default CLI data and
+outbox paths are the production paths. Override both paths for isolated tests.
 
 Record file fields (no `event_id` required when capturing; it is derived
 deterministically from `source` and `record_key`):
@@ -105,8 +115,8 @@ infer success from a write response alone.
 `import-outbox` command now imports both the technical `agent.ledger`
 and semantic `knowledge.ledger` during the same timer cycle.
 Counters and errors appear in the existing bounded journal summary; no new
-worker or timer is needed. This remains **unavailable in production until
-the Chronik revision is deployed**. Grabowski terminalization still needs a
+worker or timer is needed. Production availability depends on the actually installed Chronik release; a
+source checkout is not deployment evidence. Grabowski terminalization still needs a
 semantically justified capture signal; ChatGPT cannot capture new threads
 automatically through the mere existence of a plugin instruction.
 
